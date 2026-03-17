@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAW
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+model Tenant {
+  id         String   @id @default(cuid())
+  name       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  shops      Shop[]
+  users      User[]
+  providers  Provider[]
+  settlements Settlement[]
+}
+
+model Shop {
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  wallets    Wallet[]
+  txns       Transaction[]
+  apiKeys    ApiKey[]
+}
+
+model User {
+  id         String   @id @default(cuid())
+  tenantId   String
+  email      String   @unique
+  role       UserRole
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+}
+
+model Wallet {
+  id         String   @id @default(cuid())
+  shopId     String
+  currency   String
+  balance    Decimal  @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  shop       Shop     @relation(fields: [shopId], references: [id])
+
+  @@unique([shopId, currency])
+}
+
+model Provider {
+  id            String   @id @default(cuid())
+  tenantId      String
+  name          String
+  isActive      Boolean  @default(true)
+  healthScore   Int      @default(100)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  credentials   ProviderCredential[]
+  txns          Transaction[]
+
+  @@unique([tenantId, name])
+}
+
+model ProviderCredential {
+  id              String   @id @default(cuid())
+  providerId      String
+  encryptedSecret String
+  keyVersion      Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  provider        Provider @relation(fields: [providerId], references: [id])
+}
+
+model Transaction {
+  id             String            @id @default(cuid())
+  shopId         String
+  providerId     String?
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  amount         Decimal
+  currency       String
+  reference      String            @unique
+  externalRef    String?
+  failureReason  String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  shop           Shop              @relation(fields: [shopId], references: [id])
+  provider       Provider?         @relation(fields: [providerId], references: [id])
+  audits         TransactionAudit[]
+  commissions    Commission[]
+  callbackEvents CallbackEvent[]
+}
+
+model TransactionAudit {
+  id            String            @id @default(cuid())
+  transactionId String
+  fromStatus    TransactionStatus?
+  toStatus      TransactionStatus
+  note          String
+  actor         String
+  createdAt     DateTime          @default(now())
+  transaction   Transaction        @relation(fields: [transactionId], references: [id])
+}
+
+model Commission {
+  id            String      @id @default(cuid())
+  transactionId String
+  rateBps       Int
+  amount        Decimal
+  createdAt     DateTime    @default(now())
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+}
+
+model Settlement {
+  id           String   @id @default(cuid())
+  tenantId     String
+  currency     String
+  amount       Decimal
+  settledAt    DateTime
+  createdAt    DateTime @default(now())
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+}
+
+model ApiKey {
+  id         String       @id @default(cuid())
+  shopId      String
+  name        String
+  keyHash     String
+  prefix      String
+  last4       String
+  status      ApiKeyStatus @default(ACTIVE)
+  version     Int          @default(1)
+  createdAt   DateTime     @default(now())
+  revokedAt   DateTime?
+  shop        Shop         @relation(fields: [shopId], references: [id])
+
+  @@index([shopId, status])
+}
+
+model IdempotencyKey {
+  id           String   @id @default(cuid())
+  scope        String
+  key          String
+  responseBody String
+  createdAt    DateTime @default(now())
+
+  @@unique([scope, key])
+}
+
+model CallbackEvent {
+  id            String   @id @default(cuid())
+  transactionId String
+  providerName  String
+  eventId       String
+  status        String
+  payload       String
+  createdAt     DateTime @default(now())
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  @@unique([providerName, eventId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  eventType  String
+  actor      String
+  entityType String
+  entityId   String
+  metadata   String
+  createdAt  DateTime @default(now())
+}
