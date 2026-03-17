@@ -3,10 +3,13 @@ import { ApiKeysService } from '../src/api-keys/api-keys.service';
 function prismaMock() {
   const keys = new Map<string, any>();
   return {
+    merchant: {
+      findUnique: jest.fn(async ({ where }) => (where.id === 'merchant-1' ? { id: 'merchant-1' } : null)),
+    },
     apiKey: {
       create: jest.fn(async ({ data }) => {
         const id = `key-${keys.size + 1}`;
-        const record = { id, ...data, status: 'ACTIVE' };
+        const record = { id, ...data, status: 'ACTIVE', version: 1 };
         keys.set(id, record);
         return record;
       }),
@@ -29,7 +32,7 @@ describe('ApiKeysService', () => {
     const prisma = prismaMock();
     const service = new ApiKeysService(prisma as any);
 
-    const created = await service.createKey('shop-1', 'primary');
+    const created = await service.createKey('merchant-1', 'primary');
     expect(created.apiKey.startsWith('pk_')).toBe(true);
 
     const rotated = await service.rotateKey(created.id);

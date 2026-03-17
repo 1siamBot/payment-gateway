@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Payment Gateway Console</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <h1>Payment Gateway Console</h1>
+        <p>Merchant operations and support workflows</p>
+      </header>
+
+      <section class="card">
+        <h2>Create Payment</h2>
+        <form id="payment-form" class="grid">
+          <label>Merchant ID <input id="merchantId" required /></label>
+          <label>Amount <input id="amount" type="number" min="0.01" step="0.01" required /></label>
+          <label>Currency <input id="currency" minlength="3" maxlength="3" value="USD" required /></label>
+          <label>
+            Type
+            <select id="type">
+              <option value="deposit">deposit</option>
+              <option value="withdraw">withdraw</option>
+            </select>
+          </label>
+          <label>Idempotency Key <input id="idempotencyKey" required /></label>
+          <label>Customer External ID <input id="customerExternalId" /></label>
+          <label>Customer Email <input id="customerEmail" type="email" /></label>
+          <label>Customer Name <input id="customerName" /></label>
+          <button type="submit">Create</button>
+        </form>
+        <p id="create-state" class="state"></p>
+      </section>
+
+      <section class="card">
+        <h2>Payment Dashboard</h2>
+        <form id="filter-form" class="grid">
+          <label>Merchant ID <input id="filter-merchant" /></label>
+          <label>Customer ID <input id="filter-customer" /></label>
+          <label>Reference <input id="filter-reference" /></label>
+          <label>
+            Status
+            <select id="filter-status">
+              <option value="">all</option>
+              <option value="CREATED">CREATED</option>
+              <option value="PENDING">PENDING</option>
+              <option value="PAID">PAID</option>
+              <option value="FAILED">FAILED</option>
+              <option value="REFUNDED">REFUNDED</option>
+            </select>
+          </label>
+          <label>
+            Type
+            <select id="filter-type">
+              <option value="">all</option>
+              <option value="DEPOSIT">DEPOSIT</option>
+              <option value="WITHDRAW">WITHDRAW</option>
+            </select>
+          </label>
+          <button type="submit">Apply Filters</button>
+        </form>
+        <p id="list-state" class="state"></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Reference</th>
+                <th>Merchant</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Amount</th>
+                <th>Currency</th>
+              </tr>
+            </thead>
+            <tbody id="payments-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Routing Observability & Margin</h2>
+        <form id="observability-form" class="grid">
+          <label>
+            Provider
+            <select id="obs-provider">
+              <option value="">all providers</option>
+            </select>
+          </label>
+          <label>
+            Merchant Segment
+            <select id="obs-segment">
+              <option value="">all segments</option>
+              <option value="emerging">emerging</option>
+              <option value="growth">growth</option>
+              <option value="enterprise">enterprise</option>
+            </select>
+          </label>
+          <label>
+            Timeframe
+            <select id="obs-timeframe">
+              <option value="1h">last 1h</option>
+              <option value="6h">last 6h</option>
+              <option value="24h" selected>last 24h</option>
+              <option value="168h">last 7d</option>
+            </select>
+          </label>
+          <button type="submit">Refresh Observability</button>
+        </form>
+        <p id="obs-state" class="state"></p>
+        <div id="obs-alerts" class="alerts"></div>
+        <div class="observability-grid">
+          <article class="panel">
+            <h3>Route Decisions</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Reference</th>
+                    <th>Provider</th>
+                    <th>Reason Code</th>
+                    <th>Score Explanation</th>
+                  </tr>
+                </thead>
+                <tbody id="obs-decisions-body"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Failover Events</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>At</th>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Trigger</th>
+                  </tr>
+                </thead>
+                <tbody id="obs-failovers-body"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Breaker Timeline</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>At</th>
+                    <th>Provider</th>
+                    <th>State</th>
+                    <th>Signal</th>
+                  </tr>
+                </thead>
+                <tbody id="obs-breakers-body"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Provider Margin</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Tx Count</th>
+                    <th>Failure %</th>
+                    <th>Est. Fee %</th>
+                  </tr>
+                </thead>
+                <tbody id="obs-margin-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Payment Detail & Support</h2>
+        <form id="customer-search-form" class="grid">
+          <label>Merchant ID <input id="customer-merchant-id" required /></label>
+          <label>Customer Query <input id="customer-query" placeholder="name/email/external ID" /></label>
+          <button type="submit">Search Customer</button>
+        </form>
+        <p id="customer-state" class="state"></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Email</th>
+                <th>External ID</th>
+                <th>Payments</th>
+              </tr>
+            </thead>
+            <tbody id="customers-body"></tbody>
+          </table>
+        </div>
+
+        <form id="lookup-form" class="inline">
+          <input id="lookup-reference" placeholder="Transaction reference" required />
+          <button type="submit">Lookup</button>
+          <button type="button" id="refund-btn" disabled>Trigger Refund</button>
+        </form>
+        <p id="detail-state" class="state"></p>
+        <pre id="detail-box" class="detail"></pre>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+  </html>

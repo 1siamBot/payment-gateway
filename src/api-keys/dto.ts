@@ -2,7 +2,7 @@ import { IsString } from 'class-validator';
 
 export class CreateApiKeyDto {
   @IsString()
-  shopId!: string;
+  merchantId!: string;
 
   @IsString()
   name!: string;

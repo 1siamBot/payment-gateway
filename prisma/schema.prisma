@@ -7,23 +7,17 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum UserRole {
-  ADMIN
-  OPERATOR
-  VIEWER
-}
-
 enum TransactionType {
   DEPOSIT
   WITHDRAW
 }
 
 enum TransactionStatus {
+  CREATED
   PENDING
-  PROCESSING
-  SUCCEEDED
+  PAID
   FAILED
-  CANCELLED
+  REFUNDED
 }
 
 enum ApiKeyStatus {
@@ -31,94 +25,78 @@ enum ApiKeyStatus {
   REVOKED
 }
 
-model Tenant {
-  id         String   @id @default(cuid())
-  name       String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  shops      Shop[]
-  users      User[]
-  providers  Provider[]
-  settlements Settlement[]
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
 }
 
-model Shop {
-  id         String   @id @default(cuid())
-  tenantId   String
-  name       String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  wallets    Wallet[]
-  txns       Transaction[]
-  apiKeys    ApiKey[]
-}
-
-model User {
-  id         String   @id @default(cuid())
-  tenantId   String
-  email      String   @unique
-  role       UserRole
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-}
-
-model Wallet {
-  id         String   @id @default(cuid())
-  shopId     String
-  currency   String
-  balance    Decimal  @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  shop       Shop     @relation(fields: [shopId], references: [id])
-
-  @@unique([shopId, currency])
-}
-
-model Provider {
+model Merchant {
   id            String   @id @default(cuid())
-  tenantId      String
   name          String
-  isActive      Boolean  @default(true)
-  healthScore   Int      @default(100)
+  webhookUrl    String?
+  webhookSecret String
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  credentials   ProviderCredential[]
+  apiKeys       ApiKey[]
+  customers     Customer[]
   txns          Transaction[]
-
-  @@unique([tenantId, name])
 }
 
-model ProviderCredential {
-  id              String   @id @default(cuid())
-  providerId      String
-  encryptedSecret String
-  keyVersion      Int      @default(1)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  provider        Provider @relation(fields: [providerId], references: [id])
+model ApiKey {
+  id         String       @id @default(cuid())
+  merchantId String
+  name       String
+  keyHash    String
+  prefix     String
+  last4      String
+  status     ApiKeyStatus @default(ACTIVE)
+  version    Int          @default(1)
+  createdAt  DateTime     @default(now())
+  revokedAt  DateTime?
+  merchant   Merchant     @relation(fields: [merchantId], references: [id])
+
+  @@index([merchantId, status])
+}
+
+model Customer {
+  id         String   @id @default(cuid())
+  merchantId String
+  externalId String?
+  email      String?
+  name       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  txns       Transaction[]
+
+  @@unique([merchantId, externalId])
+  @@unique([merchantId, email])
+  @@index([merchantId, name])
 }
 
 model Transaction {
-  id             String            @id @default(cuid())
-  shopId         String
-  providerId     String?
-  type           TransactionType
-  status         TransactionStatus @default(PENDING)
-  amount         Decimal
-  currency       String
-  reference      String            @unique
-  externalRef    String?
-  failureReason  String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  shop           Shop              @relation(fields: [shopId], references: [id])
-  provider       Provider?         @relation(fields: [providerId], references: [id])
-  audits         TransactionAudit[]
-  commissions    Commission[]
-  callbackEvents CallbackEvent[]
+  id                String            @id @default(cuid())
+  merchantId        String
+  customerId        String?
+  type              TransactionType
+  status            TransactionStatus @default(CREATED)
+  amount            Decimal
+  currency          String
+  reference         String            @unique
+  externalRef       String?
+  providerName      String?
+  failureReason     String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  merchant          Merchant          @relation(fields: [merchantId], references: [id])
+  customer          Customer?         @relation(fields: [customerId], references: [id])
+  audits            TransactionAudit[]
+  callbackEvents    CallbackEvent[]
+  webhookDeliveries WebhookDelivery[]
+
+  @@index([merchantId, status])
+  @@index([customerId, createdAt])
 }
 
 model TransactionAudit {
@@ -132,39 +110,36 @@ model TransactionAudit {
   transaction   Transaction        @relation(fields: [transactionId], references: [id])
 }
 
-model Commission {
+model CallbackEvent {
   id            String      @id @default(cuid())
   transactionId String
-  rateBps       Int
-  amount        Decimal
+  providerName  String
+  eventId       String
+  status        String
+  payload       String
   createdAt     DateTime    @default(now())
   transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  @@unique([providerName, eventId])
 }
 
-model Settlement {
-  id           String   @id @default(cuid())
-  tenantId     String
-  currency     String
-  amount       Decimal
-  settledAt    DateTime
-  createdAt    DateTime @default(now())
-  tenant       Tenant   @relation(fields: [tenantId], references: [id])
-}
+model WebhookDelivery {
+  id            String                @id @default(cuid())
+  transactionId String
+  eventType     String
+  payload       String
+  signature     String
+  status        WebhookDeliveryStatus @default(PENDING)
+  attemptCount  Int                   @default(0)
+  maxAttempts   Int                   @default(5)
+  nextRetryAt   DateTime?
+  lastError     String?
+  deliveredAt   DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  transaction   Transaction           @relation(fields: [transactionId], references: [id])
 
-model ApiKey {
-  id         String       @id @default(cuid())
-  shopId      String
-  name        String
-  keyHash     String
-  prefix      String
-  last4       String
-  status      ApiKeyStatus @default(ACTIVE)
-  version     Int          @default(1)
-  createdAt   DateTime     @default(now())
-  revokedAt   DateTime?
-  shop        Shop         @relation(fields: [shopId], references: [id])
-
-  @@index([shopId, status])
+  @@index([status, nextRetryAt])
 }
 
 model IdempotencyKey {
@@ -175,19 +150,6 @@ model IdempotencyKey {
   createdAt    DateTime @default(now())
 
   @@unique([scope, key])
-}
-
-model CallbackEvent {
-  id            String   @id @default(cuid())
-  transactionId String
-  providerName  String
-  eventId       String
-  status        String
-  payload       String
-  createdAt     DateTime @default(now())
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
-
-  @@unique([providerName, eventId])
 }
 
 model AuditLog {

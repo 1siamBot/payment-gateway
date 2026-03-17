@@ -1,16 +1,25 @@
+import { createHmac } from 'crypto';
 import { TransactionStatus, TransactionType } from '@prisma/client';
 import { PaymentsService } from '../src/payments/payments.service';
+import { RoutingReasonCode } from '../src/providers/provider.interface';
 
 function createPrismaMock() {
   const idempotencyStore = new Map<string, { responseBody: string }>();
   const callbackStore = new Set<string>();
   const txStore = new Map<string, any>();
   const txByRef = new Map<string, any>();
-  const audits: any[] = [];
+  const auditLogStore: any[] = [];
+  const merchantStore = new Map<string, any>([['merchant-1', { id: 'merchant-1', name: 'Demo Merchant' }]]);
+  const customerStore = new Map<string, any>();
+  let txCounter = 0;
+  let customerCounter = 0;
 
   return {
-    store: { txStore, txByRef, audits },
+    store: { txByRef, customerStore },
     prisma: {
+      merchant: {
+        findUnique: jest.fn(async ({ where }) => merchantStore.get(where.id) ?? null),
+      },
       idempotencyKey: {
         findUnique: jest.fn(async ({ where }) => idempotencyStore.get(`${where.scope_key.scope}:${where.scope_key.key}`) ?? null),
         create: jest.fn(async ({ data }) => {
@@ -18,40 +27,127 @@ function createPrismaMock() {
           return data;
         }),
       },
+      customer: {
+        upsert: jest.fn(async ({ where, create, update }) => {
+          const lookup = where?.merchantId_externalId ?? where?.merchantId_email;
+          const key = lookup?.externalId ?? lookup?.email;
+          if (!key) {
+            customerCounter += 1;
+            const fallback = { id: `customer-${customerCounter}`, ...create };
+            customerStore.set(fallback.id, fallback);
+            return fallback;
+          }
+          const existing = [...customerStore.values()].find(
+            (item) => item.merchantId === lookup.merchantId && (item.externalId === key || item.email === key),
+          );
+          if (existing) {
+            const merged = { ...existing, ...update };
+            customerStore.set(existing.id, merged);
+            return merged;
+          }
+          customerCounter += 1;
+          const created = { id: `customer-${customerCounter}`, ...create };
+          customerStore.set(created.id, created);
+          return created;
+        }),
+        create: jest.fn(async ({ data }) => {
+          customerCounter += 1;
+          const created = { id: `customer-${customerCounter}`, ...data };
+          customerStore.set(created.id, created);
+          return created;
+        }),
+        findMany: jest.fn(async ({ where }) =>
+          [...customerStore.values()].filter((customer) => {
+            if (customer.merchantId !== where.merchantId) return false;
+            if (!where.OR) return true;
+            return where.OR.some((condition: any) => {
+              if (condition.name?.contains) return (customer.name ?? '').includes(condition.name.contains);
+              if (condition.email?.contains) return (customer.email ?? '').includes(condition.email.contains);
+              if (condition.externalId?.contains) return (customer.externalId ?? '').includes(condition.externalId.contains);
+              return false;
+            });
+          }),
+        ),
+        findFirst: jest.fn(async ({ where }) => {
+          const customer = [...customerStore.values()].find(
+            (item) => item.id === where.id && item.merchantId === where.merchantId,
+          );
+          if (!customer) return null;
+          const txns = [...txStore.values()].filter((tx) => tx.customerId === customer.id);
+          return { ...customer, txns };
+        }),
+      },
       transaction: {
         create: jest.fn(async ({ data }) => {
-          const tx = { id: 'tx-1', ...data, audits: [] };
+          txCounter += 1;
+          const tx = {
+            id: `tx-${txCounter}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            providerName: null,
+            externalRef: null,
+            failureReason: null,
+            ...data,
+            audits: [],
+          };
           txStore.set(tx.id, tx);
           txByRef.set(tx.reference, tx);
           return tx;
         }),
         update: jest.fn(async ({ where, data }) => {
           const tx = txStore.get(where.id);
-          const merged = { ...tx, ...data };
+          const merged = { ...tx, updatedAt: new Date(), ...data };
           txStore.set(where.id, merged);
           txByRef.set(merged.reference, merged);
           return merged;
         }),
-        findUnique: jest.fn(async ({ where }) => {
-          if (where.reference) {
-            return txByRef.get(where.reference) ?? null;
+        findUnique: jest.fn(async ({ where, include }) => {
+          const tx = where.reference ? txByRef.get(where.reference) ?? null : txStore.get(where.id) ?? null;
+          if (!tx) return null;
+          if (include?.customer) {
+            return { ...tx, customer: tx.customerId ? customerStore.get(tx.customerId) ?? null : null, audits: [] };
           }
-          return txStore.get(where.id) ?? null;
+          return tx;
         }),
-      },
-      provider: {
-        upsert: jest.fn(async () => ({ id: 'provider-1', name: 'mock-a' })),
-      },
-      tenant: {
-        upsert: jest.fn(async () => ({ id: 'system' })),
+        findMany: jest.fn(async ({ where, take, orderBy, include, select }) => {
+          let rows = [...txStore.values()].filter((tx) => {
+            if (where.merchantId && tx.merchantId !== where.merchantId) return false;
+            if (where.customerId && tx.customerId !== where.customerId) return false;
+            if (where.status && tx.status !== where.status) return false;
+            if (where.type && tx.type !== where.type) return false;
+            if (where.reference?.contains && !tx.reference.includes(where.reference.contains)) return false;
+            if (where.id?.in && !where.id.in.includes(tx.id)) return false;
+            if (where.createdAt?.gte && new Date(tx.createdAt).getTime() < new Date(where.createdAt.gte).getTime()) return false;
+            return true;
+          });
+
+          if (orderBy?.createdAt === 'desc') {
+            rows = rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          } else if (orderBy?.createdAt === 'asc') {
+            rows = rows.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          }
+
+          rows = rows.slice(0, take ?? 20);
+
+          if (select) {
+            return rows.map((tx) => ({
+              ...(select.id ? { id: tx.id } : {}),
+              ...(select.reference ? { reference: tx.reference } : {}),
+              ...(select.amount ? { amount: tx.amount } : {}),
+              ...(select.createdAt ? { createdAt: tx.createdAt } : {}),
+            }));
+          }
+
+          return rows.map((tx) => ({
+            ...tx,
+            ...(include?.customer ? { customer: tx.customerId ? customerStore.get(tx.customerId) ?? null : null } : {}),
+          }));
+        }),
       },
       callbackEvent: {
         findUnique: jest.fn(async ({ where }) => {
           const key = `${where.providerName_eventId.providerName}:${where.providerName_eventId.eventId}`;
-          if (callbackStore.has(key)) {
-            return { id: 'cb-1' };
-          }
-          return null;
+          return callbackStore.has(key) ? { id: 'cb-1' } : null;
         }),
         create: jest.fn(async ({ data }) => {
           callbackStore.add(`${data.providerName}:${data.eventId}`);
@@ -59,13 +155,32 @@ function createPrismaMock() {
         }),
       },
       transactionAudit: {
-        create: jest.fn(async ({ data }) => {
-          audits.push(data);
-          return data;
-        }),
+        create: jest.fn(async ({ data }) => data),
       },
       auditLog: {
-        create: jest.fn(async ({ data }) => data),
+        create: jest.fn(async ({ data }) => {
+          const row = { id: `audit-${auditLogStore.length + 1}`, createdAt: new Date(), ...data };
+          auditLogStore.push(row);
+          return row;
+        }),
+        findMany: jest.fn(async ({ where, orderBy, take }) => {
+          let rows = auditLogStore.filter((row) => {
+            if (where.entityType && row.entityType !== where.entityType) return false;
+            if (typeof where.entityId === 'string' && row.entityId !== where.entityId) return false;
+            if (where.entityId?.in && !where.entityId.in.includes(row.entityId)) return false;
+            if (where.eventType && typeof where.eventType === 'string' && row.eventType !== where.eventType) return false;
+            if (where.eventType?.startsWith && !row.eventType.startsWith(where.eventType.startsWith)) return false;
+            return true;
+          });
+
+          if (orderBy?.createdAt === 'desc') {
+            rows = rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          } else if (orderBy?.createdAt === 'asc') {
+            rows = rows.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          }
+
+          return rows.slice(0, take ?? rows.length);
+        }),
       },
     },
   };
@@ -81,11 +196,11 @@ describe('PaymentsService', () => {
     const router = {
       initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
     };
-
-    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+    const webhooks = { queueTransactionWebhook: jest.fn(async () => undefined) };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any, webhooks as any);
 
     const payload = {
-      shopId: 'shop-1',
+      merchantId: 'merchant-1',
       amount: 100,
       currency: 'USD',
       type: 'deposit' as const,
@@ -97,7 +212,7 @@ describe('PaymentsService', () => {
 
     expect(first.reference).toBe(second.reference);
     expect(router.initiateWithFailover).toHaveBeenCalledTimes(1);
-    expect(first.status).toBe(TransactionStatus.PROCESSING);
+    expect(first.status).toBe(TransactionStatus.PENDING);
   });
 
   it('applies callback once and ignores duplicates', async () => {
@@ -105,11 +220,11 @@ describe('PaymentsService', () => {
     const router = {
       initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
     };
-
-    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+    const webhooks = { queueTransactionWebhook: jest.fn(async () => undefined) };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any, webhooks as any);
 
     const created = await service.initiatePayment({
-      shopId: 'shop-1',
+      merchantId: 'merchant-1',
       amount: 40,
       currency: 'USD',
       type: 'withdraw',
@@ -117,7 +232,7 @@ describe('PaymentsService', () => {
     });
 
     const sign = (eventId: string) =>
-      require('crypto').createHmac('sha256', 'test-secret').update(`mock-a:${eventId}:${created.reference}:succeeded`).digest('hex');
+      createHmac('sha256', 'test-secret').update(`mock-a:${eventId}:${created.reference}:succeeded`).digest('hex');
 
     const first = await service.handleCallback({
       provider: 'mock-a',
@@ -136,55 +251,254 @@ describe('PaymentsService', () => {
     });
 
     expect(first.applied).toBe(true);
-    expect(first.status).toBe(TransactionStatus.SUCCEEDED);
+    expect(first.status).toBe(TransactionStatus.PAID);
     expect(second.applied).toBe(false);
+    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.paid');
   });
 
-  it('throws when callback signature is invalid', async () => {
+  it('lists payments with filtering', async () => {
     const prismaMock = createPrismaMock();
     const router = {
       initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
     };
-
-    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+    const webhooks = { queueTransactionWebhook: jest.fn(async () => undefined) };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any, webhooks as any);
 
     await service.initiatePayment({
-      shopId: 'shop-1',
-      amount: 70,
+      merchantId: 'merchant-1',
+      amount: 10,
       currency: 'USD',
       type: 'deposit',
-      idempotencyKey: 'idem-3',
+      idempotencyKey: 'idem-a',
+    });
+    await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 15,
+      currency: 'USD',
+      type: 'withdraw',
+      idempotencyKey: 'idem-b',
     });
 
-    await expect(
-      service.handleCallback({
-        provider: 'mock-a',
-        eventId: 'evt-2',
-        transactionReference: [...prismaMock.store.txByRef.keys()][0],
-        status: 'succeeded',
-        signature: 'bad-signature',
-      }),
-    ).rejects.toThrow('Invalid callback signature');
+    const rows = await service.listPayments({ merchantId: 'merchant-1', type: TransactionType.DEPOSIT });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].merchantId).toBe('merchant-1');
+    expect(rows[0].type).toBe(TransactionType.DEPOSIT);
   });
 
-  it('passes transaction type correctly to provider routing', async () => {
+  it('supports manual refund for a paid transaction', async () => {
     const prismaMock = createPrismaMock();
     const router = {
-      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-b', externalRef: `B-${reference}` })),
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
     };
+    const webhooks = { queueTransactionWebhook: jest.fn(async () => undefined) };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any, webhooks as any);
 
+    const created = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-refund',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-refund:${created.reference}:succeeded`)
+      .digest('hex');
+
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-refund',
+      transactionReference: created.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    const refunded = await service.manualRefund(created.reference, 'support_request');
+    expect(refunded.sourceReference).toBe(created.reference);
+    expect(refunded.status).toBe(TransactionStatus.REFUNDED);
+    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.refunded');
+  });
+
+  it('records routing decision telemetry in audit log when router supplies decision details', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({
+        providerName: 'mock-a',
+        externalRef: `A-${reference}`,
+        decision: {
+          algorithm: 'policy',
+          reasonCode: RoutingReasonCode.POLICY_SCORE_WIN,
+          selectedProvider: 'mock-a',
+          scores: [],
+          failovers: [],
+          rolloutApplied: true,
+          shadowMode: false,
+          usedLegacyPath: false,
+          marginKpi: {
+            estimatedFeePercent: 1.8,
+            weightedScore: 0.92,
+          },
+        },
+      })),
+    };
     const service = new PaymentsService(prismaMock.prisma as any, router as any);
 
     await service.initiatePayment({
-      shopId: 'shop-2',
-      amount: 25,
-      currency: 'THB',
-      type: 'withdraw',
-      idempotencyKey: 'idem-4',
+      merchantId: 'merchant-1',
+      amount: 100,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-routing-audit',
     });
 
-    expect(router.initiateWithFailover).toHaveBeenCalledWith(
-      expect.objectContaining({ type: TransactionType.WITHDRAW }),
-    );
+    expect(prismaMock.prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        eventType: 'routing.decision',
+      }),
+    }));
+  });
+
+  it('returns normalized routing telemetry feed for a transaction', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({
+        providerName: 'mock-a',
+        externalRef: `A-${reference}`,
+        decision: {
+          algorithm: 'policy',
+          reasonCode: RoutingReasonCode.FAILOVER_AFTER_ERROR,
+          selectedProvider: 'mock-a',
+          scores: [
+            {
+              providerName: 'mock-a',
+              score: 0.91,
+              successRate: 0.95,
+              latencyMs: 120,
+              feePercent: 1.9,
+              riskScore: 15,
+              circuitState: 'closed',
+            },
+          ],
+          failovers: ['mock-b'],
+          rolloutApplied: true,
+          shadowMode: false,
+          usedLegacyPath: false,
+          marginKpi: {
+            estimatedFeePercent: 1.9,
+            weightedScore: 0.91,
+          },
+        },
+        telemetry: [
+          {
+            eventType: 'routing.failover',
+            occurredAt: '2026-03-17T03:35:00.000Z',
+            payload: { failedProvider: 'mock-b', failoverCount: 1 },
+          },
+          {
+            eventType: 'routing.breaker.transition',
+            occurredAt: '2026-03-17T03:35:01.000Z',
+            payload: { provider: 'mock-b', from: 'closed', to: 'open' },
+          },
+        ],
+      })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 88,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-routing-feed',
+    });
+
+    const feed = await service.getRoutingTelemetry(payment.reference);
+
+    expect(feed.reference).toBe(payment.reference);
+    expect(feed.decision?.reasonCode).toBe(RoutingReasonCode.FAILOVER_AFTER_ERROR);
+    expect(feed.failover.sequence).toEqual(['mock-b']);
+    expect(feed.failover.events[0]).toEqual(expect.objectContaining({ failedProvider: 'mock-b', failoverCount: 1 }));
+    expect(feed.breaker.transitions[0]).toEqual(expect.objectContaining({ provider: 'mock-b', to: 'open' }));
+    expect(feed.breaker.providerStates[0]).toEqual(expect.objectContaining({ providerName: 'mock-a', circuitState: 'closed' }));
+  });
+
+  it('builds observability dashboard from backend routing telemetry records', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({
+        providerName: 'mock-a',
+        externalRef: `A-${reference}`,
+        decision: {
+          algorithm: 'policy',
+          reasonCode: RoutingReasonCode.FAILOVER_AFTER_ERROR,
+          selectedProvider: 'mock-a',
+          scores: [
+            {
+              providerName: 'mock-a',
+              score: 0.89,
+              successRate: 0.94,
+              latencyMs: 130,
+              feePercent: 1.8,
+              riskScore: 16,
+              circuitState: 'closed',
+            },
+          ],
+          failovers: ['mock-b'],
+          rolloutApplied: true,
+          shadowMode: false,
+          usedLegacyPath: false,
+          marginKpi: {
+            estimatedFeePercent: 1.8,
+            weightedScore: 0.89,
+          },
+        },
+        telemetry: [
+          {
+            eventType: 'routing.failover',
+            occurredAt: '2026-03-17T03:35:00.000Z',
+            payload: { failedProvider: 'mock-b', failoverCount: 1 },
+          },
+          {
+            eventType: 'routing.breaker.transition',
+            occurredAt: '2026-03-17T03:35:01.000Z',
+            payload: { provider: 'mock-b', from: 'closed', to: 'open' },
+          },
+        ],
+      })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 1200,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-observability-dashboard',
+    });
+
+    const dashboard = await service.getObservabilityDashboard({
+      merchantId: 'merchant-1',
+      timeframeHours: 24,
+      take: 50,
+    });
+
+    expect(dashboard.summary.analyzedTransactions).toBe(1);
+    expect(dashboard.decisions[0]).toEqual(expect.objectContaining({
+      provider: 'mock-a',
+      reasonCode: RoutingReasonCode.FAILOVER_AFTER_ERROR,
+    }));
+    expect(dashboard.failovers[0]).toEqual(expect.objectContaining({
+      from: 'mock-b',
+      to: 'mock-a',
+    }));
+    expect(dashboard.breakerTransitions[0]).toEqual(expect.objectContaining({
+      provider: 'mock-b',
+      from: 'closed',
+      to: 'open',
+    }));
+    expect(dashboard.margins[0]).toEqual(expect.objectContaining({
+      provider: 'mock-a',
+      estimatedFeePercent: 1.8,
+    }));
   });
 });

@@ -7,7 +7,12 @@ import { PrismaService } from '../prisma/prisma.service';
 export class ApiKeysService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createKey(shopId: string, name: string): Promise<{ id: string; apiKey: string }> {
+  async createKey(merchantId: string, name: string, version = 1): Promise<{ id: string; apiKey: string }> {
+    const merchant = await this.prisma.merchant.findUnique({ where: { id: merchantId } });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+
     const raw = this.generateRawKey();
     const keyHash = this.hash(raw);
     const prefix = raw.slice(0, 8);
@@ -15,11 +20,12 @@ export class ApiKeysService {
 
     const record = await this.prisma.apiKey.create({
       data: {
-        shopId,
+        merchantId,
         name,
         keyHash,
         prefix,
         last4,
+        version,
       },
     });
 
@@ -29,7 +35,7 @@ export class ApiKeysService {
         actor: 'system',
         entityType: 'api_key',
         entityId: record.id,
-        metadata: JSON.stringify({ shopId, name }),
+        metadata: JSON.stringify({ merchantId, name }),
       },
     });
 
@@ -50,7 +56,8 @@ export class ApiKeysService {
       },
     });
 
-    const next = await this.createKey(existing.shopId, `${existing.name}-rotated`);
+    const nextVersion = existing.version + 1;
+    const next = await this.createKey(existing.merchantId, `${existing.name}-v${nextVersion}`, nextVersion);
 
     await this.prisma.auditLog.create({
       data: {
@@ -85,7 +92,7 @@ export class ApiKeysService {
         actor: 'system',
         entityType: 'api_key',
         entityId: keyId,
-        metadata: JSON.stringify({ shopId: existing.shopId }),
+        metadata: JSON.stringify({ merchantId: existing.merchantId }),
       },
     });
 

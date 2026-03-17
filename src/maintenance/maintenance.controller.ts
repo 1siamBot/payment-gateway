@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { IsBoolean } from 'class-validator';
+import { Authorize } from '../common/authz.decorator';
 import { MaintenanceService } from '../common/maintenance.service';
 
 class MaintenanceDto {
@@ -8,6 +9,7 @@ class MaintenanceDto {
 }
 
 @Controller('maintenance')
+@Authorize('admin')
 export class MaintenanceController {
   constructor(private readonly maintenance: MaintenanceService) {}
 

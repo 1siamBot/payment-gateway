@@ -1,4 +1,4 @@
-# Payment Gateway Backend
+# Payment Gateway Backend + Frontend Console
 
 NestJS + Prisma backend baseline for payment orchestration.
 
@@ -18,11 +18,128 @@ npm run start:dev
 npm test
 ```
 
+## Nuxt Frontend (ONE-25)
+
+A Nuxt 3 customer/admin operations app is available in [`frontend/`](./frontend) with:
+
+- Payment create flow (basic validation + idempotency key)
+- Merchant payment dashboard with filter + detail lookup
+- Customer search + customer payment history
+- Manual refund trigger for support workflows
+- Loading/error/empty states for each critical path
+
+### Frontend env
+
+```bash
+cp frontend/.env.example frontend/.env
+```
+
+Key variable:
+
+- `NUXT_PUBLIC_API_BASE_URL` (default: `http://localhost:3000`)
+
+### Run frontend locally
+
+```bash
+npm run frontend:install
+npm run frontend:dev
+```
+
+### Build frontend
+
+```bash
+npm run frontend:build
+```
+
+For combined backend + frontend build verification:
+
+```bash
+npm run build:all
+```
+
 ## Implemented scope
 
 - Prisma data model for tenants, shops, users/roles, wallets, transactions, providers, commissions, settlements, audit logs, api keys, idempotency keys, callback events
 - Payment API: initiate deposit/withdraw, inquiry, provider callback handling
 - Provider abstraction with two connectors and health-aware fallback
+- Smart routing policy engine with deterministic scoring, tie-breakers, feature-gated rollout, dry-run shadow mode, and circuit breaker failover
 - Idempotency for payment initiation and callback event handling
 - API key create/rotate/revoke with audit logs
+- RBAC/authz guards on sensitive API surfaces (maintenance, api keys, merchants, webhook retries, payment ops)
 - Baseline controls: throttling, maintenance mode toggle, encrypted secret utility
+- Built-in frontend console served at `/` for payment creation, list/filter, detail lookup, and refund trigger
+
+## Authn/Authz headers
+
+Sensitive endpoints now require explicit authentication:
+
+- Merchant scope:
+  - `x-api-key`: active merchant API key (hashed and matched in DB)
+  - `x-merchant-id`: merchant id bound to that key
+- Internal roles:
+  - `x-internal-token`: must match `INTERNAL_API_TOKEN`
+  - `x-actor-role`: one of `admin`, `ops`, `support`
+
+Role expectations:
+
+- `maintenance/*`: `admin`
+- `api-keys/*`, `merchants/*`, `webhooks/retry-pending`: `admin` or `ops`
+- `payments/*` and `customers/*`: merchant or internal roles
+- `payments/:reference/refund`: `support`, `ops`, `admin`
+- `payments/callbacks/provider`: callback signature-based validation (public callback ingress)
+
+## Smart Routing Flags
+
+- `ROUTING_POLICY_ENABLED`: enable policy-based routing (`true`/`false`)
+- `ROUTING_POLICY_SHADOW_MODE`: evaluate policy but execute legacy order for dry runs
+- `ROUTING_POLICY_ROLLOUT_PERCENT`: staged rollout gate (0-100, deterministic by reference)
+- `ROUTING_LEGACY_FALLBACK_ENABLED`: if policy path exhausts candidates, allow legacy rollback path
+- `ROUTING_CB_FAILURE_THRESHOLD`: consecutive failures before opening provider circuit
+- `ROUTING_CB_COOLDOWN_MS`: cooldown before half-open probe
+- `ROUTING_WEIGHT_SUCCESS|LATENCY|FEE|RISK`: policy score weights
+- `ROUTING_MOCK_A_*`, `ROUTING_MOCK_B_*`: per-provider profile inputs (`SUCCESS_RATE`, `LATENCY_MS`, `FEE_PERCENT`, `RISK_SCORE`)
+
+## Routing Telemetry Feed API
+
+Frontend/dashboard can read the authoritative routing telemetry for each payment:
+
+- `GET /payments/:reference/routing-telemetry`
+- `GET /payments/observability?merchantId=...&timeframeHours=24&provider=&segment=&take=250`
+
+Response shape (high level):
+
+- `decision`: selected provider + `reasonCode`, score cards (with `circuitState`), `failovers`, and `marginKpi`
+- `failover.events`: ordered failover attempts with failed provider + count
+- `breaker.transitions`: circuit breaker state changes (`from`/`to`) when captured during routing
+- `events`: raw ordered routing event stream (`routing.decision`, `routing.failover`, `routing.breaker.transition`, etc.)
+- observability dashboard: aggregated `decisions`, `failovers`, `breakerTransitions`, `margins`, and alert summaries derived from backend routing telemetry records
+
+## QA Handoff Package (ONE-38)
+
+Release baseline and execution package for QA rerun:
+
+- Baseline repo: `https://github.com/1siamBot/payment-gateway`
+- API base URL (local/staging equivalent): `http://localhost:3000`
+- Seeded merchant id: `merchant_demo`
+- Seeded API key (local seed): `pk_demo_live_key_for_local_seed_only`
+- Internal role token (set in env): `INTERNAL_API_TOKEN`
+- Callback signing method:
+  - payload format: `provider:eventId:transactionReference:status`
+  - algorithm: `HMAC-SHA256`
+  - secret env: `CALLBACK_SIGNING_SECRET`
+- Load profile for AC2:
+  - target endpoint: `POST /payments`
+  - concurrency: `50`
+  - duration: `5m`
+  - request timeout: `10s`
+  - pass threshold: p95 latency `< 750ms`, non-2xx error rate `< 1%`
+  - sample command:
+
+```bash
+npx autocannon -m POST -c 50 -d 300 -t 10 \
+  -H "content-type: application/json" \
+  -H "x-api-key: pk_demo_live_key_for_local_seed_only" \
+  -H "x-merchant-id: merchant_demo" \
+  -b '{"merchantId":"merchant_demo","amount":100,"currency":"USD","type":"deposit","idempotencyKey":"load-test-1"}' \
+  http://localhost:3000/payments
+```

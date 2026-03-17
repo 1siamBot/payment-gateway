@@ -1,8 +1,32 @@
-import { IsIn, IsNumber, IsPositive, IsString, Length } from 'class-validator';
+import {
+  IsEmail,
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Length,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+class CustomerPayloadDto {
+  @IsOptional()
+  @IsString()
+  externalId?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+}
 
 export class CreatePaymentDto {
   @IsString()
-  shopId!: string;
+  merchantId!: string;
 
   @IsNumber()
   @IsPositive()
@@ -17,4 +41,9 @@ export class CreatePaymentDto {
 
   @IsString()
   idempotencyKey!: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CustomerPayloadDto)
+  customer?: CustomerPayloadDto;
 }

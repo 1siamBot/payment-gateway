@@ -3,3 +3,8 @@ node_modules
 dist
 coverage
 .prisma
+frontend/node_modules
+frontend/.nuxt
+frontend/.output
+prisma/*.db
+prisma/*.db-journal
