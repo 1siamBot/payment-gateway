@@ -99,13 +99,82 @@ export type ExceptionBulkConfirmation = {
   canConfirm: boolean;
 };
 
+export type ExceptionDiffField = 'amount' | 'status' | 'updatedAt' | 'version';
+export type ExceptionConflictReason = 'stale_version' | 'malformed' | 'high_delta' | 'mixed_status';
+export type ExceptionConflictDrilldownKey = 'all' | ExceptionConflictReason;
+
+export type ExceptionDiffDelta = {
+  field: ExceptionDiffField;
+  current: string | number;
+  incoming: string | number;
+  changed: boolean;
+};
+
+export type ExceptionDiffInspectorRow = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  deltas: ExceptionDiffDelta[];
+  reasons: ExceptionConflictReason[];
+};
+
+export type ExceptionBulkDiffInspector = {
+  rows: ExceptionDiffInspectorRow[];
+  reasonCounts: Record<ExceptionConflictReason, number>;
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
   provider: string;
   status: ExceptionStatus;
   mismatchCount: number;
+  version: number;
+  updatedAt: string;
+  amount: number;
+  incomingAmount: number;
+  incomingStatus: ExceptionStatus;
+  incomingUpdatedAt: string;
+  incomingVersion: number;
 };
+
+const DIFF_FIELD_ORDER: ExceptionDiffField[] = ['amount', 'status', 'updatedAt', 'version'];
+const CONFLICT_REASON_ORDER: ExceptionConflictReason[] = ['stale_version', 'malformed', 'high_delta', 'mixed_status'];
+const DIFF_FALLBACK_TIMESTAMP = '2026-03-18T00:00:00.000Z';
+
+function parseFiniteNumber(input: unknown): number | null {
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    return input;
+  }
+  if (typeof input === 'string' && input.trim().length > 0) {
+    const parsed = Number(input);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function resolveDateString(input: unknown, fallback: string): string {
+  if (typeof input !== 'string' || input.trim().length === 0) {
+    return fallback;
+  }
+  const parsed = new Date(input);
+  if (!Number.isFinite(parsed.getTime())) {
+    return fallback;
+  }
+  return parsed.toISOString();
+}
+
+function resolveIncomingStatus(status: ExceptionStatus, mismatchCount: number): ExceptionStatus {
+  if (status === 'open') {
+    return mismatchCount > 0 ? 'investigating' : 'open';
+  }
+  if (status === 'investigating') {
+    return mismatchCount > 0 ? 'investigating' : 'resolved';
+  }
+  return status;
+}
 
 function parseExceptionBulkPreviewRow(raw: unknown): ExceptionBulkPreviewRow | null {
   if (!raw || typeof raw !== 'object') {
@@ -117,6 +186,31 @@ function parseExceptionBulkPreviewRow(raw: unknown): ExceptionBulkPreviewRow | n
   const provider = normalizeOptional(typeof row.provider === 'string' ? row.provider : String(row.provider ?? ''));
   const status = normalizeExceptionStatus(row.status);
   const mismatchCount = Number(row.mismatchCount);
+  const summary = (row.summary && typeof row.summary === 'object')
+    ? row.summary as Record<string, unknown>
+    : null;
+  const versionRaw = parseFiniteNumber(row.version ?? row.currentVersion);
+  const version = versionRaw !== null ? Math.max(1, Math.trunc(versionRaw)) : 1;
+  const updatedAt = resolveDateString(row.updatedAt, DIFF_FALLBACK_TIMESTAMP);
+  const amountRaw = parseFiniteNumber(row.currentAmount ?? row.amount ?? row.ledgerAmount ?? summary?.ledgerAmount);
+  const amount = amountRaw !== null ? amountRaw : (100 + (mismatchCount * 50));
+  const incomingAmountRaw = parseFiniteNumber(
+    row.incomingAmount ?? row.providerAmount ?? summary?.providerAmount ?? row.nextAmount,
+  );
+  const incomingAmount = incomingAmountRaw !== null
+    ? incomingAmountRaw
+    : amount + (mismatchCount * 35);
+  const incomingStatusRaw = typeof row.incomingStatus === 'string'
+    ? normalizeExceptionStatus(row.incomingStatus)
+    : resolveIncomingStatus(status, Math.max(0, mismatchCount));
+  const incomingVersionRaw = parseFiniteNumber(row.incomingVersion ?? row.nextVersion);
+  const incomingVersion = incomingVersionRaw !== null
+    ? Math.max(1, Math.trunc(incomingVersionRaw))
+    : (mismatchCount >= 3 ? Math.max(1, version - 1) : version);
+  const incomingUpdatedAt = resolveDateString(
+    row.incomingUpdatedAt ?? row.nextUpdatedAt,
+    incomingVersion < version ? '2026-03-17T23:59:00.000Z' : updatedAt,
+  );
 
   if (!id || !merchantId || !provider) {
     return null;
@@ -131,6 +225,13 @@ function parseExceptionBulkPreviewRow(raw: unknown): ExceptionBulkPreviewRow | n
     provider,
     status,
     mismatchCount,
+    version,
+    updatedAt,
+    amount,
+    incomingAmount,
+    incomingStatus: incomingStatusRaw,
+    incomingUpdatedAt,
+    incomingVersion,
   };
 }
 
@@ -271,6 +372,114 @@ export function buildExceptionBulkConfirmation(input: {
     rollbackHint,
     canConfirm,
   };
+}
+
+function normalizeReasons(reasons: ExceptionConflictReason[]): ExceptionConflictReason[] {
+  const reasonSet = new Set<ExceptionConflictReason>(reasons);
+  return CONFLICT_REASON_ORDER.filter((reason) => reasonSet.has(reason));
+}
+
+export function buildExceptionBulkDiffInspector(selectedRows: unknown[]): ExceptionBulkDiffInspector {
+  const reasonCounts: Record<ExceptionConflictReason, number> = {
+    stale_version: 0,
+    malformed: 0,
+    high_delta: 0,
+    mixed_status: 0,
+  };
+
+  const rows = selectedRows.map((raw, index) => {
+    const parsed = parseExceptionBulkPreviewRow(raw);
+    if (!parsed) {
+      const reasons = normalizeReasons(['malformed']);
+      return {
+        sortKey: `~malformed-${String(index + 1).padStart(4, '0')}`,
+        originalIndex: index,
+        row: {
+          id: `malformed-${index + 1}`,
+          merchantId: '-',
+          provider: '-',
+          deltas: DIFF_FIELD_ORDER.map((field) => ({
+            field,
+            current: 'n/a',
+            incoming: 'n/a',
+            changed: false,
+          })),
+          reasons,
+        } satisfies ExceptionDiffInspectorRow,
+      };
+    }
+
+    const deltas: ExceptionDiffDelta[] = [
+      { field: 'amount', current: parsed.amount, incoming: parsed.incomingAmount, changed: parsed.amount !== parsed.incomingAmount },
+      { field: 'status', current: parsed.status, incoming: parsed.incomingStatus, changed: parsed.status !== parsed.incomingStatus },
+      { field: 'updatedAt', current: parsed.updatedAt, incoming: parsed.incomingUpdatedAt, changed: parsed.updatedAt !== parsed.incomingUpdatedAt },
+      { field: 'version', current: parsed.version, incoming: parsed.incomingVersion, changed: parsed.version !== parsed.incomingVersion },
+    ];
+
+    const reasons: ExceptionConflictReason[] = [];
+    if (parsed.incomingVersion < parsed.version) {
+      reasons.push('stale_version');
+    }
+    if (Math.abs(parsed.incomingAmount - parsed.amount) >= 100) {
+      reasons.push('high_delta');
+    }
+    if (parsed.incomingStatus !== parsed.status) {
+      reasons.push('mixed_status');
+    }
+
+    return {
+      sortKey: parsed.id,
+      originalIndex: index,
+      row: {
+        id: parsed.id,
+        merchantId: parsed.merchantId,
+        provider: parsed.provider,
+        deltas,
+        reasons: normalizeReasons(reasons),
+      } satisfies ExceptionDiffInspectorRow,
+    };
+  }).sort((a, b) => a.sortKey.localeCompare(b.sortKey) || (a.originalIndex - b.originalIndex));
+
+  for (const item of rows) {
+    for (const reason of item.row.reasons) {
+      reasonCounts[reason] += 1;
+    }
+  }
+
+  return {
+    rows: rows.map((item) => item.row),
+    reasonCounts,
+  };
+}
+
+export function filterExceptionDiffInspectorRows(
+  rows: ExceptionDiffInspectorRow[],
+  drilldown: ExceptionConflictDrilldownKey,
+): ExceptionDiffInspectorRow[] {
+  if (drilldown === 'all') {
+    return rows;
+  }
+  return rows.filter((row) => row.reasons.includes(drilldown));
+}
+
+export function resolveExceptionDiffInspectorEmptyState(input: {
+  activeReason: ExceptionConflictDrilldownKey;
+  totalRows: number;
+  filteredRows: number;
+}): { title: string; message: string } | null {
+  if (input.totalRows === 0) {
+    return {
+      title: 'No diff rows selected',
+      message: 'Select exception rows first, then use safe reset to recover quickly if selection becomes stale.',
+    };
+  }
+  if (input.filteredRows === 0 && input.activeReason !== 'all') {
+    return {
+      title: 'No rows in this drilldown',
+      message: `No rows match "${input.activeReason}". Switch drilldown or use safe reset to return to confirmation state.`,
+    };
+  }
+  return null;
 }
 
 export type ExceptionQueryState = {

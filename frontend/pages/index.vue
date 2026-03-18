@@ -4,6 +4,7 @@ import {
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   applyRefundStatus,
+  buildExceptionBulkDiffInspector,
   buildExceptionQueryFromSavedView,
   buildExceptionActionIdempotencyKey,
   buildExceptionBulkConfirmation,
@@ -25,11 +26,14 @@ import {
   prependExceptionAudit,
   renameExceptionSavedView,
   resolveActiveExceptionPreset,
+  resolveExceptionDiffInspectorEmptyState,
   restoreExceptionSavedViewState,
   serializeExceptionSavedViewState,
   serializeExceptionQueryState,
+  filterExceptionDiffInspectorRows,
   validateExceptionActionInput,
 } from '../utils/wave1';
+import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -340,6 +344,24 @@ const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
 }));
 const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) => selectedExceptionIds.value.includes(row.id)));
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
+const bulkDiffInspector = computed(() => buildExceptionBulkDiffInspector(selectedExceptionRows.value));
+const activeConflictDrilldown = ref<ExceptionConflictDrilldownKey>('all');
+const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; label: string }> = [
+  { key: 'all', label: 'all' },
+  { key: 'stale_version', label: 'stale_version' },
+  { key: 'malformed', label: 'malformed' },
+  { key: 'high_delta', label: 'high_delta' },
+  { key: 'mixed_status', label: 'mixed_status' },
+];
+const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
+  bulkDiffInspector.value.rows,
+  activeConflictDrilldown.value,
+));
+const bulkDiffEmptyState = computed(() => resolveExceptionDiffInspectorEmptyState({
+  activeReason: activeConflictDrilldown.value,
+  totalRows: bulkDiffInspector.value.rows.length,
+  filteredRows: filteredBulkDiffRows.value.length,
+}));
 const bulkConfirmation = computed(() => buildExceptionBulkConfirmation({
   action: bulkPreviewDrawer.action,
   preview: bulkExceptionPreview.value,
@@ -1086,6 +1108,7 @@ function closeBulkPreviewDrawer() {
 function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
+  activeConflictDrilldown.value = 'all';
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
@@ -2211,6 +2234,50 @@ onMounted(() => {
             </p>
           </div>
           <div>
+            <h4>Diff Inspector</h4>
+            <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
+            <div class="chip-row">
+              <button
+                v-for="option in conflictDrilldownOptions"
+                :key="option.key"
+                type="button"
+                class="preset-chip"
+                :class="{ active: activeConflictDrilldown === option.key }"
+                @click="activeConflictDrilldown = option.key"
+              >
+                {{ option.label }}
+                ({{ option.key === 'all'
+                  ? bulkDiffInspector.rows.length
+                  : bulkDiffInspector.reasonCounts[option.key] }})
+              </button>
+            </div>
+            <p v-if="bulkDiffEmptyState" class="state error">
+              <strong>{{ bulkDiffEmptyState.title }}:</strong> {{ bulkDiffEmptyState.message }}
+            </p>
+            <div v-else class="bulk-diff-table-wrap">
+              <table class="bulk-diff-table">
+                <thead>
+                  <tr>
+                    <th>Row</th>
+                    <th>Reasons</th>
+                    <th>amount</th>
+                    <th>status</th>
+                    <th>updatedAt</th>
+                    <th>version</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in filteredBulkDiffRows" :key="row.id">
+                    <td>{{ row.id }}<small>{{ row.merchantId }} / {{ row.provider }}</small></td>
+                    <td>{{ row.reasons.length ? row.reasons.join(', ') : 'none' }}</td>
+                    <td v-for="delta in row.deltas" :key="`${row.id}-${delta.field}`">
+                      <strong>{{ delta.current }}</strong>
+                      <small>&rarr; {{ delta.incoming }}</small>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <h4>Deterministic CSV Export Preview</h4>
             <pre class="code-preview">{{ bulkExceptionPreview.csvPreview }}</pre>
             <h4>Deterministic JSON Export Preview</h4>

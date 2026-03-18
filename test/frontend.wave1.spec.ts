@@ -5,6 +5,7 @@ import {
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
+  buildExceptionBulkDiffInspector,
   buildExceptionBulkConfirmation,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
@@ -23,7 +24,9 @@ import {
   normalizeOptional,
   prependExceptionAudit,
   resolveActiveExceptionPreset,
+  resolveExceptionDiffInspectorEmptyState,
   serializeExceptionQueryState,
+  filterExceptionDiffInspectorRows,
   validateExceptionActionInput,
 } from '../frontend/utils/wave1';
 
@@ -328,6 +331,103 @@ describe('frontend wave1 helpers', () => {
     expect(noSelectionFallback.hasFallback).toBe(true);
     expect(noSelectionFallback.fallbackTitle).toBe('No rows selected');
     expect(noSelectionFallback.fallbackMessage).toContain('safe reset');
+  });
+
+  it('builds deterministic diff inspector row order and field order', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-2',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        status: 'investigating',
+        version: 2,
+        updatedAt: '2026-03-18T09:00:00.000Z',
+        currentAmount: 120,
+        incomingAmount: 300,
+        incomingStatus: 'resolved',
+        incomingVersion: 2,
+        incomingUpdatedAt: '2026-03-18T09:05:00.000Z',
+        mismatchCount: 2,
+      },
+      {
+        id: 'exc-1',
+        merchantId: 'm-1',
+        provider: 'mock-b',
+        status: 'open',
+        version: 3,
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        currentAmount: 500,
+        incomingAmount: 360,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        incomingUpdatedAt: '2026-03-18T07:55:00.000Z',
+        mismatchCount: 4,
+      },
+    ]);
+
+    expect(inspector.rows.map((row) => row.id)).toEqual(['exc-1', 'exc-2']);
+    expect(inspector.rows[0].deltas.map((delta) => delta.field)).toEqual(['amount', 'status', 'updatedAt', 'version']);
+  });
+
+  it('computes stable drilldown counts and filtering for conflict reasons', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 4,
+      },
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'investigating',
+        version: 1,
+        currentAmount: 100,
+        incomingAmount: 105,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 1,
+      },
+      {
+        id: '',
+        merchantId: 'broken',
+        provider: 'mock-z',
+        status: 'open',
+        mismatchCount: 2,
+      },
+    ]);
+
+    expect(inspector.reasonCounts.stale_version).toBe(1);
+    expect(inspector.reasonCounts.high_delta).toBe(1);
+    expect(inspector.reasonCounts.mixed_status).toBe(1);
+    expect(inspector.reasonCounts.malformed).toBe(1);
+    expect(filterExceptionDiffInspectorRows(inspector.rows, 'high_delta').map((row) => row.id)).toEqual(['exc-a']);
+    expect(filterExceptionDiffInspectorRows(inspector.rows, 'malformed').map((row) => row.id)).toEqual(['malformed-3']);
+  });
+
+  it('returns explicit empty drilldown fallback copy for safe reset path', () => {
+    const globalEmpty = resolveExceptionDiffInspectorEmptyState({
+      activeReason: 'all',
+      totalRows: 0,
+      filteredRows: 0,
+    });
+    expect(globalEmpty?.title).toBe('No diff rows selected');
+    expect(globalEmpty?.message).toContain('safe reset');
+
+    const drilldownEmpty = resolveExceptionDiffInspectorEmptyState({
+      activeReason: 'stale_version',
+      totalRows: 2,
+      filteredRows: 0,
+    });
+    expect(drilldownEmpty?.title).toBe('No rows in this drilldown');
+    expect(drilldownEmpty?.message).toContain('stale_version');
   });
 
   it('creates, renames, pins, applies, and deletes saved triage views deterministically', () => {
