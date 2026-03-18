@@ -123,6 +123,24 @@ export type ExceptionBulkDiffInspector = {
   reasonCounts: Record<ExceptionConflictReason, number>;
 };
 
+export type ExceptionReasonQuickAction = {
+  reason: ExceptionConflictReason;
+  label: string;
+  shortcut: string;
+  count: number;
+  compareRowIds: string[];
+  disabled: boolean;
+  ariaLabel: string;
+};
+
+export type ExceptionCompareDrawerModel = {
+  rowIds: string[];
+  rows: ExceptionDiffInspectorRow[];
+  fieldOrder: ExceptionDiffField[];
+  isReady: boolean;
+  message: string;
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -141,6 +159,12 @@ type ExceptionBulkPreviewRow = {
 const DIFF_FIELD_ORDER: ExceptionDiffField[] = ['amount', 'status', 'updatedAt', 'version'];
 const CONFLICT_REASON_ORDER: ExceptionConflictReason[] = ['stale_version', 'malformed', 'high_delta', 'mixed_status'];
 const DIFF_FALLBACK_TIMESTAMP = '2026-03-18T00:00:00.000Z';
+const CONFLICT_REASON_SHORTCUTS: Record<ExceptionConflictReason, string> = {
+  stale_version: '1',
+  malformed: '2',
+  high_delta: '3',
+  mixed_status: '4',
+};
 
 function parseFiniteNumber(input: unknown): number | null {
   if (typeof input === 'number' && Number.isFinite(input)) {
@@ -460,6 +484,64 @@ export function filterExceptionDiffInspectorRows(
     return rows;
   }
   return rows.filter((row) => row.reasons.includes(drilldown));
+}
+
+function pickDeterministicCompareRowIds(rows: ExceptionDiffInspectorRow[], selectedRowIds: string[]): string[] {
+  const selected = new Set(selectedRowIds);
+  const ordered: string[] = [];
+  for (const row of rows) {
+    if (selected.has(row.id) && !ordered.includes(row.id)) {
+      ordered.push(row.id);
+    }
+  }
+  return ordered.slice(0, 2);
+}
+
+export function buildExceptionCompareDrawerModel(input: {
+  rows: ExceptionDiffInspectorRow[];
+  selectedRowIds: string[];
+}): ExceptionCompareDrawerModel {
+  const rowIds = pickDeterministicCompareRowIds(input.rows, input.selectedRowIds);
+  const rows = rowIds
+    .map((rowId) => input.rows.find((row) => row.id === rowId))
+    .filter((row): row is ExceptionDiffInspectorRow => Boolean(row));
+  const isReady = rows.length === 2;
+
+  return {
+    rowIds,
+    rows,
+    fieldOrder: [...DIFF_FIELD_ORDER],
+    isReady,
+    message: isReady
+      ? `Comparing ${rows[0].id} and ${rows[1].id}.`
+      : 'Select exactly two inspector rows to open side-by-side compare.',
+  };
+}
+
+export function buildExceptionReasonQuickActions(rows: ExceptionDiffInspectorRow[]): ExceptionReasonQuickAction[] {
+  return CONFLICT_REASON_ORDER.map((reason) => {
+    const matchingRows = rows.filter((row) => row.reasons.includes(reason));
+    const compareRowIds = matchingRows.slice(0, 2).map((row) => row.id);
+    const shortcut = CONFLICT_REASON_SHORTCUTS[reason];
+    return {
+      reason,
+      label: `${reason} quick compare`,
+      shortcut,
+      count: matchingRows.length,
+      compareRowIds,
+      disabled: matchingRows.length === 0,
+      ariaLabel: `Quick action ${reason}. Alt+${shortcut}. ${matchingRows.length} row(s) available.`,
+    };
+  });
+}
+
+export function resetExceptionCompareState(input: {
+  selectedExceptionIds: string[];
+}): { selectedExceptionIds: string[]; compareRowIds: string[] } {
+  return {
+    selectedExceptionIds: [...input.selectedExceptionIds],
+    compareRowIds: [],
+  };
 }
 
 export function resolveExceptionConflictShortcutDrilldown(key: string): ExceptionConflictDrilldownKey | null {

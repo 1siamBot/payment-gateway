@@ -334,6 +334,24 @@ button.danger {
   margin: 0.45rem 0;
 }
 
+.quick-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.45rem 0 0.55rem;
+}
+
+.quick-action-btn {
+  width: auto;
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.quick-action-btn:disabled {
+  opacity: 0.55;
+}
+
 .bulk-diff-table-wrap {
   border: 1px solid #bfdbfe;
   border-radius: 8px;
@@ -357,6 +375,19 @@ button.danger {
 
 .bulk-diff-row-active {
   background: #dbeafe;
+}
+
+.compare-drawer {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #f8fbff;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.65rem;
+}
+
+.compare-table th,
+.compare-table td {
+  font-size: 0.82rem;
 }
 
 .focus-indicator {

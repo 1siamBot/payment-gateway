@@ -5,7 +5,9 @@ import {
   applyExceptionActionOptimistic,
   applyRefundStatus,
   buildExceptionBulkDiffInspector,
+  buildExceptionCompareDrawerModel,
   buildExceptionQueryFromSavedView,
+  buildExceptionReasonQuickActions,
   buildExceptionActionIdempotencyKey,
   buildExceptionBulkConfirmation,
   buildExceptionBulkPreview,
@@ -25,6 +27,7 @@ import {
   normalizeOptional,
   prependExceptionAudit,
   renameExceptionSavedView,
+  resetExceptionCompareState,
   resolveActiveExceptionPreset,
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
@@ -35,7 +38,7 @@ import {
   moveExceptionDiffInspectorFocus,
   validateExceptionActionInput,
 } from '../utils/wave1';
-import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
+import type { ExceptionConflictDrilldownKey, ExceptionConflictReason } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -356,10 +359,17 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
   { key: 'mixed_status', label: 'mixed_status' },
 ];
 const activeBulkDiffRowId = ref('');
+const compareDrawerOpen = ref(false);
+const compareRowIds = ref<string[]>([]);
 const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
   bulkDiffInspector.value.rows,
   activeConflictDrilldown.value,
 ));
+const reasonQuickActions = computed(() => buildExceptionReasonQuickActions(bulkDiffInspector.value.rows));
+const compareDrawerModel = computed(() => buildExceptionCompareDrawerModel({
+  rows: bulkDiffInspector.value.rows,
+  selectedRowIds: compareRowIds.value,
+}));
 const bulkDiffEmptyState = computed(() => resolveExceptionDiffInspectorEmptyState({
   activeReason: activeConflictDrilldown.value,
   totalRows: bulkDiffInspector.value.rows.length,
@@ -1071,6 +1081,16 @@ watch(filteredBulkDiffRows, (rows) => {
   }
 }, { immediate: true });
 
+watch(() => bulkDiffInspector.value.rows, (rows) => {
+  compareRowIds.value = buildExceptionCompareDrawerModel({
+    rows,
+    selectedRowIds: compareRowIds.value,
+  }).rowIds;
+  if (compareRowIds.value.length < 2) {
+    compareDrawerOpen.value = false;
+  }
+}, { immediate: true });
+
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
   activeConflictDrilldown.value = key;
   const nextRows = filterExceptionDiffInspectorRows(bulkDiffInspector.value.rows, key);
@@ -1081,11 +1101,62 @@ function setActiveBulkDiffRow(rowId: string) {
   activeBulkDiffRowId.value = rowId;
 }
 
+function setCompareRowSelection(rowId: string, checked: boolean) {
+  const nextIds = checked
+    ? [...compareRowIds.value, rowId]
+    : compareRowIds.value.filter((id) => id !== rowId);
+  compareRowIds.value = buildExceptionCompareDrawerModel({
+    rows: bulkDiffInspector.value.rows,
+    selectedRowIds: nextIds,
+  }).rowIds;
+  if (compareRowIds.value.length < 2) {
+    compareDrawerOpen.value = false;
+  }
+}
+
+function onToggleCompareRowSelection(rowId: string, event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  setCompareRowSelection(rowId, Boolean(target?.checked));
+}
+
+function openCompareDrawer() {
+  if (!compareDrawerModel.value.isReady) {
+    bulkPreviewConfirmState.error = compareDrawerModel.value.message;
+    return;
+  }
+  bulkPreviewConfirmState.error = '';
+  compareDrawerOpen.value = true;
+}
+
+function resetCompareStateSafe() {
+  const compareReset = resetExceptionCompareState({
+    selectedExceptionIds: selectedExceptionIds.value,
+  });
+  compareRowIds.value = compareReset.compareRowIds;
+  compareDrawerOpen.value = false;
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = 'Compare state safely reset. Selected rows are preserved.';
+}
+
+function applyReasonQuickAction(reason: ExceptionConflictReason) {
+  const action = reasonQuickActions.value.find((entry) => entry.reason === reason);
+  if (!action || action.disabled) {
+    return;
+  }
+  setActiveConflictDrilldown(reason);
+  compareRowIds.value = [...action.compareRowIds];
+  compareDrawerOpen.value = action.compareRowIds.length === 2;
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = `Quick action applied for ${reason}.`;
+}
+
 function resetBulkInspectorViewState() {
   activeConflictDrilldown.value = 'all';
   activeBulkDiffRowId.value = filteredBulkDiffRows.value[0]?.id ?? '';
+  compareDrawerOpen.value = false;
+  compareRowIds.value = [];
   bulkPreviewConfirmState.error = '';
-  bulkPreviewConfirmState.message = 'Inspector view reset. Bulk selection is preserved.';
+  bulkPreviewConfirmState.message = 'Inspector and compare view reset. Bulk selection is preserved.';
 }
 
 function onBulkDiffKeydown(event: KeyboardEvent) {
@@ -1094,6 +1165,11 @@ function onBulkDiffKeydown(event: KeyboardEvent) {
     return;
   }
   const shortcutReason = resolveExceptionConflictShortcutDrilldown(event.key);
+  if (shortcutReason && event.altKey && shortcutReason !== 'all') {
+    event.preventDefault();
+    applyReasonQuickAction(shortcutReason);
+    return;
+  }
   if (shortcutReason) {
     event.preventDefault();
     setActiveConflictDrilldown(shortcutReason);
@@ -2304,12 +2380,25 @@ onMounted(() => {
           <div>
             <h4>Diff Inspector</h4>
             <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
-            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Esc</code> to reset view.</p>
+            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Alt+1..4</code> for reason quick actions, <code>Esc</code> to reset view.</p>
             <div class="sticky-anomaly-bar" role="status" aria-live="polite">
               <span>stale_version {{ bulkDiffInspector.reasonCounts.stale_version }}</span>
               <span>malformed {{ bulkDiffInspector.reasonCounts.malformed }}</span>
               <span>high_delta {{ bulkDiffInspector.reasonCounts.high_delta }}</span>
               <span>mixed_status {{ bulkDiffInspector.reasonCounts.mixed_status }}</span>
+            </div>
+            <div class="quick-action-row">
+              <button
+                v-for="action in reasonQuickActions"
+                :key="action.reason"
+                type="button"
+                class="quick-action-btn"
+                :disabled="action.disabled"
+                :aria-label="action.ariaLabel"
+                @click="applyReasonQuickAction(action.reason)"
+              >
+                [{{ action.shortcut }}] {{ action.reason }} ({{ action.count }})
+              </button>
             </div>
             <div class="chip-row">
               <button
@@ -2332,6 +2421,20 @@ onMounted(() => {
               >
                 Reset Inspector View
               </button>
+              <button
+                type="button"
+                class="link"
+                @click="resetCompareStateSafe"
+              >
+                Safe Reset Compare
+              </button>
+              <button
+                type="button"
+                :disabled="!compareDrawerModel.isReady"
+                @click="openCompareDrawer"
+              >
+                Open Compare Drawer
+              </button>
             </div>
             <p v-if="bulkDiffEmptyState" class="state error">
               <strong>{{ bulkDiffEmptyState.title }}:</strong> {{ bulkDiffEmptyState.message }}
@@ -2340,6 +2443,7 @@ onMounted(() => {
               <table class="bulk-diff-table">
                 <thead>
                   <tr>
+                    <th>Compare</th>
                     <th>Row</th>
                     <th>Reasons</th>
                     <th>amount</th>
@@ -2356,6 +2460,14 @@ onMounted(() => {
                     @click="setActiveBulkDiffRow(row.id)"
                   >
                     <td>
+                      <input
+                        type="checkbox"
+                        :checked="compareRowIds.includes(row.id)"
+                        :aria-label="`Add ${row.id} to compare drawer`"
+                        @change="onToggleCompareRowSelection(row.id, $event)"
+                      />
+                    </td>
+                    <td>
                       <span class="focus-indicator" :class="{ active: activeBulkDiffRowId === row.id }" aria-hidden="true"></span>
                       {{ row.id }}
                       <small>{{ row.merchantId }} / {{ row.provider }}</small>
@@ -2369,6 +2481,35 @@ onMounted(() => {
                 </tbody>
               </table>
             </div>
+            <article v-if="compareDrawerOpen" class="compare-drawer" aria-live="polite">
+              <div class="drawer-header">
+                <div>
+                  <h4>Anomaly Compare Drawer</h4>
+                  <p class="state">{{ compareDrawerModel.message }}</p>
+                </div>
+                <button type="button" class="link" @click="compareDrawerOpen = false">Close</button>
+              </div>
+              <table v-if="compareDrawerModel.isReady" class="compare-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>{{ compareDrawerModel.rows[0]?.id }} current</th>
+                    <th>{{ compareDrawerModel.rows[0]?.id }} incoming</th>
+                    <th>{{ compareDrawerModel.rows[1]?.id }} current</th>
+                    <th>{{ compareDrawerModel.rows[1]?.id }} incoming</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="field in compareDrawerModel.fieldOrder" :key="field">
+                    <td>{{ field }}</td>
+                    <td>{{ compareDrawerModel.rows[0]?.deltas.find((delta) => delta.field === field)?.current }}</td>
+                    <td>{{ compareDrawerModel.rows[0]?.deltas.find((delta) => delta.field === field)?.incoming }}</td>
+                    <td>{{ compareDrawerModel.rows[1]?.deltas.find((delta) => delta.field === field)?.current }}</td>
+                    <td>{{ compareDrawerModel.rows[1]?.deltas.find((delta) => delta.field === field)?.incoming }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </article>
             <h4>Deterministic CSV Export Preview</h4>
             <pre class="code-preview">{{ bulkExceptionPreview.csvPreview }}</pre>
             <h4>Deterministic JSON Export Preview</h4>

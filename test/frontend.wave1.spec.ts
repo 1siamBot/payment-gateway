@@ -5,8 +5,10 @@ import {
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
+  buildExceptionCompareDrawerModel,
   buildExceptionBulkDiffInspector,
   buildExceptionBulkConfirmation,
+  buildExceptionReasonQuickActions,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
   createExceptionSavedView,
@@ -20,6 +22,7 @@ import {
   canRefundStatus,
   filterSettlementMerchants,
   parseExceptionQueryState,
+  resetExceptionCompareState,
   normalizeExceptionStatus,
   normalizeOptional,
   moveExceptionDiffInspectorFocus,
@@ -412,6 +415,99 @@ describe('frontend wave1 helpers', () => {
     expect(inspector.reasonCounts.malformed).toBe(1);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'high_delta').map((row) => row.id)).toEqual(['exc-a']);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'malformed').map((row) => row.id)).toEqual(['malformed-3']);
+  });
+
+  it('builds deterministic compare drawer ordering across selection order', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'open',
+        version: 2,
+        currentAmount: 300,
+        incomingAmount: 210,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 2,
+      },
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 450,
+        incomingStatus: 'open',
+        incomingVersion: 3,
+        mismatchCount: 1,
+      },
+    ]);
+
+    const compareA = buildExceptionCompareDrawerModel({
+      rows: inspector.rows,
+      selectedRowIds: ['exc-b', 'exc-a'],
+    });
+    const compareB = buildExceptionCompareDrawerModel({
+      rows: inspector.rows,
+      selectedRowIds: ['exc-a', 'exc-b'],
+    });
+
+    expect(compareA.rowIds).toEqual(['exc-a', 'exc-b']);
+    expect(compareB.rowIds).toEqual(['exc-a', 'exc-b']);
+    expect(compareA.fieldOrder).toEqual(['amount', 'status', 'updatedAt', 'version']);
+  });
+
+  it('maps reason quick actions with stable reason order and compare candidates', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 4,
+      },
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'investigating',
+        version: 1,
+        currentAmount: 100,
+        incomingAmount: 105,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 1,
+      },
+      {
+        id: '',
+        merchantId: 'broken',
+        provider: 'mock-z',
+        status: 'open',
+        mismatchCount: 2,
+      },
+    ]);
+    const actions = buildExceptionReasonQuickActions(inspector.rows);
+
+    expect(actions.map((item) => item.reason)).toEqual(['stale_version', 'malformed', 'high_delta', 'mixed_status']);
+    expect(actions.find((item) => item.reason === 'stale_version')?.compareRowIds).toEqual(['exc-a']);
+    expect(actions.find((item) => item.reason === 'malformed')?.compareRowIds).toEqual(['malformed-3']);
+    expect(actions.find((item) => item.reason === 'stale_version')?.shortcut).toBe('1');
+  });
+
+  it('resets compare state without mutating selected exception ids', () => {
+    const selectedExceptionIds = ['exc-1', 'exc-2', 'exc-3'];
+    const resetState = resetExceptionCompareState({ selectedExceptionIds });
+
+    expect(resetState.selectedExceptionIds).toEqual(selectedExceptionIds);
+    expect(resetState.compareRowIds).toEqual([]);
+    expect(resetState.selectedExceptionIds).not.toBe(selectedExceptionIds);
   });
 
   it('moves keyboard focus deterministically across filtered diff rows', () => {
