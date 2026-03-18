@@ -510,6 +510,22 @@ button.danger {
   margin-top: 0.65rem;
 }
 
+.deterministic-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.deterministic-filter-chips .preset-chip {
+  min-width: unset;
+}
+
+.preset-composer-drawer {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
 .note-clamped {
   margin: 0 0 0.25rem;
   display: -webkit-box;

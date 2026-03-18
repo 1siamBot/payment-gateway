@@ -10,8 +10,10 @@ import {
   buildExceptionBulkConfirmation,
   buildExceptionReasonQuickActions,
   buildExceptionReasonTimeline,
+  buildDeterministicExceptionPresetChips,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
+  createDefaultExceptionPresetComposerSlots,
   createExceptionSavedView,
   DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
   deleteExceptionSavedView,
@@ -23,6 +25,9 @@ import {
   canRefundStatus,
   filterSettlementMerchants,
   parseExceptionQueryState,
+  applyExceptionPresetComposerSlot,
+  overwriteExceptionPresetComposerSlot,
+  resetExceptionPresetComposerDraft,
   resetExceptionCompareState,
   resolveExceptionDecisionNoteShortcut,
   resolveExceptionDecisionNoteTemplate,
@@ -502,6 +507,72 @@ describe('frontend wave1 helpers', () => {
     expect(actions.find((item) => item.reason === 'stale_version')?.compareRowIds).toEqual(['exc-a']);
     expect(actions.find((item) => item.reason === 'malformed')?.compareRowIds).toEqual(['malformed-3']);
     expect(actions.find((item) => item.reason === 'stale_version')?.shortcut).toBe('1');
+  });
+
+  it('builds deterministic preset chips with stable reason ordering', () => {
+    const slots = createDefaultExceptionPresetComposerSlots('2026-03-19T02:30:00.000Z');
+    const updated = overwriteExceptionPresetComposerSlot({
+      slots,
+      slotId: 2,
+      draft: {
+        name: 'Critical Triage',
+        enabledReasons: ['mixed_status', 'stale_version', 'high_delta'],
+        severityWindow: 'critical_and_warning',
+      },
+      nowIso: '2026-03-19T02:31:00.000Z',
+    });
+    const slot = updated.find((item) => item.slotId === 2)!;
+    const chips = buildDeterministicExceptionPresetChips({
+      slot,
+      reasonCounts: {
+        stale_version: 3,
+        malformed: 4,
+        high_delta: 1,
+        mixed_status: 2,
+      },
+    });
+    expect(chips.map((chip) => chip.reason)).toEqual(['stale_version', 'high_delta', 'mixed_status']);
+    expect(chips.map((chip) => chip.label)).toEqual([
+      'Critical Triage: stale version',
+      'Critical Triage: high delta',
+      'Critical Triage: mixed status',
+    ]);
+  });
+
+  it('applies and overwrites preset slots deterministically', () => {
+    const defaults = createDefaultExceptionPresetComposerSlots('2026-03-19T03:00:00.000Z');
+    const overwritten = overwriteExceptionPresetComposerSlot({
+      slots: defaults,
+      slotId: 1,
+      draft: {
+        name: 'Critical Only',
+        enabledReasons: ['stale_version', 'malformed', 'high_delta'],
+        severityWindow: 'critical_only',
+      },
+      nowIso: '2026-03-19T03:01:00.000Z',
+    });
+    const applied = applyExceptionPresetComposerSlot({
+      slots: overwritten,
+      slotId: 1,
+      reasonCounts: {
+        stale_version: 2,
+        malformed: 1,
+        high_delta: 9,
+        mixed_status: 8,
+      },
+    });
+    expect(applied.activeSlotId).toBe(1);
+    expect(applied.chips.map((chip) => chip.reason)).toEqual(['stale_version', 'malformed']);
+    expect(overwritten[0].savedAt).toBe('2026-03-19T03:01:00.000Z');
+  });
+
+  it('resets preset composer draft without mutating previous applied chips', () => {
+    const cleared = resetExceptionPresetComposerDraft();
+    expect(cleared).toEqual({
+      name: '',
+      enabledReasons: [],
+      severityWindow: 'critical_and_warning',
+    });
   });
 
   it('resets compare state without mutating selected exception ids', () => {

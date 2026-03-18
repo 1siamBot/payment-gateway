@@ -133,6 +133,31 @@ export type ExceptionReasonQuickAction = {
   ariaLabel: string;
 };
 
+export type ExceptionPresetComposerSeverityWindow = 'critical_only' | 'critical_and_warning';
+
+export type ExceptionPresetComposerSlot = {
+  slotId: 1 | 2 | 3 | 4;
+  name: string;
+  enabledReasons: ExceptionConflictReason[];
+  severityWindow: ExceptionPresetComposerSeverityWindow;
+  savedAt: string;
+};
+
+export type ExceptionPresetComposerDraft = {
+  name: string;
+  enabledReasons: ExceptionConflictReason[];
+  severityWindow: ExceptionPresetComposerSeverityWindow;
+};
+
+export type ExceptionPresetChip = {
+  id: string;
+  slotId: 1 | 2 | 3 | 4;
+  reason: ExceptionConflictReason;
+  label: string;
+  count: number;
+  severity: ExceptionReasonSeverity;
+};
+
 export type ExceptionReasonSeverity = 'critical' | 'warning';
 export type ExceptionReasonTimelineSource = 'current_snapshot' | 'incoming_snapshot' | 'normalizer';
 
@@ -223,6 +248,25 @@ const DECISION_NOTE_TEMPLATE_MAP: Record<ExceptionConflictReason, ExceptionDecis
     body: 'Template[mixed_status]: Split mixed status rows into isolated batches to keep action deterministic.',
   },
 };
+const PRESET_SLOT_IDS: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
+
+function formatReasonLabel(reason: ExceptionConflictReason): string {
+  return reason.replace(/_/g, ' ');
+}
+
+function normalizePresetComposerReasons(reasons: ExceptionConflictReason[]): ExceptionConflictReason[] {
+  return normalizeReasons(reasons);
+}
+
+function passesSeverityWindow(
+  reason: ExceptionConflictReason,
+  severityWindow: ExceptionPresetComposerSeverityWindow,
+): boolean {
+  if (severityWindow === 'critical_and_warning') {
+    return true;
+  }
+  return CONFLICT_REASON_SEVERITY[reason] === 'critical';
+}
 
 function parseFiniteNumber(input: unknown): number | null {
   if (typeof input === 'number' && Number.isFinite(input)) {
@@ -591,6 +635,88 @@ export function buildExceptionReasonQuickActions(rows: ExceptionDiffInspectorRow
       ariaLabel: `Quick action ${reason}. Alt+${shortcut}. ${matchingRows.length} row(s) available.`,
     };
   });
+}
+
+export function createDefaultExceptionPresetComposerSlots(nowIso = '2026-03-19T00:00:00.000Z'): ExceptionPresetComposerSlot[] {
+  const base = new Date(nowIso);
+  const baseMs = Number.isFinite(base.getTime()) ? base.getTime() : new Date('2026-03-19T00:00:00.000Z').getTime();
+  return PRESET_SLOT_IDS.map((slotId) => {
+    const savedAt = new Date(baseMs - ((4 - slotId) * 60_000)).toISOString();
+    return {
+      slotId,
+      name: `Preset ${slotId}`,
+      enabledReasons: [...CONFLICT_REASON_ORDER],
+      severityWindow: 'critical_and_warning',
+      savedAt,
+    };
+  });
+}
+
+export function overwriteExceptionPresetComposerSlot(input: {
+  slots: ExceptionPresetComposerSlot[];
+  slotId: 1 | 2 | 3 | 4;
+  draft: ExceptionPresetComposerDraft;
+  nowIso?: string;
+}): ExceptionPresetComposerSlot[] {
+  const normalizedName = normalizeOptional(input.draft.name) ?? `Preset ${input.slotId}`;
+  const normalizedReasons = normalizePresetComposerReasons(input.draft.enabledReasons);
+  const savedAt = resolveDateString(input.nowIso, new Date().toISOString());
+  return input.slots.map((slot) => {
+    if (slot.slotId !== input.slotId) {
+      return slot;
+    }
+    return {
+      ...slot,
+      name: normalizedName,
+      enabledReasons: normalizedReasons,
+      severityWindow: input.draft.severityWindow,
+      savedAt,
+    };
+  });
+}
+
+export function buildDeterministicExceptionPresetChips(input: {
+  slot: ExceptionPresetComposerSlot;
+  reasonCounts: Record<ExceptionConflictReason, number>;
+}): ExceptionPresetChip[] {
+  const enabledSet = new Set(normalizePresetComposerReasons(input.slot.enabledReasons));
+  return CONFLICT_REASON_ORDER
+    .filter((reason) => enabledSet.has(reason))
+    .filter((reason) => passesSeverityWindow(reason, input.slot.severityWindow))
+    .filter((reason) => (input.reasonCounts[reason] ?? 0) > 0)
+    .map((reason) => ({
+      id: `slot-${input.slot.slotId}-${reason}`,
+      slotId: input.slot.slotId,
+      reason,
+      label: `${input.slot.name}: ${formatReasonLabel(reason)}`,
+      count: input.reasonCounts[reason] ?? 0,
+      severity: CONFLICT_REASON_SEVERITY[reason],
+    }));
+}
+
+export function applyExceptionPresetComposerSlot(input: {
+  slots: ExceptionPresetComposerSlot[];
+  slotId: 1 | 2 | 3 | 4;
+  reasonCounts: Record<ExceptionConflictReason, number>;
+}): { activeSlotId: 1 | 2 | 3 | 4; chips: ExceptionPresetChip[] } {
+  const slot = input.slots.find((candidate) => candidate.slotId === input.slotId)
+    ?? input.slots[0]
+    ?? createDefaultExceptionPresetComposerSlots()[0];
+  return {
+    activeSlotId: slot.slotId,
+    chips: buildDeterministicExceptionPresetChips({
+      slot,
+      reasonCounts: input.reasonCounts,
+    }),
+  };
+}
+
+export function resetExceptionPresetComposerDraft(): ExceptionPresetComposerDraft {
+  return {
+    name: '',
+    enabledReasons: [],
+    severityWindow: 'critical_and_warning',
+  };
 }
 
 export function resetExceptionCompareState(input: {

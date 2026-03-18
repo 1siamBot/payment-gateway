@@ -1,0 +1,50 @@
+
+> payment-gateway@0.1.0 test
+> jest --runInBand test/frontend.wave1.spec.ts
+
+PASS test/frontend.wave1.spec.ts
+  frontend wave1 helpers
+    ✓ allows refund only for PAID rows (1 ms)
+    ✓ updates row status to REFUNDED after refund action
+    ✓ filters settlement rows by merchant when merchant id is provided
+    ✓ validates settlement exception action reason input
+    ✓ normalizes optional filter inputs (1 ms)
+    ✓ applies optimistic status update for resolve/ignore actions
+    ✓ prepends latest exception audit event
+    ✓ classifies stale version conflicts as retryable
+    ✓ classifies canonical stale_version conflicts using machine fields (1 ms)
+    ✓ classifies transient action failures as retryable
+    ✓ classifies canonical idempotency_in_progress as transient
+    ✓ normalizes uppercase backend exception statuses
+    ✓ builds deterministic idempotency keys for same exception action payload
+    ✓ applies deterministic exception preset filters and marks active preset (1 ms)
+    ✓ serializes and restores exception query state from URL params
+    ✓ falls back to default query state for invalid or expired URL params
+    ✓ builds deterministic bulk preview status and risk counts (5 ms)
+    ✓ returns empty-selection fallback copy for bulk preview
+    ✓ adds malformed warning row to deterministic export preview
+    ✓ builds deterministic bulk confirmation summary for render state
+    ✓ emits deterministic rollback hint when malformed rows are in preview
+    ✓ returns explicit stale/no-selection fallback for safe reset UX
+    ✓ builds deterministic diff inspector row order and field order
+    ✓ computes stable drilldown counts and filtering for conflict reasons (2 ms)
+    ✓ builds deterministic compare drawer ordering across selection order
+    ✓ maps reason quick actions with stable reason order and compare candidates (1 ms)
+    ✓ builds deterministic preset chips with stable reason ordering
+    ✓ applies and overwrites preset slots deterministically
+    ✓ resets preset composer draft without mutating previous applied chips
+    ✓ resets compare state without mutating selected exception ids
+    ✓ builds deterministic reason timeline ordering for selected anomaly row (1 ms)
+    ✓ maps note templates and shortcuts to deterministic reason buckets
+    ✓ moves keyboard focus deterministically across filtered diff rows
+    ✓ maps keyboard reason shortcuts to deterministic drilldown buckets
+    ✓ returns explicit empty drilldown fallback copy for safe reset path
+    ✓ creates, renames, pins, applies, and deletes saved triage views deterministically (1 ms)
+    ✓ restores saved triage view state from URL payload first, with local storage fallback
+    ✓ falls back safely when saved-view payload is corrupted or unsupported
+
+Test Suites: 1 passed, 1 total
+Tests:       38 passed, 38 total
+Snapshots:   0 total
+Time:        0.546 s, estimated 1 s
+Ran all test suites matching /test\/frontend.wave1.spec.ts/i.

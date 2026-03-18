@@ -6,6 +6,7 @@ import {
   applyRefundStatus,
   buildExceptionBulkDiffInspector,
   buildExceptionCompareDrawerModel,
+  buildDeterministicExceptionPresetChips,
   buildExceptionQueryFromSavedView,
   buildExceptionReasonQuickActions,
   buildExceptionReasonTimeline,
@@ -40,8 +41,18 @@ import {
   filterExceptionDiffInspectorRows,
   moveExceptionDiffInspectorFocus,
   validateExceptionActionInput,
+  applyExceptionPresetComposerSlot,
+  createDefaultExceptionPresetComposerSlots,
+  overwriteExceptionPresetComposerSlot,
+  resetExceptionPresetComposerDraft,
 } from '../utils/wave1';
-import type { ExceptionConflictDrilldownKey, ExceptionConflictReason } from '../utils/wave1';
+import type {
+  ExceptionConflictDrilldownKey,
+  ExceptionConflictReason,
+  ExceptionPresetChip,
+  ExceptionPresetComposerDraft,
+  ExceptionPresetComposerSlot,
+} from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -361,12 +372,20 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
   { key: 'high_delta', label: 'high_delta' },
   { key: 'mixed_status', label: 'mixed_status' },
 ];
+const composerReasonOptions: ExceptionConflictReason[] = ['stale_version', 'malformed', 'high_delta', 'mixed_status'];
 const activeBulkDiffRowId = ref('');
 const compareDrawerOpen = ref(false);
 const compareRowIds = ref<string[]>([]);
 const decisionNoteDraft = ref('');
 const decisionNoteReason = ref<'' | ExceptionConflictReason>('');
 const activeTimelineRowId = ref('');
+const composerSlots = ref<ExceptionPresetComposerSlot[]>(createDefaultExceptionPresetComposerSlots());
+const composerDraft = reactive<ExceptionPresetComposerDraft>(resetExceptionPresetComposerDraft());
+const composerOpen = ref(false);
+const composerDraftSlotId = ref<1 | 2 | 3 | 4>(1);
+const composerActiveSlotId = ref<1 | 2 | 3 | 4>(1);
+const composerReplacementConfirmationRequired = ref(false);
+const appliedPresetChips = ref<ExceptionPresetChip[]>([]);
 const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
   bulkDiffInspector.value.rows,
   activeConflictDrilldown.value,
@@ -1089,6 +1108,87 @@ function resetBulkPreviewConfirmState() {
   bulkPreviewConfirmState.error = '';
 }
 
+function resolveComposerDraftFromSlot(slotId: 1 | 2 | 3 | 4) {
+  const fallback = createDefaultExceptionPresetComposerSlots()[slotId - 1];
+  const slot = composerSlots.value.find((candidate) => candidate.slotId === slotId) ?? fallback;
+  composerDraftSlotId.value = slot.slotId;
+  composerDraft.name = slot.name;
+  composerDraft.enabledReasons = [...slot.enabledReasons];
+  composerDraft.severityWindow = slot.severityWindow;
+}
+
+function openComposerDrawer(slotId: 1 | 2 | 3 | 4 = composerActiveSlotId.value) {
+  composerOpen.value = true;
+  resolveComposerDraftFromSlot(slotId);
+}
+
+function closeComposerDrawer() {
+  composerOpen.value = false;
+}
+
+function toggleComposerReason(reason: ExceptionConflictReason) {
+  const reasonSet = new Set(composerDraft.enabledReasons);
+  if (reasonSet.has(reason)) {
+    reasonSet.delete(reason);
+  } else {
+    reasonSet.add(reason);
+  }
+  composerDraft.enabledReasons = [...reasonSet];
+}
+
+function overwriteComposerSlot(slotId: 1 | 2 | 3 | 4, nowIso?: string): boolean {
+  composerSlots.value = overwriteExceptionPresetComposerSlot({
+    slots: composerSlots.value,
+    slotId,
+    draft: composerDraft,
+    nowIso,
+  });
+  composerDraftSlotId.value = slotId;
+  composerActiveSlotId.value = slotId;
+  resolveComposerDraftFromSlot(slotId);
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = `Preset slot ${slotId} overwritten.`;
+  return true;
+}
+
+function applyComposerSlot(slotId: 1 | 2 | 3 | 4): boolean {
+  if (composerReplacementConfirmationRequired.value) {
+    bulkPreviewConfirmState.error = 'Global reset kept applied chips active. Confirm replacement before applying a new preset.';
+    return false;
+  }
+  const applied = applyExceptionPresetComposerSlot({
+    slots: composerSlots.value,
+    slotId,
+    reasonCounts: bulkDiffInspector.value.reasonCounts,
+  });
+  composerActiveSlotId.value = applied.activeSlotId;
+  appliedPresetChips.value = applied.chips;
+  resolveComposerDraftFromSlot(applied.activeSlotId);
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = `Preset slot ${applied.activeSlotId} applied with ${applied.chips.length} deterministic chip(s).`;
+  return true;
+}
+
+function clearComposerDraftState() {
+  composerDraft.name = '';
+  composerDraft.enabledReasons = [];
+  composerDraft.severityWindow = 'critical_and_warning';
+  resolveComposerDraftFromSlot(composerDraftSlotId.value);
+}
+
+function resetComposerDraftSafe() {
+  clearComposerDraftState();
+  composerReplacementConfirmationRequired.value = true;
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = 'Composer draft reset. Applied preset chips are preserved until you confirm replacement.';
+}
+
+function confirmPresetReplacement() {
+  composerReplacementConfirmationRequired.value = false;
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = 'Preset replacement confirmed. You can now apply any slot.';
+}
+
 watch(filteredBulkDiffRows, (rows) => {
   if (!rows.length) {
     activeBulkDiffRowId.value = '';
@@ -1115,6 +1215,20 @@ watch(() => bulkDiffInspector.value.rows, (rows) => {
     activeTimelineRowId.value = activeBulkDiffRowId.value || rows[0].id;
   }
 }, { immediate: true });
+
+watch(() => bulkDiffInspector.value.reasonCounts, (reasonCounts) => {
+  if (!appliedPresetChips.value.length) {
+    return;
+  }
+  const slot = composerSlots.value.find((candidate) => candidate.slotId === composerActiveSlotId.value);
+  if (!slot) {
+    return;
+  }
+  appliedPresetChips.value = buildDeterministicExceptionPresetChips({
+    slot,
+    reasonCounts,
+  });
+}, { deep: true });
 
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
   activeConflictDrilldown.value = key;
@@ -1201,8 +1315,10 @@ function resetBulkInspectorViewState() {
   compareRowIds.value = compareReset.compareRowIds;
   decisionNoteDraft.value = compareReset.decisionNoteDraft;
   decisionNoteReason.value = compareReset.decisionNoteReason;
+  clearComposerDraftState();
+  composerReplacementConfirmationRequired.value = true;
   bulkPreviewConfirmState.error = '';
-  bulkPreviewConfirmState.message = 'Inspector and compare view reset. Bulk selection is preserved.';
+  bulkPreviewConfirmState.message = 'Inspector and compare view reset. Bulk selection and applied preset chips are preserved until replacement is confirmed.';
 }
 
 function onBulkDiffKeydown(event: KeyboardEvent) {
@@ -1211,11 +1327,6 @@ function onBulkDiffKeydown(event: KeyboardEvent) {
     return;
   }
   const shortcutReason = resolveExceptionConflictShortcutDrilldown(event.key);
-  if (shortcutReason && event.altKey && shortcutReason !== 'all') {
-    event.preventDefault();
-    applyReasonQuickAction(shortcutReason);
-    return;
-  }
   const noteShortcutReason = resolveExceptionDecisionNoteShortcut(event.key);
   if (noteShortcutReason && event.shiftKey) {
     event.preventDefault();
@@ -1249,8 +1360,46 @@ function onBulkDiffKeydown(event: KeyboardEvent) {
   }
 
   if (event.key === 'Escape') {
+    if (composerOpen.value) {
+      event.preventDefault();
+      closeComposerDrawer();
+      return;
+    }
     event.preventDefault();
     resetBulkInspectorViewState();
+  }
+}
+
+function resolveComposerShortcutSlotId(event: KeyboardEvent): 1 | 2 | 3 | 4 | null {
+  if (!event.altKey) {
+    return null;
+  }
+  if (event.key === '1') return 1;
+  if (event.key === '2') return 2;
+  if (event.key === '3') return 3;
+  if (event.key === '4') return 4;
+  return null;
+}
+
+function onGlobalPresetComposerKeydown(event: KeyboardEvent) {
+  const slotId = resolveComposerShortcutSlotId(event);
+  if (slotId) {
+    const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+    if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
+      return;
+    }
+    event.preventDefault();
+    if (event.shiftKey) {
+      resolveComposerDraftFromSlot(slotId);
+      overwriteComposerSlot(slotId);
+      return;
+    }
+    applyComposerSlot(slotId);
+    return;
+  }
+  if (event.key === 'Escape' && composerOpen.value) {
+    event.preventDefault();
+    closeComposerDrawer();
   }
 }
 
@@ -1891,6 +2040,15 @@ onMounted(() => {
   void syncExceptionQueryToRoute(exceptionFilters.page);
   void loadExceptions(exceptionFilters.page);
   void loadMerchants();
+  if (import.meta.client) {
+    window.addEventListener('keydown', onGlobalPresetComposerKeydown);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (import.meta.client) {
+    window.removeEventListener('keydown', onGlobalPresetComposerKeydown);
+  }
 });
 </script>
 
@@ -2436,7 +2594,44 @@ onMounted(() => {
           <div>
             <h4>Diff Inspector</h4>
             <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
-            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Alt+1..4</code> for reason quick actions, <code>Shift+1..4</code> for note templates, <code>Esc</code> to reset view.</p>
+            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Alt+1..4</code> apply preset slot, <code>Alt+Shift+1..4</code> overwrite slot, <code>Shift+1..4</code> for note templates, <code>Esc</code> close composer/reset view.</p>
+            <div class="chip-row">
+              <button
+                v-for="slot in composerSlots"
+                :key="`composer-slot-${slot.slotId}`"
+                type="button"
+                class="preset-chip"
+                :class="{ active: composerActiveSlotId === slot.slotId }"
+                @click="applyComposerSlot(slot.slotId)"
+              >
+                Slot {{ slot.slotId }}: {{ slot.name }}
+              </button>
+              <button type="button" class="link" @click="openComposerDrawer()">
+                Open Preset Composer
+              </button>
+              <button type="button" class="link" @click="resetComposerDraftSafe">
+                Reset Composer Draft
+              </button>
+              <button
+                v-if="composerReplacementConfirmationRequired"
+                type="button"
+                @click="confirmPresetReplacement"
+              >
+                Confirm Replacement
+              </button>
+            </div>
+            <div class="filter-chips deterministic-filter-chips">
+              <span v-if="!appliedPresetChips.length" class="state">
+                No applied preset chips yet. Apply a preset slot to populate deterministic anomaly chips.
+              </span>
+              <span
+                v-for="chip in appliedPresetChips"
+                :key="chip.id"
+                class="preset-chip active"
+              >
+                {{ chip.label }} ({{ chip.count }})
+              </span>
+            </div>
             <div class="sticky-anomaly-bar" role="status" aria-live="polite">
               <span>stale_version {{ bulkDiffInspector.reasonCounts.stale_version }}</span>
               <span>malformed {{ bulkDiffInspector.reasonCounts.malformed }}</span>
@@ -2598,6 +2793,84 @@ onMounted(() => {
                   </tr>
                 </tbody>
               </table>
+            </article>
+            <article v-if="composerOpen" class="compare-drawer preset-composer-drawer" aria-live="polite">
+              <div class="drawer-header">
+                <div>
+                  <h4>Explainability Preset Composer</h4>
+                  <p class="state">Edit 4 preset slots (name, reason buckets, severity window) and apply deterministically.</p>
+                </div>
+                <button type="button" class="link" @click="closeComposerDrawer">Close</button>
+              </div>
+              <div class="chip-row">
+                <button
+                  v-for="slot in composerSlots"
+                  :key="`composer-edit-slot-${slot.slotId}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: composerDraftSlotId === slot.slotId }"
+                  @click="resolveComposerDraftFromSlot(slot.slotId)"
+                >
+                  Slot {{ slot.slotId }}
+                </button>
+              </div>
+              <form class="grid" @submit.prevent="overwriteComposerSlot(composerDraftSlotId)">
+                <label>
+                  Preset name
+                  <input
+                    v-model="composerDraft.name"
+                    placeholder="Preset label"
+                  />
+                </label>
+                <label>
+                  Severity window
+                  <select v-model="composerDraft.severityWindow">
+                    <option value="critical_and_warning">critical + warning</option>
+                    <option value="critical_only">critical only</option>
+                  </select>
+                </label>
+                <p class="state">Reason buckets</p>
+                <div class="chip-row">
+                  <button
+                    v-for="reason in composerReasonOptions"
+                    :key="`composer-reason-${reason}`"
+                    type="button"
+                    class="preset-chip"
+                    :class="{ active: composerDraft.enabledReasons.includes(reason) }"
+                    @click="toggleComposerReason(reason)"
+                  >
+                    {{ reason }}
+                  </button>
+                </div>
+                <button type="submit">
+                  Overwrite Slot {{ composerDraftSlotId }}
+                </button>
+                <button type="button" class="link" @click="applyComposerSlot(composerDraftSlotId)">
+                  Apply Slot {{ composerDraftSlotId }}
+                </button>
+              </form>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Slot</th>
+                      <th>Name</th>
+                      <th>Reasons</th>
+                      <th>Severity</th>
+                      <th>Saved</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="slot in composerSlots" :key="`composer-row-${slot.slotId}`">
+                      <td>{{ slot.slotId }}</td>
+                      <td>{{ slot.name }}</td>
+                      <td>{{ slot.enabledReasons.join(', ') || '-' }}</td>
+                      <td>{{ slot.severityWindow }}</td>
+                      <td>{{ new Date(slot.savedAt).toLocaleString() }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </article>
             <h4>Deterministic CSV Export Preview</h4>
             <pre class="code-preview">{{ bulkExceptionPreview.csvPreview }}</pre>
