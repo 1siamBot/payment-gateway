@@ -18,6 +18,11 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { CallbackDto } from './dto/callback.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListPaymentsDto } from './dto/list-payments.dto';
+import {
+  normalizePaymentAttemptTimelineAuditLogs,
+  type PaymentAttemptTimelineErrorCode,
+  type PaymentAttemptTimelineEvent,
+} from './payment-attempt-timeline-normalizer';
 
 type PaymentResponse = {
   reference: string;
@@ -87,18 +92,6 @@ type RefundResponse = {
   createdAt: string;
 };
 
-type PaymentAttemptTimelineStatus = 'completed' | 'pending' | 'failed' | 'info';
-
-type PaymentAttemptTimelineEvent = {
-  id: string;
-  occurredAt: string;
-  stage: string;
-  status: PaymentAttemptTimelineStatus;
-  actor: string;
-  note: string;
-  source: 'attempt_event' | 'transaction_transition';
-};
-
 type PaymentAttemptTimelineResponse = {
   paymentReference: string;
   transactionId: string;
@@ -109,6 +102,15 @@ type PaymentAttemptTimelineResponse = {
     eventCount: number;
     malformedCount: number;
     emptyTimeline: boolean;
+  };
+  normalization: {
+    contract: 'payment-attempt-timeline.v2';
+    malformedByCode: Record<PaymentAttemptTimelineErrorCode, number>;
+    errorCodeMap: Array<{
+      code: PaymentAttemptTimelineErrorCode;
+      description: string;
+      remediationHint: string;
+    }>;
   };
 };
 
@@ -290,47 +292,20 @@ export class PaymentsService {
       orderBy: { createdAt: 'asc' },
     });
 
-    const rows: Array<PaymentAttemptTimelineEvent & { occurredAtEpochMs: number }> = [];
-    let malformedCount = 0;
-
-    for (const log of logs) {
-      if (log.eventType === 'payment.attempt.event') {
-        const normalized = this.toAttemptEventRow(log);
-        if (normalized) {
-          rows.push(normalized);
-        } else {
-          malformedCount += 1;
-        }
-      }
-
-      if (log.eventType === 'transaction.transition') {
-        const normalized = this.toTransitionTimelineRow(log);
-        if (normalized) {
-          rows.push(normalized);
-        } else {
-          malformedCount += 1;
-        }
-      }
-    }
-
-    rows.sort((left, right) => {
-      if (left.occurredAtEpochMs === right.occurredAtEpochMs) {
-        return left.id.localeCompare(right.id);
-      }
-      return left.occurredAtEpochMs - right.occurredAtEpochMs;
-    });
+    const normalizedTimeline = normalizePaymentAttemptTimelineAuditLogs(logs);
 
     return {
       paymentReference: tx.reference,
       transactionId: tx.id,
       merchantId: tx.merchantId,
       finalStatus: tx.status,
-      events: rows.map(({ occurredAtEpochMs: _ignored, ...row }) => row),
+      events: normalizedTimeline.events,
       summary: {
-        eventCount: rows.length,
-        malformedCount,
-        emptyTimeline: rows.length === 0,
+        eventCount: normalizedTimeline.events.length,
+        malformedCount: normalizedTimeline.malformedCount,
+        emptyTimeline: normalizedTimeline.events.length === 0,
       },
+      normalization: normalizedTimeline.normalization,
     };
   }
 
@@ -964,67 +939,6 @@ export class PaymentsService {
     };
   }
 
-  private toAttemptEventRow(
-    log: { id: string; createdAt: Date; actor: string; metadata: string },
-  ): (PaymentAttemptTimelineEvent & { occurredAtEpochMs: number }) | null {
-    const parsed = this.parseAuditMetadata(log.metadata);
-    const stage = this.getStringValue(parsed.stage);
-    const status = this.normalizeTimelineStatus(parsed.status);
-    const actor = this.getStringValue(parsed.actor) ?? log.actor;
-    const note = this.getStringValue(parsed.note) ?? '';
-    const occurredAt = this.getDateValue(parsed.occurredAt);
-
-    if (!stage || !status || !occurredAt) {
-      return null;
-    }
-
-    const occurredAtEpochMs = Date.parse(occurredAt);
-    if (!Number.isFinite(occurredAtEpochMs)) {
-      return null;
-    }
-
-    return {
-      id: log.id,
-      occurredAt,
-      stage,
-      status,
-      actor,
-      note,
-      source: 'attempt_event',
-      occurredAtEpochMs,
-    };
-  }
-
-  private toTransitionTimelineRow(
-    log: { id: string; createdAt: Date; actor: string; metadata: string },
-  ): (PaymentAttemptTimelineEvent & { occurredAtEpochMs: number }) | null {
-    const parsed = this.parseAuditMetadata(log.metadata);
-    const toStatus = this.getStringValue(parsed.toStatus);
-    if (!toStatus) {
-      return null;
-    }
-
-    const occurredAt = this.getDateValue(parsed.occurredAt) ?? log.createdAt.toISOString();
-    const occurredAtEpochMs = Date.parse(occurredAt);
-    if (!Number.isFinite(occurredAtEpochMs)) {
-      return null;
-    }
-
-    const note = this.getStringValue(parsed.note) ?? '';
-    const fromStatus = this.getStringValue(parsed.fromStatus);
-
-    return {
-      id: log.id,
-      occurredAt,
-      stage: `Status changed: ${fromStatus ?? 'NONE'} -> ${toStatus}`,
-      status: this.mapTransactionStatusToTimelineStatus(toStatus),
-      actor: log.actor,
-      note,
-      source: 'transaction_transition',
-      occurredAtEpochMs,
-    };
-  }
-
   private parseAuditMetadata(metadata: string): Record<string, unknown> {
     try {
       const parsed = JSON.parse(metadata) as unknown;
@@ -1039,23 +953,6 @@ export class PaymentsService {
 
   private getStringValue(value: unknown): string | null {
     return typeof value === 'string' ? value : null;
-  }
-
-  private normalizeTimelineStatus(value: unknown): PaymentAttemptTimelineStatus | null {
-    if (value === 'completed' || value === 'pending' || value === 'failed' || value === 'info') {
-      return value;
-    }
-    return null;
-  }
-
-  private mapTransactionStatusToTimelineStatus(value: string): PaymentAttemptTimelineStatus {
-    if (value === TransactionStatus.FAILED) {
-      return 'failed';
-    }
-    if (value === TransactionStatus.PENDING || value === TransactionStatus.CREATED) {
-      return 'pending';
-    }
-    return 'completed';
   }
 
   private getNumberValue(value: unknown): number | null {

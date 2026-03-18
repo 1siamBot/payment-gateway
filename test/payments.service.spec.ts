@@ -741,6 +741,15 @@ describe('PaymentsService', () => {
     expect(timeline.events.map((event) => event.stage)).toContain('Payment created');
     expect(timeline.events.map((event) => event.stage)).not.toContain('Bad timestamp row');
     expect(timeline.summary.malformedCount).toBe(2);
+    expect(timeline.normalization.contract).toBe('payment-attempt-timeline.v2');
+    expect(timeline.normalization.malformedByCode).toEqual({
+      'TLN-001_INVALID_METADATA_JSON': 1,
+      'TLN-002_MISSING_STAGE': 0,
+      'TLN-003_INVALID_STATUS': 0,
+      'TLN-004_INVALID_OCCURRED_AT': 1,
+      'TLN-005_MISSING_TO_STATUS': 0,
+    });
+    expect(timeline.normalization.errorCodeMap).toHaveLength(5);
   });
 
   it.each([
@@ -815,6 +824,7 @@ describe('PaymentsService', () => {
       expect(timeline.events).toHaveLength(expectations.expectedEventCount);
       expect(timeline.events.map((event) => event.stage)).toEqual(expectedSortedStages);
       expect(timeline.events.every((event) => event.source === 'attempt_event')).toBe(true);
+      expect(timeline.normalization.contract).toBe('payment-attempt-timeline.v2');
     },
   );
 });
