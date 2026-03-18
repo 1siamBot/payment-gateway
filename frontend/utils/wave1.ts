@@ -66,6 +66,144 @@ export function normalizeOptional(value: string | null | undefined): string | un
   return normalized ? normalized : undefined;
 }
 
+export type ExceptionRiskBucket = 'high' | 'medium' | 'low';
+
+export type ExceptionBulkPreview = {
+  selectedCount: number;
+  validCount: number;
+  malformedCount: number;
+  isEmpty: boolean;
+  statusCounts: Record<ExceptionStatus, number>;
+  riskCounts: Record<ExceptionRiskBucket, number>;
+  warnings: string[];
+  emptyMessage: string;
+  malformedMessage: string | null;
+  recoveryHint: string;
+  csvPreview: string;
+  jsonPreview: string;
+};
+
+type ExceptionBulkPreviewRow = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  status: ExceptionStatus;
+  mismatchCount: number;
+};
+
+function parseExceptionBulkPreviewRow(raw: unknown): ExceptionBulkPreviewRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : String(row.id ?? ''));
+  const merchantId = normalizeOptional(typeof row.merchantId === 'string' ? row.merchantId : String(row.merchantId ?? ''));
+  const provider = normalizeOptional(typeof row.provider === 'string' ? row.provider : String(row.provider ?? ''));
+  const status = normalizeExceptionStatus(row.status);
+  const mismatchCount = Number(row.mismatchCount);
+
+  if (!id || !merchantId || !provider) {
+    return null;
+  }
+  if (!Number.isFinite(mismatchCount) || mismatchCount < 0) {
+    return null;
+  }
+
+  return {
+    id,
+    merchantId,
+    provider,
+    status,
+    mismatchCount,
+  };
+}
+
+function resolveExceptionRiskBucket(row: { mismatchCount: number; status: ExceptionStatus }): ExceptionRiskBucket {
+  if (row.status === 'open' && row.mismatchCount >= 3) {
+    return 'high';
+  }
+  if (row.status === 'investigating' || row.mismatchCount >= 1) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+export function buildExceptionBulkPreview(selectedRows: unknown[]): ExceptionBulkPreview {
+  const statusCounts: Record<ExceptionStatus, number> = {
+    open: 0,
+    investigating: 0,
+    resolved: 0,
+    ignored: 0,
+  };
+  const riskCounts: Record<ExceptionRiskBucket, number> = {
+    high: 0,
+    medium: 0,
+    low: 0,
+  };
+  const normalizedRows = selectedRows
+    .map((row) => parseExceptionBulkPreviewRow(row))
+    .filter((row): row is ExceptionBulkPreviewRow => Boolean(row))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const row of normalizedRows) {
+    statusCounts[row.status] += 1;
+    riskCounts[resolveExceptionRiskBucket(row)] += 1;
+  }
+
+  const malformedCount = selectedRows.length - normalizedRows.length;
+  const warnings: string[] = [];
+  if (malformedCount > 0) {
+    warnings.push(`Malformed selection rows detected: ${malformedCount}.`);
+  }
+  if (selectedRows.length === 0) {
+    warnings.push('No exception rows selected.');
+  }
+
+  const csvRows = [
+    ['metric', 'value'],
+    ['selected_total', String(selectedRows.length)],
+    ['valid_rows', String(normalizedRows.length)],
+    ['malformed_rows', String(malformedCount)],
+    ['status_open', String(statusCounts.open)],
+    ['status_investigating', String(statusCounts.investigating)],
+    ['status_resolved', String(statusCounts.resolved)],
+    ['status_ignored', String(statusCounts.ignored)],
+    ['risk_high', String(riskCounts.high)],
+    ['risk_medium', String(riskCounts.medium)],
+    ['risk_low', String(riskCounts.low)],
+  ];
+  if (malformedCount > 0) {
+    csvRows.push(['warning', 'malformed_rows_present']);
+  }
+
+  const csvPreview = csvRows.map((row) => row.join(',')).join('\n');
+  const jsonPreview = JSON.stringify({
+    selectedTotal: selectedRows.length,
+    validRows: normalizedRows.length,
+    malformedRows: malformedCount,
+    statusCounts,
+    riskCounts,
+    warnings,
+  }, null, 2);
+
+  return {
+    selectedCount: selectedRows.length,
+    validCount: normalizedRows.length,
+    malformedCount,
+    isEmpty: selectedRows.length === 0,
+    statusCounts,
+    riskCounts,
+    warnings,
+    emptyMessage: 'No rows selected. Select at least one exception to preview bulk actions safely.',
+    malformedMessage: malformedCount > 0
+      ? `${malformedCount} malformed row(s) are excluded from preview/export until corrected.`
+      : null,
+    recoveryHint: 'Clear invalid rows or refresh fixture data before confirming bulk action.',
+    csvPreview,
+    jsonPreview,
+  };
+}
+
 export type ExceptionQueryState = {
   merchantId: string;
   provider: string;

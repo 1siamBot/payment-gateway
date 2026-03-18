@@ -1,5 +1,6 @@
 import {
   applyRefundStatus,
+  buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   buildExceptionActionIdempotencyKey,
@@ -224,5 +225,44 @@ describe('frontend wave1 helpers', () => {
     );
     expect(parsed.recoveryReasons.length).toBeGreaterThan(0);
     expect(parsed.state).toEqual(DEFAULT_EXCEPTION_QUERY_STATE);
+  });
+
+  it('builds deterministic bulk preview status and risk counts', () => {
+    const preview = buildExceptionBulkPreview([
+      { id: 'exc-2', merchantId: 'm-2', provider: 'mock-a', status: 'investigating', mismatchCount: 2 },
+      { id: 'exc-1', merchantId: 'm-1', provider: 'mock-a', status: 'open', mismatchCount: 4 },
+      { id: 'exc-3', merchantId: 'm-3', provider: 'mock-b', status: 'resolved', mismatchCount: 0 },
+    ]);
+
+    expect(preview.selectedCount).toBe(3);
+    expect(preview.validCount).toBe(3);
+    expect(preview.statusCounts.open).toBe(1);
+    expect(preview.statusCounts.investigating).toBe(1);
+    expect(preview.statusCounts.resolved).toBe(1);
+    expect(preview.riskCounts.high).toBe(1);
+    expect(preview.riskCounts.medium).toBe(1);
+    expect(preview.riskCounts.low).toBe(1);
+    expect(preview.csvPreview).toContain('status_open,1');
+    expect(preview.csvPreview).toContain('risk_high,1');
+  });
+
+  it('returns empty-selection fallback copy for bulk preview', () => {
+    const preview = buildExceptionBulkPreview([]);
+    expect(preview.isEmpty).toBe(true);
+    expect(preview.warnings).toContain('No exception rows selected.');
+    expect(preview.emptyMessage).toContain('Select at least one exception');
+  });
+
+  it('adds malformed warning row to deterministic export preview', () => {
+    const preview = buildExceptionBulkPreview([
+      { id: 'exc-1', merchantId: 'm-1', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+      { id: '', merchantId: 'm-2', provider: 'mock-a', status: 'open', mismatchCount: 2 },
+      { id: 'exc-3', merchantId: 'm-3', provider: 'mock-b', status: 'ignored', mismatchCount: -1 },
+    ]);
+    expect(preview.selectedCount).toBe(3);
+    expect(preview.validCount).toBe(1);
+    expect(preview.malformedCount).toBe(2);
+    expect(preview.malformedMessage).toContain('2 malformed row');
+    expect(preview.csvPreview).toContain('warning,malformed_rows_present');
   });
 });

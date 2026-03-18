@@ -4,6 +4,7 @@ import {
   applyExceptionActionOptimistic,
   applyRefundStatus,
   buildExceptionActionIdempotencyKey,
+  buildExceptionBulkPreview,
   canRefundStatus,
   classifyExceptionActionFailure,
   DEFAULT_EXCEPTION_QUERY_STATE,
@@ -270,6 +271,7 @@ const exceptionState = reactive({
   error: '',
 });
 const exceptionRows = ref<SettlementExceptionRow[]>([]);
+const selectedExceptionIds = ref<string[]>([]);
 const exceptionPagination = reactive({
   page: 1,
   pageSize: 10,
@@ -293,6 +295,10 @@ const exceptionAction = reactive({
 });
 const exceptionFixtureMode = ref<ExceptionFixtureMode>('api');
 const exceptionFixtureRetryCount = ref(0);
+const bulkPreviewConfirmState = reactive({
+  message: '',
+  error: '',
+});
 const exceptionQueryRecovery = reactive({
   active: false,
   message: '',
@@ -307,6 +313,10 @@ const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
   pageSize: exceptionFilters.pageSize,
   preset: '',
 }));
+const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) => selectedExceptionIds.value.includes(row.id)));
+const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
+const areAllExceptionRowsSelected = computed(() => exceptionRows.value.length > 0
+  && exceptionRows.value.every((row) => selectedExceptionIds.value.includes(row.id)));
 
 const webhookFilters = reactive({
   merchantId: '',
@@ -990,12 +1000,59 @@ function fixtureExceptionDetail(status: SettlementExceptionStatus): SettlementEx
   };
 }
 
+function resetBulkPreviewConfirmState() {
+  bulkPreviewConfirmState.message = '';
+  bulkPreviewConfirmState.error = '';
+}
+
+function toggleExceptionSelection(exceptionId: string, checked: boolean) {
+  if (checked) {
+    if (!selectedExceptionIds.value.includes(exceptionId)) {
+      selectedExceptionIds.value = [...selectedExceptionIds.value, exceptionId];
+    }
+    return;
+  }
+  selectedExceptionIds.value = selectedExceptionIds.value.filter((id) => id !== exceptionId);
+}
+
+function toggleAllExceptionSelections(checked: boolean) {
+  if (checked) {
+    selectedExceptionIds.value = exceptionRows.value.map((row) => row.id);
+    return;
+  }
+  selectedExceptionIds.value = [];
+}
+
+function onToggleAllExceptionSelections(event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  toggleAllExceptionSelections(Boolean(target?.checked));
+}
+
+function onToggleExceptionSelection(exceptionId: string, event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  toggleExceptionSelection(exceptionId, Boolean(target?.checked));
+}
+
+function confirmBulkPreview(action: SettlementExceptionAction) {
+  resetBulkPreviewConfirmState();
+  if (bulkExceptionPreview.value.isEmpty) {
+    bulkPreviewConfirmState.error = `${bulkExceptionPreview.value.emptyMessage} ${bulkExceptionPreview.value.recoveryHint}`;
+    return;
+  }
+  if (bulkExceptionPreview.value.malformedCount > 0) {
+    bulkPreviewConfirmState.error = `${bulkExceptionPreview.value.malformedMessage} ${bulkExceptionPreview.value.recoveryHint}`;
+    return;
+  }
+  bulkPreviewConfirmState.message = `Bulk ${action} preview confirmed for ${bulkExceptionPreview.value.validCount} valid row(s). Deterministic export summaries are ready below.`;
+}
+
 function applyExceptionFixture(mode: ExceptionFixtureMode) {
   exceptionFixtureMode.value = mode;
   exceptionFixtureRetryCount.value = 0;
   exceptionState.loading = false;
   exceptionDetailState.loading = false;
   exceptionRows.value = [];
+  selectedExceptionIds.value = [];
   exceptionDetail.value = null;
   selectedExceptionId.value = '';
   exceptionPagination.total = 0;
@@ -1007,6 +1064,7 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   exceptionAction.error = '';
   resetState(exceptionState);
   resetState(exceptionDetailState);
+  resetBulkPreviewConfirmState();
 
   if (mode === 'loading') {
     exceptionState.loading = true;
@@ -1046,6 +1104,16 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   }
 
   if (mode === 'action_failure_retry') {
+    exceptionRows.value = [
+      detail,
+      {
+        ...detail,
+        id: 'fx-malformed-001',
+        merchantId: '',
+        mismatchCount: -1,
+      },
+    ];
+    exceptionPagination.total = 2;
     exceptionAction.open = true;
     exceptionAction.action = 'ignore';
     exceptionAction.reason = 'Known provider lag in settlement batch';
@@ -1143,6 +1211,7 @@ function resetExceptionQueryState() {
 
 async function loadExceptions(page = 1) {
   resetState(exceptionState);
+  resetBulkPreviewConfirmState();
   if (!ensureAuth(exceptionState)) return;
 
   exceptionFilters.page = page;
@@ -1177,6 +1246,7 @@ async function loadExceptions(page = 1) {
     const items = Array.isArray(response) ? response : (response?.items ?? response?.data ?? []);
 
     exceptionRows.value = items.map((item: any) => mapExceptionRow(item));
+    selectedExceptionIds.value = selectedExceptionIds.value.filter((id) => exceptionRows.value.some((row) => row.id === id));
     const total = Number(response?.total ?? response?.meta?.total ?? exceptionRows.value.length);
     const totalPages = Number(response?.totalPages ?? response?.meta?.totalPages ?? Math.max(1, Math.ceil(total / exceptionFilters.pageSize)));
     const currentPage = Number(response?.page ?? response?.meta?.page ?? page);
@@ -1200,6 +1270,7 @@ async function loadExceptions(page = 1) {
     }
   } catch (error: any) {
     exceptionRows.value = [];
+    selectedExceptionIds.value = [];
     exceptionPagination.total = 0;
     exceptionPagination.totalPages = 1;
     exceptionState.error = error.message;
@@ -1814,11 +1885,52 @@ onMounted(() => {
 
       <p class="state" :class="{ error: exceptionState.error }">{{ exceptionState.error || exceptionState.message }}</p>
 
+      <article class="bulk-preview-panel">
+        <h3>Bulk Action Preview</h3>
+        <p class="state" :class="{ error: bulkPreviewConfirmState.error }">
+          {{ bulkPreviewConfirmState.error || bulkPreviewConfirmState.message || 'Review selected rows before confirming a bulk action.' }}
+        </p>
+        <div class="inline-actions">
+          <button type="button" @click="confirmBulkPreview('resolve')">Confirm Bulk Resolve Preview</button>
+          <button type="button" class="danger" @click="confirmBulkPreview('ignore')">Confirm Bulk Ignore Preview</button>
+        </div>
+
+        <div class="bulk-preview-grid">
+          <div>
+            <h4>Selection Summary</h4>
+            <p><strong>Selected:</strong> {{ bulkExceptionPreview.selectedCount }}</p>
+            <p><strong>Valid:</strong> {{ bulkExceptionPreview.validCount }}</p>
+            <p><strong>Malformed:</strong> {{ bulkExceptionPreview.malformedCount }}</p>
+            <ul class="timeline-list">
+              <li>Status: open {{ bulkExceptionPreview.statusCounts.open }}, investigating {{ bulkExceptionPreview.statusCounts.investigating }}, resolved {{ bulkExceptionPreview.statusCounts.resolved }}, ignored {{ bulkExceptionPreview.statusCounts.ignored }}</li>
+              <li>Risk buckets: high {{ bulkExceptionPreview.riskCounts.high }}, medium {{ bulkExceptionPreview.riskCounts.medium }}, low {{ bulkExceptionPreview.riskCounts.low }}</li>
+            </ul>
+            <p v-if="bulkExceptionPreview.isEmpty" class="state">{{ bulkExceptionPreview.emptyMessage }}</p>
+            <p v-if="bulkExceptionPreview.malformedMessage" class="state error">{{ bulkExceptionPreview.malformedMessage }}</p>
+            <p v-if="bulkExceptionPreview.isEmpty || bulkExceptionPreview.malformedCount > 0" class="state">{{ bulkExceptionPreview.recoveryHint }}</p>
+          </div>
+          <div>
+            <h4>Deterministic CSV Export Preview</h4>
+            <pre class="code-preview">{{ bulkExceptionPreview.csvPreview }}</pre>
+            <h4>Deterministic JSON Export Preview</h4>
+            <pre class="code-preview">{{ bulkExceptionPreview.jsonPreview }}</pre>
+          </div>
+        </div>
+      </article>
+
       <div class="triage-grid">
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    :checked="areAllExceptionRowsSelected"
+                    :disabled="!exceptionRows.length"
+                    @change="onToggleAllExceptionSelections"
+                  />
+                </th>
                 <th>Exception ID</th>
                 <th>Merchant</th>
                 <th>Provider</th>
@@ -1830,9 +1942,16 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-if="!exceptionRows.length">
-                <td colspan="7">No settlement exceptions found.</td>
+                <td colspan="8">No settlement exceptions found.</td>
               </tr>
               <tr v-for="row in exceptionRows" :key="row.id">
+                <td>
+                  <input
+                    type="checkbox"
+                    :checked="selectedExceptionIds.includes(row.id)"
+                    @change="onToggleExceptionSelection(row.id, $event)"
+                  />
+                </td>
                 <td>{{ row.id }}</td>
                 <td>{{ row.merchantId }}</td>
                 <td>{{ row.provider }}</td>
