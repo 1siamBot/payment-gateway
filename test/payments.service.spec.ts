@@ -1,6 +1,10 @@
 import { createHmac } from 'crypto';
 import { TransactionStatus, TransactionType } from '@prisma/client';
 import { PaymentsService } from '../src/payments/payments.service';
+import {
+  PAYMENT_ATTEMPT_TIMELINE_FIXTURES,
+  type PaymentAttemptTimelineScenario,
+} from '../src/payments/payment-attempt-timeline-fixtures';
 import { RoutingReasonCode } from '../src/providers/provider.interface';
 
 function createPrismaMock() {
@@ -243,6 +247,16 @@ function createPrismaMock() {
       },
     },
   };
+}
+
+function mapFixtureStatusToTransactionStatus(status: string): TransactionStatus {
+  if (status === TransactionStatus.PAID) {
+    return TransactionStatus.PAID;
+  }
+  if (status === TransactionStatus.FAILED) {
+    return TransactionStatus.FAILED;
+  }
+  return TransactionStatus.CREATED;
 }
 
 describe('PaymentsService', () => {
@@ -728,4 +742,79 @@ describe('PaymentsService', () => {
     expect(timeline.events.map((event) => event.stage)).not.toContain('Bad timestamp row');
     expect(timeline.summary.malformedCount).toBe(2);
   });
+
+  it.each([
+    ['successful_capture', { expectedEventCount: 9, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['retry_then_success', { expectedEventCount: 9, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['terminal_failure', { expectedEventCount: 8, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['empty', { expectedEventCount: 0, expectedMalformedCount: 0, expectedEmptyTimeline: true }],
+    ['malformed', { expectedEventCount: 2, expectedMalformedCount: 2, expectedEmptyTimeline: false }],
+  ] satisfies Array<
+    [PaymentAttemptTimelineScenario, { expectedEventCount: number; expectedMalformedCount: number; expectedEmptyTimeline: boolean }]
+  >)(
+    'returns deterministic timeline contract for fixture scenario %s',
+    async (scenario, expectations) => {
+      const fixture = PAYMENT_ATTEMPT_TIMELINE_FIXTURES.find((entry) => entry.scenario === scenario);
+      expect(fixture).toBeDefined();
+
+      const prismaMock = createPrismaMock();
+      const router = {
+        initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+      };
+      const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+      const tx = await prismaMock.prisma.transaction.create({
+        data: {
+          merchantId: fixture!.merchantId,
+          type: TransactionType.DEPOSIT,
+          amount: fixture!.amount,
+          currency: fixture!.currency,
+          status: mapFixtureStatusToTransactionStatus(fixture!.finalStatus),
+          reference: fixture!.paymentReference,
+          providerName: 'mock-a',
+        },
+      });
+
+      for (const event of fixture!.events) {
+        await prismaMock.prisma.auditLog.create({
+          data: {
+            eventType: 'payment.attempt.event',
+            actor: event.actor,
+            entityType: 'transaction',
+            entityId: tx.id,
+            metadata: JSON.stringify({
+              stage: event.stage,
+              status: event.status,
+              actor: event.actor,
+              note: event.note,
+              occurredAt: event.occurredAt,
+            }),
+          },
+        });
+      }
+
+      const timeline = await service.getPaymentAttemptTimeline(fixture!.paymentReference);
+      const validFixtureEvents = fixture!.events.filter((event) => Number.isFinite(Date.parse(event.occurredAt)));
+      const expectedSortedStages = validFixtureEvents
+        .slice()
+        .sort((left, right) => {
+          const timeDelta = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
+          if (timeDelta !== 0) {
+            return timeDelta;
+          }
+          return left.id.localeCompare(right.id);
+        })
+        .map((event) => event.stage);
+
+      expect(timeline.paymentReference).toBe(fixture!.paymentReference);
+      expect(timeline.merchantId).toBe(fixture!.merchantId);
+      expect(timeline.finalStatus).toBe(mapFixtureStatusToTransactionStatus(fixture!.finalStatus));
+      expect(timeline.summary.eventCount).toBe(expectations.expectedEventCount);
+      expect(timeline.summary.malformedCount).toBe(expectations.expectedMalformedCount);
+      expect(timeline.summary.emptyTimeline).toBe(expectations.expectedEmptyTimeline);
+      expect(timeline.events).toHaveLength(expectations.expectedEventCount);
+      expect(timeline.events.map((event) => event.stage)).toEqual(expectedSortedStages);
+      expect(timeline.events.every((event) => event.source === 'attempt_event')).toBe(true);
+    },
+  );
 });

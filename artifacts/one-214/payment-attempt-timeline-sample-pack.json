@@ -1,0 +1,367 @@
+{
+  "contract": "payment-attempt-timeline.v1",
+  "generatedAt": "2026-03-19T00:00:00.000Z",
+  "scenarios": [
+    {
+      "scenario": "successful_capture",
+      "scenarioLabel": "Successful Capture",
+      "request": {
+        "method": "GET",
+        "path": "/payments/pay_scn_success_001/attempt-timeline",
+        "merchantId": "merchant_timeline_alpha"
+      },
+      "response": {
+        "paymentReference": "pay_scn_success_001",
+        "transactionId": "tx_sample_successful_capture",
+        "merchantId": "merchant_timeline_alpha",
+        "finalStatus": "PAID",
+        "events": [
+          {
+            "id": "ev-001",
+            "occurredAt": "2026-03-18T08:00:00.000Z",
+            "stage": "Payment created",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Initial authorization request accepted.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-002",
+            "occurredAt": "2026-03-18T08:00:07.000Z",
+            "stage": "Risk pre-check",
+            "status": "completed",
+            "actor": "risk-engine",
+            "note": "Low-risk outcome.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-003",
+            "occurredAt": "2026-03-18T08:00:15.000Z",
+            "stage": "Authorization sent",
+            "status": "completed",
+            "actor": "mock-a",
+            "note": "Provider acknowledged authorization call.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-004",
+            "occurredAt": "2026-03-18T08:00:19.000Z",
+            "stage": "Authorization approved",
+            "status": "completed",
+            "actor": "mock-a",
+            "note": "Issuer approved transaction.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-005",
+            "occurredAt": "2026-03-18T08:01:02.000Z",
+            "stage": "Capture requested",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Capture request queued by workflow.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-006",
+            "occurredAt": "2026-03-18T08:01:05.000Z",
+            "stage": "Capture in progress",
+            "status": "pending",
+            "actor": "mock-a",
+            "note": "Provider processing capture.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-007",
+            "occurredAt": "2026-03-18T08:01:12.000Z",
+            "stage": "Capture confirmed",
+            "status": "completed",
+            "actor": "mock-a",
+            "note": "Capture completed successfully.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-008",
+            "occurredAt": "2026-03-18T08:01:26.000Z",
+            "stage": "Settlement queued",
+            "status": "info",
+            "actor": "ledger",
+            "note": "Batch settlement scheduled.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-009",
+            "occurredAt": "2026-03-18T08:04:26.000Z",
+            "stage": "Settlement completed",
+            "status": "completed",
+            "actor": "ledger",
+            "note": "Funds settled to merchant account.",
+            "source": "attempt_event"
+          }
+        ],
+        "summary": {
+          "eventCount": 9,
+          "malformedCount": 0,
+          "emptyTimeline": false
+        }
+      }
+    },
+    {
+      "scenario": "retry_then_success",
+      "scenarioLabel": "Retry Then Success",
+      "request": {
+        "method": "GET",
+        "path": "/payments/pay_scn_retry_001/attempt-timeline",
+        "merchantId": "merchant_timeline_bravo"
+      },
+      "response": {
+        "paymentReference": "pay_scn_retry_001",
+        "transactionId": "tx_sample_retry_then_success",
+        "merchantId": "merchant_timeline_bravo",
+        "finalStatus": "PAID",
+        "events": [
+          {
+            "id": "ev-101",
+            "occurredAt": "2026-03-18T09:10:00.000Z",
+            "stage": "Payment created",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Initial attempt opened.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-102",
+            "occurredAt": "2026-03-18T09:10:04.000Z",
+            "stage": "Authorization sent",
+            "status": "completed",
+            "actor": "mock-b",
+            "note": "Provider accepted auth call.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-103",
+            "occurredAt": "2026-03-18T09:10:09.000Z",
+            "stage": "Authorization approved",
+            "status": "completed",
+            "actor": "mock-b",
+            "note": "Card approved.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-104",
+            "occurredAt": "2026-03-18T09:10:40.000Z",
+            "stage": "Capture requested",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Capture request dispatched.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-105",
+            "occurredAt": "2026-03-18T09:10:46.000Z",
+            "stage": "Capture failed",
+            "status": "failed",
+            "actor": "mock-b",
+            "note": "Provider timeout during capture.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-106",
+            "occurredAt": "2026-03-18T09:11:01.000Z",
+            "stage": "Retry scheduled",
+            "status": "info",
+            "actor": "gateway",
+            "note": "Automatic retry after transient error.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-107",
+            "occurredAt": "2026-03-18T09:11:34.000Z",
+            "stage": "Capture retry sent",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Second capture request dispatched.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-108",
+            "occurredAt": "2026-03-18T09:11:39.000Z",
+            "stage": "Capture confirmed",
+            "status": "completed",
+            "actor": "mock-b",
+            "note": "Retry completed successfully.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-109",
+            "occurredAt": "2026-03-18T09:14:00.000Z",
+            "stage": "Settlement completed",
+            "status": "completed",
+            "actor": "ledger",
+            "note": "Settled after retry path.",
+            "source": "attempt_event"
+          }
+        ],
+        "summary": {
+          "eventCount": 9,
+          "malformedCount": 0,
+          "emptyTimeline": false
+        }
+      }
+    },
+    {
+      "scenario": "terminal_failure",
+      "scenarioLabel": "Terminal Failure",
+      "request": {
+        "method": "GET",
+        "path": "/payments/pay_scn_failed_001/attempt-timeline",
+        "merchantId": "merchant_timeline_charlie"
+      },
+      "response": {
+        "paymentReference": "pay_scn_failed_001",
+        "transactionId": "tx_sample_terminal_failure",
+        "merchantId": "merchant_timeline_charlie",
+        "finalStatus": "FAILED",
+        "events": [
+          {
+            "id": "ev-201",
+            "occurredAt": "2026-03-18T10:20:00.000Z",
+            "stage": "Payment created",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Attempt opened.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-202",
+            "occurredAt": "2026-03-18T10:20:05.000Z",
+            "stage": "Risk pre-check",
+            "status": "completed",
+            "actor": "risk-engine",
+            "note": "Risk accepted.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-203",
+            "occurredAt": "2026-03-18T10:20:11.000Z",
+            "stage": "Authorization sent",
+            "status": "completed",
+            "actor": "mock-a",
+            "note": "Provider acknowledged auth call.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-204",
+            "occurredAt": "2026-03-18T10:20:16.000Z",
+            "stage": "Authorization approved",
+            "status": "completed",
+            "actor": "mock-a",
+            "note": "Issuer approved auth.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-205",
+            "occurredAt": "2026-03-18T10:20:43.000Z",
+            "stage": "Capture requested",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Capture queued.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-206",
+            "occurredAt": "2026-03-18T10:20:48.000Z",
+            "stage": "Capture failed",
+            "status": "failed",
+            "actor": "mock-a",
+            "note": "Provider returned non-retryable capture error.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-207",
+            "occurredAt": "2026-03-18T10:21:01.000Z",
+            "stage": "Operator escalation opened",
+            "status": "info",
+            "actor": "ops",
+            "note": "Ticket created for operator follow-up.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-208",
+            "occurredAt": "2026-03-18T10:24:01.000Z",
+            "stage": "Payment marked failed",
+            "status": "failed",
+            "actor": "gateway",
+            "note": "Terminal state persisted without retry.",
+            "source": "attempt_event"
+          }
+        ],
+        "summary": {
+          "eventCount": 8,
+          "malformedCount": 0,
+          "emptyTimeline": false
+        }
+      }
+    },
+    {
+      "scenario": "empty",
+      "scenarioLabel": "Empty Timeline",
+      "request": {
+        "method": "GET",
+        "path": "/payments/pay_scn_empty_001/attempt-timeline",
+        "merchantId": "merchant_timeline_delta"
+      },
+      "response": {
+        "paymentReference": "pay_scn_empty_001",
+        "transactionId": "tx_sample_empty",
+        "merchantId": "merchant_timeline_delta",
+        "finalStatus": "CREATED",
+        "events": [],
+        "summary": {
+          "eventCount": 0,
+          "malformedCount": 0,
+          "emptyTimeline": true
+        }
+      }
+    },
+    {
+      "scenario": "malformed",
+      "scenarioLabel": "Malformed Events",
+      "request": {
+        "method": "GET",
+        "path": "/payments/pay_scn_malformed_001/attempt-timeline",
+        "merchantId": "merchant_timeline_echo"
+      },
+      "response": {
+        "paymentReference": "pay_scn_malformed_001",
+        "transactionId": "tx_sample_malformed",
+        "merchantId": "merchant_timeline_echo",
+        "finalStatus": "FAILED",
+        "events": [
+          {
+            "id": "ev-301",
+            "occurredAt": "2026-03-18T11:00:00.000Z",
+            "stage": "Payment created",
+            "status": "completed",
+            "actor": "gateway",
+            "note": "Valid row should render.",
+            "source": "attempt_event"
+          },
+          {
+            "id": "ev-304",
+            "occurredAt": "2026-03-18T11:01:15.000Z",
+            "stage": "Payment marked failed",
+            "status": "failed",
+            "actor": "gateway",
+            "note": "Valid terminal row should render.",
+            "source": "attempt_event"
+          }
+        ],
+        "summary": {
+          "eventCount": 2,
+          "malformedCount": 2,
+          "emptyTimeline": false
+        }
+      }
+    }
+  ]
+}
