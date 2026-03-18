@@ -51,6 +51,11 @@ export class SettlementsController {
     return this.settlements.buildSettlementExceptionBulkActionPreview(body);
   }
 
+  @Post('exceptions/bulk-triage-snapshot')
+  bulkTriageSnapshot(@Body() body: BuildSettlementBulkActionPreviewDto) {
+    return this.settlements.buildSettlementExceptionBulkTriageSnapshot(body);
+  }
+
   @Get('exceptions/qa-fixtures')
   listExceptionQaFixtures(@Query() query: ListSettlementExceptionQaFixturesDto) {
     return this.settlements.listSettlementExceptionQaFixtures(query);

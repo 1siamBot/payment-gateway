@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { SettlementExceptionStatus } from '@prisma/client';
 
 export const BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS = [
@@ -37,6 +38,9 @@ export type BulkSettlementRollbackRecommendationClass =
   | 'needs_review'
   | 'rollback_recommended';
 export type BulkSettlementRollbackReasonSeverity = 'warning' | 'critical';
+export const BULK_SETTLEMENT_TRIAGE_SNAPSHOT_SEVERITY_BUCKETS = ['warning', 'critical'] as const;
+export type BulkSettlementTriageSnapshotSeverityBucket =
+  (typeof BULK_SETTLEMENT_TRIAGE_SNAPSHOT_SEVERITY_BUCKETS)[number];
 
 export const BULK_SETTLEMENT_PREVIEW_WARNING_HINTS: Record<BulkSettlementPreviewWarningCode, string> = {
   'BSP-001_INVALID_ROW_SHAPE': 'Provide each row as an object with id, status, deltaAmount, and optional riskBucket.',
@@ -139,6 +143,27 @@ export type BulkSettlementRollbackRecommendation = {
   }>;
 };
 
+export type BulkSettlementTriageSnapshot = {
+  contract: 'settlement-bulk-triage-snapshot.v1';
+  selectedCount: number;
+  byReason: Record<BulkSettlementRollbackReasonCode, number>;
+  bySeverity: Record<BulkSettlementTriageSnapshotSeverityBucket, number>;
+  topAnomalies: Array<{
+    reasonCode: BulkSettlementRollbackReasonCode;
+    severity: BulkSettlementRollbackReasonSeverity;
+    count: number;
+    description: string;
+  }>;
+  generatedAt: string;
+  metadata: {
+    reasonSeverityMap: Array<{
+      code: BulkSettlementRollbackReasonCode;
+      severity: BulkSettlementRollbackReasonSeverity;
+      description: string;
+    }>;
+  };
+};
+
 export function buildBulkSettlementActionPreviewSummary(
   input: BulkSettlementPreviewInput,
 ): BulkSettlementPreviewSummary {
@@ -237,6 +262,68 @@ export function buildBulkSettlementRollbackRecommendation(
       severity: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].severity,
       description: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].description,
     })),
+  };
+}
+
+export function buildBulkSettlementTriageSnapshot(
+  input: BulkSettlementPreviewInput,
+): BulkSettlementTriageSnapshot {
+  const built = buildPreviewArtifacts(input);
+  const byReason = createZeroRollbackReasonMap();
+  const nonStaleWarningCount = built.warnings.filter(
+    (warning) => warning.code !== 'BSP-007_SELECTED_ID_NOT_FOUND',
+  ).length;
+  const staleSelectionCount = built.warnings.filter(
+    (warning) => warning.code === 'BSP-007_SELECTED_ID_NOT_FOUND',
+  ).length;
+  const activeStatusCount = BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS
+    .map((status) => built.summary.statusBuckets[status])
+    .filter((count) => count > 0).length;
+  const mixedStatusCount = activeStatusCount >= 2 ? activeStatusCount - 1 : 0;
+  const highDeltaAnomalyCount = built.summary.riskBuckets.high + built.summary.riskBuckets.critical;
+
+  byReason.MALFORMED_ROW = nonStaleWarningCount;
+  byReason.STALE_VERSION_RISK = staleSelectionCount;
+  byReason.MIXED_STATUS_SELECTION = mixedStatusCount;
+  byReason.HIGH_DELTA_ANOMALY = highDeltaAnomalyCount;
+
+  const bySeverity = createZeroSnapshotSeverityBuckets();
+  for (const reasonCode of BULK_SETTLEMENT_ROLLBACK_REASON_CODES) {
+    const severity = BULK_SETTLEMENT_ROLLBACK_REASON_MAP[reasonCode].severity;
+    bySeverity[severity] += byReason[reasonCode];
+  }
+
+  const topAnomalies = BULK_SETTLEMENT_ROLLBACK_REASON_CODES
+    .filter((reasonCode) => byReason[reasonCode] > 0)
+    .map((reasonCode) => ({
+      reasonCode,
+      severity: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[reasonCode].severity,
+      count: byReason[reasonCode],
+      description: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[reasonCode].description,
+    }))
+    .sort((left, right) => {
+      if (left.count !== right.count) {
+        return right.count - left.count;
+      }
+      return BULK_SETTLEMENT_ROLLBACK_REASON_CODES.indexOf(left.reasonCode)
+        - BULK_SETTLEMENT_ROLLBACK_REASON_CODES.indexOf(right.reasonCode);
+    })
+    .slice(0, 3);
+
+  return {
+    contract: 'settlement-bulk-triage-snapshot.v1',
+    selectedCount: built.summary.selection.validCount,
+    byReason,
+    bySeverity,
+    topAnomalies,
+    generatedAt: buildDeterministicGeneratedAt(built),
+    metadata: {
+      reasonSeverityMap: BULK_SETTLEMENT_ROLLBACK_REASON_CODES.map((code) => ({
+        code,
+        severity: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].severity,
+        description: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].description,
+      })),
+    },
   };
 }
 
@@ -441,6 +528,38 @@ function createZeroWarningCodeMap(): Record<BulkSettlementPreviewWarningCode, nu
     'BSP-006_INVALID_RISK_BUCKET': 0,
     'BSP-007_SELECTED_ID_NOT_FOUND': 0,
   };
+}
+
+function createZeroRollbackReasonMap(): Record<BulkSettlementRollbackReasonCode, number> {
+  return {
+    MALFORMED_ROW: 0,
+    STALE_VERSION_RISK: 0,
+    MIXED_STATUS_SELECTION: 0,
+    HIGH_DELTA_ANOMALY: 0,
+  };
+}
+
+function createZeroSnapshotSeverityBuckets(): Record<BulkSettlementTriageSnapshotSeverityBucket, number> {
+  return {
+    warning: 0,
+    critical: 0,
+  };
+}
+
+function buildDeterministicGeneratedAt(input: {
+  selectedRows: BulkSettlementPreviewNormalizedRow[];
+  warnings: BulkSettlementPreviewWarning[];
+}): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        selectedRows: input.selectedRows,
+        warnings: input.warnings,
+      }),
+    )
+    .digest('hex');
+  const offsetMs = Number.parseInt(digest.slice(0, 12), 16) % (365 * 24 * 60 * 60 * 1000);
+  return new Date(Date.UTC(2026, 0, 1) + offsetMs).toISOString();
 }
 
 function normalizeStatus(value: unknown): BulkSettlementPreviewStatusBucket | null {

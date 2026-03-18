@@ -15,11 +15,13 @@ import {
   BULK_SETTLEMENT_PREVIEW_WARNING_HINTS,
   BulkSettlementRollbackReasonCode,
   BulkSettlementRollbackReasonSeverity,
+  BulkSettlementTriageSnapshot,
   BulkSettlementPreviewStatusBucket,
   BulkSettlementPreviewRiskBucket,
   BulkSettlementPreviewWarningCode,
   buildBulkSettlementActionPreviewExport,
   buildBulkSettlementRollbackRecommendation,
+  buildBulkSettlementTriageSnapshot,
 } from './bulk-settlement-preview';
 import {
   BuildSettlementBulkActionPreviewDto,
@@ -455,6 +457,12 @@ export class SettlementsService {
         reasonCodeMap: recommendation.reasonCodeMap,
       },
     };
+  }
+
+  buildSettlementExceptionBulkTriageSnapshot(
+    input: BuildSettlementBulkActionPreviewDto,
+  ): BulkSettlementTriageSnapshot {
+    return buildBulkSettlementTriageSnapshot(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {

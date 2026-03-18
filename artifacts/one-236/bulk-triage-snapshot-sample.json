@@ -1,0 +1,59 @@
+{
+  "contract": "settlement-bulk-triage-snapshot.v1",
+  "selectedCount": 3,
+  "byReason": {
+    "MALFORMED_ROW": 1,
+    "STALE_VERSION_RISK": 1,
+    "MIXED_STATUS_SELECTION": 1,
+    "HIGH_DELTA_ANOMALY": 1
+  },
+  "bySeverity": {
+    "warning": 2,
+    "critical": 2
+  },
+  "topAnomalies": [
+    {
+      "reasonCode": "MALFORMED_ROW",
+      "severity": "critical",
+      "count": 1,
+      "description": "Input contains malformed or invalid rows that may corrupt bulk-action outcomes."
+    },
+    {
+      "reasonCode": "STALE_VERSION_RISK",
+      "severity": "warning",
+      "count": 1,
+      "description": "Selected rows are missing from validated input and may represent stale state."
+    },
+    {
+      "reasonCode": "MIXED_STATUS_SELECTION",
+      "severity": "warning",
+      "count": 1,
+      "description": "Selected rows include multiple workflow statuses and may require operator review."
+    }
+  ],
+  "generatedAt": "2026-07-16T04:21:16.395Z",
+  "metadata": {
+    "reasonSeverityMap": [
+      {
+        "code": "MALFORMED_ROW",
+        "severity": "critical",
+        "description": "Input contains malformed or invalid rows that may corrupt bulk-action outcomes."
+      },
+      {
+        "code": "STALE_VERSION_RISK",
+        "severity": "warning",
+        "description": "Selected rows are missing from validated input and may represent stale state."
+      },
+      {
+        "code": "MIXED_STATUS_SELECTION",
+        "severity": "warning",
+        "description": "Selected rows include multiple workflow statuses and may require operator review."
+      },
+      {
+        "code": "HIGH_DELTA_ANOMALY",
+        "severity": "critical",
+        "description": "Selection includes high/critical delta magnitudes that increase rollback risk."
+      }
+    ]
+  }
+}
