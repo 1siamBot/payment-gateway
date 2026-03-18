@@ -27,6 +27,7 @@ A Nuxt 3 customer/admin operations app is available in [`frontend/`](./frontend)
 - Customer search + customer payment history
 - Manual refund trigger for support workflows
 - Loading/error/empty states for each critical path
+- Payment attempt timeline drawer fixture lab at `/payment-attempt-timeline` (supports `?scenario=successful_capture|retry_then_success|terminal_failure|empty|malformed`)
 
 ### Frontend env
 
