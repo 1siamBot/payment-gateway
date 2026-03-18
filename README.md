@@ -230,6 +230,31 @@ npm run adjudication:replay:verify
 - `0`: all checks (10/11/12) are `PASS_FINAL`
 - non-zero: one or more checks failed, or fixture shape is invalid
 
+## Adjudication Payload Diff Guard CLI (ONE-183)
+
+Deterministic payload schema-diff guard for FE publication artifacts using canonical field expectations (ONE-180) and check mapping compatibility with replay checks 10/11/12 (ONE-182).
+
+### Run
+
+```bash
+npm run adjudication:payload:diff -- --input <path-to-payload.json>
+# optional output override:
+# npm run adjudication:payload:diff -- --input <path> --output artifacts/custom-payload-diff-summary.json
+```
+
+### Artifact output
+
+- Default path: `artifacts/adjudication-payload-diff-summary.json`
+- Includes:
+  - `verdict` (`PASS_FINAL` or `FAIL`)
+  - `checkResults[]` for checks `10/11/12`
+  - `mismatches[]` rows with stable code, path, expected/actual details, and mapped checks
+
+### Exit behavior
+
+- `0`: input payload matches canonical required schema set
+- non-zero: one or more deterministic mismatches found
+
 ### Stable console summary lines
 
 ```text
