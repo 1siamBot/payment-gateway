@@ -1,20 +1,31 @@
 <script setup lang="ts">
 import {
+  activateExceptionSavedView,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   applyRefundStatus,
+  buildExceptionQueryFromSavedView,
   buildExceptionActionIdempotencyKey,
   buildExceptionBulkPreview,
   canRefundStatus,
   classifyExceptionActionFailure,
+  createExceptionSavedView,
+  DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
   DEFAULT_EXCEPTION_QUERY_STATE,
+  deleteExceptionSavedView,
+  EXCEPTION_SAVED_VIEW_QUERY_KEY,
+  EXCEPTION_SAVED_VIEW_STORAGE_KEY,
   filterSettlementMerchants,
   listExceptionQueryPresets,
   parseExceptionQueryState,
+  pinExceptionSavedView,
   normalizeExceptionStatus,
   normalizeOptional,
   prependExceptionAudit,
+  renameExceptionSavedView,
   resolveActiveExceptionPreset,
+  restoreExceptionSavedViewState,
+  serializeExceptionSavedViewState,
   serializeExceptionQueryState,
   validateExceptionActionInput,
 } from '../utils/wave1';
@@ -303,6 +314,13 @@ const exceptionQueryRecovery = reactive({
   active: false,
   message: '',
 });
+const exceptionSavedViewState = ref(DEFAULT_EXCEPTION_SAVED_VIEW_STATE);
+const exceptionSavedViewDraftName = ref('');
+const exceptionSavedViewRenameDraft = reactive<Record<string, string>>({});
+const exceptionSavedViewRecovery = reactive({
+  active: false,
+  message: '',
+});
 const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
   merchantId: exceptionFilters.merchantId,
   provider: exceptionFilters.provider,
@@ -317,6 +335,7 @@ const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) =>
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
 const areAllExceptionRowsSelected = computed(() => exceptionRows.value.length > 0
   && exceptionRows.value.every((row) => selectedExceptionIds.value.includes(row.id)));
+const exceptionSavedViews = computed(() => exceptionSavedViewState.value.views);
 
 const webhookFilters = reactive({
   merchantId: '',
@@ -1165,11 +1184,142 @@ function clearExceptionQueryRecovery() {
   exceptionQueryRecovery.message = '';
 }
 
+function setExceptionSavedViewRecovery(message: string) {
+  exceptionSavedViewRecovery.active = true;
+  exceptionSavedViewRecovery.message = message;
+}
+
+function clearExceptionSavedViewRecovery() {
+  exceptionSavedViewRecovery.active = false;
+  exceptionSavedViewRecovery.message = '';
+}
+
+function hasExceptionQueryFilters(query: Record<string, unknown>): boolean {
+  return Boolean(
+    query.exceptionMerchant
+    || query.exceptionProvider
+    || query.exceptionStatus
+    || query.exceptionStartDate
+    || query.exceptionEndDate
+    || query.exceptionPage
+    || query.exceptionPageSize
+    || query.exceptionPreset,
+  );
+}
+
+function readSavedViewStoragePayload(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.localStorage.getItem(EXCEPTION_SAVED_VIEW_STORAGE_KEY) ?? '';
+}
+
+function writeSavedViewStoragePayload(payload: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (exceptionSavedViewState.value.views.length === 0) {
+    window.localStorage.removeItem(EXCEPTION_SAVED_VIEW_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(EXCEPTION_SAVED_VIEW_STORAGE_KEY, payload);
+}
+
+function persistSavedViewState(nextState: typeof DEFAULT_EXCEPTION_SAVED_VIEW_STATE) {
+  exceptionSavedViewState.value = nextState;
+  for (const view of nextState.views) {
+    exceptionSavedViewRenameDraft[view.id] = view.name;
+  }
+  const validIds = new Set(nextState.views.map((view) => view.id));
+  for (const id of Object.keys(exceptionSavedViewRenameDraft)) {
+    if (!validIds.has(id)) {
+      delete exceptionSavedViewRenameDraft[id];
+    }
+  }
+  writeSavedViewStoragePayload(serializeExceptionSavedViewState(nextState));
+}
+
+function applySavedViewAndReload(viewId: string) {
+  const nextState = activateExceptionSavedView(exceptionSavedViewState.value, viewId);
+  persistSavedViewState(nextState);
+  const query = buildExceptionQueryFromSavedView(nextState, viewId);
+  if (!query) {
+    exceptionState.error = `Saved view ${viewId} not found.`;
+    return;
+  }
+  applyExceptionQueryState(query);
+  clearExceptionQueryRecovery();
+  void loadExceptions(1);
+}
+
+function createSavedExceptionViewFromFilters() {
+  const nextState = createExceptionSavedView(exceptionSavedViewState.value, {
+    name: exceptionSavedViewDraftName.value,
+    query: {
+      merchantId: exceptionFilters.merchantId,
+      provider: exceptionFilters.provider,
+      status: exceptionFilters.status,
+      startDate: exceptionFilters.startDate,
+      endDate: exceptionFilters.endDate,
+      pageSize: exceptionFilters.pageSize,
+    },
+  });
+  persistSavedViewState(nextState);
+  exceptionSavedViewDraftName.value = '';
+  clearExceptionSavedViewRecovery();
+  exceptionState.message = `Saved triage view "${nextState.views.find((view) => view.id === nextState.activeViewId)?.name ?? 'new view'}" created.`;
+  void syncExceptionQueryToRoute(exceptionFilters.page);
+}
+
+function renameSavedExceptionView(viewId: string) {
+  const name = exceptionSavedViewRenameDraft[viewId] ?? '';
+  const nextState = renameExceptionSavedView(exceptionSavedViewState.value, {
+    viewId,
+    name,
+  });
+  persistSavedViewState(nextState);
+  exceptionState.message = `Saved view ${viewId} renamed.`;
+  void syncExceptionQueryToRoute(exceptionFilters.page);
+}
+
+function deleteSavedExceptionViewAndRefresh(viewId: string) {
+  const nextState = deleteExceptionSavedView(exceptionSavedViewState.value, viewId);
+  persistSavedViewState(nextState);
+  if (!nextState.views.length) {
+    clearExceptionSavedViewRecovery();
+  }
+  if (nextState.activeViewId) {
+    const query = buildExceptionQueryFromSavedView(nextState, nextState.activeViewId);
+    if (query) {
+      applyExceptionQueryState(query);
+    }
+  }
+  exceptionState.message = `Saved view ${viewId} deleted.`;
+  void loadExceptions(1);
+}
+
+function pinSavedExceptionViewAndApply(viewId: string) {
+  const pinned = pinExceptionSavedView(exceptionSavedViewState.value, { viewId });
+  persistSavedViewState(pinned);
+  clearExceptionSavedViewRecovery();
+  applySavedViewAndReload(viewId);
+}
+
+function resetSavedViewsToSafeDefaults() {
+  persistSavedViewState(DEFAULT_EXCEPTION_SAVED_VIEW_STATE);
+  clearExceptionSavedViewRecovery();
+  exceptionState.message = 'Saved views were reset to safe defaults.';
+  void syncExceptionQueryToRoute(exceptionFilters.page);
+}
+
 async function syncExceptionQueryToRoute(page = 1) {
   const queryState = buildExceptionQueryState(page);
   const exceptionQuery = serializeExceptionQueryState(queryState);
   if (exceptionFixtureMode.value !== 'api') {
     exceptionQuery.exceptionFixture = exceptionFixtureMode.value;
+  }
+  if (exceptionSavedViewState.value.views.length > 0) {
+    exceptionQuery[EXCEPTION_SAVED_VIEW_QUERY_KEY] = serializeExceptionSavedViewState(exceptionSavedViewState.value);
   }
 
   const nextQuery = {
@@ -1186,6 +1336,7 @@ async function syncExceptionQueryToRoute(page = 1) {
   delete nextQuery.exceptionPageSize;
   delete nextQuery.exceptionPreset;
   delete nextQuery.exceptionFixture;
+  delete nextQuery[EXCEPTION_SAVED_VIEW_QUERY_KEY];
 
   await router.replace({
     query: {
@@ -1434,7 +1585,8 @@ async function submitExceptionAction() {
 }
 
 onMounted(() => {
-  const parsedQuery = parseExceptionQueryState(route.query as Record<string, unknown>);
+  const routeQuery = route.query as Record<string, unknown>;
+  const parsedQuery = parseExceptionQueryState(routeQuery);
   applyExceptionQueryState(parsedQuery.state);
   if (parsedQuery.recoveryReasons.length) {
     setExceptionQueryRecovery(
@@ -1442,13 +1594,35 @@ onMounted(() => {
     );
   }
 
+  const restoredSavedViews = restoreExceptionSavedViewState({
+    queryPayload: routeQuery[EXCEPTION_SAVED_VIEW_QUERY_KEY],
+    storagePayload: readSavedViewStoragePayload(),
+  });
+  persistSavedViewState(restoredSavedViews.state);
+  if (restoredSavedViews.recoveryReasons.length > 0) {
+    setExceptionSavedViewRecovery(
+      `Saved-view payload recovery applied (${restoredSavedViews.source}). ${restoredSavedViews.recoveryReasons.join(' ')}`,
+    );
+  } else {
+    clearExceptionSavedViewRecovery();
+  }
+  if (!hasExceptionQueryFilters(routeQuery) && restoredSavedViews.state.views.length > 0) {
+    const defaultViewId = restoredSavedViews.state.activeViewId
+      || restoredSavedViews.state.views.find((view) => view.pinned)?.id
+      || restoredSavedViews.state.views[0].id;
+    const restoredQuery = buildExceptionQueryFromSavedView(restoredSavedViews.state, defaultViewId);
+    if (restoredQuery) {
+      applyExceptionQueryState(restoredQuery);
+    }
+  }
+
   const initialFixture = resolveInitialFixtureMode();
   if (initialFixture !== 'api') {
     applyExceptionFixture(initialFixture);
   }
   exceptionFixtureMode.value = initialFixture;
-  void syncExceptionQueryToRoute(parsedQuery.state.page);
-  void loadExceptions(parsedQuery.state.page);
+  void syncExceptionQueryToRoute(exceptionFilters.page);
+  void loadExceptions(exceptionFilters.page);
   void loadMerchants();
 });
 </script>
@@ -1820,6 +1994,82 @@ onMounted(() => {
           {{ preset.label }}
         </button>
       </div>
+
+      <article class="saved-view-panel">
+        <h3>Saved Triage Views</h3>
+        <p class="state" :class="{ error: exceptionSavedViewRecovery.active }">
+          {{ exceptionSavedViewRecovery.active
+            ? exceptionSavedViewRecovery.message
+            : 'Save, pin, and reapply deterministic triage filters without backend credentials.' }}
+        </p>
+        <div class="saved-view-create">
+          <label>
+            View name
+            <input
+              v-model="exceptionSavedViewDraftName"
+              placeholder="e.g. high risk pending investigation"
+            />
+          </label>
+          <button type="button" @click="createSavedExceptionViewFromFilters">
+            Save Current Filters
+          </button>
+        </div>
+        <div class="inline-actions">
+          <button
+            v-if="exceptionSavedViewRecovery.active"
+            type="button"
+            class="link"
+            @click="resetSavedViewsToSafeDefaults"
+          >
+            Reset Saved Views To Safe Defaults
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Pinned</th>
+                <th>Scope</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!exceptionSavedViews.length">
+                <td colspan="4">No saved triage views yet.</td>
+              </tr>
+              <tr
+                v-for="view in exceptionSavedViews"
+                :key="view.id"
+                :class="{ 'saved-view-active': exceptionSavedViewState.activeViewId === view.id }"
+              >
+                <td>
+                  <label>
+                    Rename
+                    <input v-model="exceptionSavedViewRenameDraft[view.id]" />
+                  </label>
+                  <small>ID: {{ view.id }}</small>
+                </td>
+                <td>{{ view.pinned ? 'yes' : 'no' }}</td>
+                <td>
+                  status={{ view.query.status || 'all' }},
+                  merchant={{ view.query.merchantId || '-' }},
+                  provider={{ view.query.provider || '-' }},
+                  pageSize={{ view.query.pageSize }}
+                </td>
+                <td>
+                  <div class="inline-actions">
+                    <button type="button" class="link" @click="applySavedViewAndReload(view.id)">Apply</button>
+                    <button type="button" class="link" @click="pinSavedExceptionViewAndApply(view.id)">Pin Default</button>
+                    <button type="button" class="link" @click="renameSavedExceptionView(view.id)">Save Name</button>
+                    <button type="button" class="danger" @click="deleteSavedExceptionViewAndRefresh(view.id)">Delete</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
 
       <div v-if="exceptionQueryRecovery.active" class="query-recovery">
         <p>{{ exceptionQueryRecovery.message }}</p>

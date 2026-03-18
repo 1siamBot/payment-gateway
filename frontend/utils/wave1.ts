@@ -440,6 +440,343 @@ export function parseExceptionQueryState(
   return { state, recoveryReasons };
 }
 
+export const EXCEPTION_SAVED_VIEW_SCHEMA_VERSION = 1;
+export const EXCEPTION_SAVED_VIEW_QUERY_KEY = 'exceptionSavedViews';
+export const EXCEPTION_SAVED_VIEW_STORAGE_KEY = 'pg.exceptionSavedViews.v1';
+
+export type ExceptionSavedViewQuery = Pick<
+  ExceptionQueryState,
+  'merchantId' | 'provider' | 'status' | 'startDate' | 'endDate' | 'pageSize'
+>;
+
+export type ExceptionSavedView = {
+  id: string;
+  name: string;
+  pinned: boolean;
+  query: ExceptionSavedViewQuery;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ExceptionSavedViewState = {
+  version: typeof EXCEPTION_SAVED_VIEW_SCHEMA_VERSION;
+  activeViewId: string;
+  views: ExceptionSavedView[];
+};
+
+export type ExceptionSavedViewRestoreResult = {
+  state: ExceptionSavedViewState;
+  source: 'query' | 'storage' | 'default';
+  recoveryReasons: string[];
+};
+
+export const DEFAULT_EXCEPTION_SAVED_VIEW_STATE: ExceptionSavedViewState = {
+  version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+  activeViewId: '',
+  views: [],
+};
+
+function normalizeSavedViewName(input: string, fallbackIndex: number): string {
+  const normalized = input.trim().replace(/\s+/g, ' ');
+  if (normalized) {
+    return normalized.slice(0, 64);
+  }
+  return `Saved View ${fallbackIndex}`;
+}
+
+function normalizeSavedViewQuery(input: Partial<ExceptionSavedViewQuery>): ExceptionSavedViewQuery {
+  const status = input.status === 'open'
+    || input.status === 'investigating'
+    || input.status === 'resolved'
+    || input.status === 'ignored'
+    ? input.status
+    : '';
+  const startDate = typeof input.startDate === 'string' && isValidDateOnly(input.startDate) ? input.startDate : '';
+  const endDate = typeof input.endDate === 'string' && isValidDateOnly(input.endDate) ? input.endDate : '';
+  const pageSize = Number(input.pageSize);
+  return {
+    merchantId: normalizeOptional(input.merchantId) ?? '',
+    provider: normalizeOptional(input.provider) ?? '',
+    status,
+    startDate,
+    endDate,
+    pageSize: Number.isFinite(pageSize) && pageSize >= 1 && pageSize <= 100 ? pageSize : DEFAULT_EXCEPTION_QUERY_STATE.pageSize,
+  };
+}
+
+function sortSavedViews(views: ExceptionSavedView[]): ExceptionSavedView[] {
+  return [...views].sort((left, right) => {
+    if (left.pinned !== right.pinned) {
+      return left.pinned ? -1 : 1;
+    }
+    if (left.updatedAt !== right.updatedAt) {
+      return right.updatedAt.localeCompare(left.updatedAt);
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function normalizeSavedViewState(raw: ExceptionSavedViewState): ExceptionSavedViewState {
+  const views = sortSavedViews(raw.views.map((view) => ({
+    ...view,
+    query: normalizeSavedViewQuery(view.query),
+    name: normalizeSavedViewName(view.name, 1),
+  })));
+  const pinnedViewId = views.find((view) => view.pinned)?.id ?? '';
+  const activeViewId = views.some((view) => view.id === raw.activeViewId)
+    ? raw.activeViewId
+    : (pinnedViewId || views[0]?.id || '');
+  return {
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId,
+    views: views.map((view) => ({
+      ...view,
+      pinned: pinnedViewId ? view.id === pinnedViewId : false,
+    })),
+  };
+}
+
+export function createExceptionSavedView(
+  state: ExceptionSavedViewState,
+  input: {
+    name: string;
+    query: Partial<ExceptionSavedViewQuery>;
+    nowIso?: string;
+  },
+): ExceptionSavedViewState {
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const query = normalizeSavedViewQuery(input.query);
+  const name = normalizeSavedViewName(input.name, state.views.length + 1);
+  const id = `sv-${hashFNV1a(JSON.stringify({ name, query, nowIso }))}`;
+  const views = sortSavedViews([
+    ...state.views,
+    {
+      id,
+      name,
+      pinned: state.views.length === 0,
+      query,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+  ]);
+  return normalizeSavedViewState({
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId: id,
+    views,
+  });
+}
+
+export function renameExceptionSavedView(
+  state: ExceptionSavedViewState,
+  input: { viewId: string; name: string; nowIso?: string },
+): ExceptionSavedViewState {
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const target = state.views.find((view) => view.id === input.viewId);
+  if (!target) {
+    return state;
+  }
+  const name = normalizeSavedViewName(input.name, 1);
+  if (name === target.name) {
+    return state;
+  }
+  const views = sortSavedViews(state.views.map((view) => (
+    view.id === input.viewId
+      ? { ...view, name, updatedAt: nowIso }
+      : view
+  )));
+  return normalizeSavedViewState({
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId: state.activeViewId,
+    views,
+  });
+}
+
+export function deleteExceptionSavedView(
+  state: ExceptionSavedViewState,
+  viewId: string,
+): ExceptionSavedViewState {
+  const views = state.views.filter((view) => view.id !== viewId);
+  return normalizeSavedViewState({
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId: state.activeViewId === viewId ? '' : state.activeViewId,
+    views,
+  });
+}
+
+export function pinExceptionSavedView(
+  state: ExceptionSavedViewState,
+  input: { viewId: string; nowIso?: string },
+): ExceptionSavedViewState {
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  if (!state.views.some((view) => view.id === input.viewId)) {
+    return state;
+  }
+  const views = sortSavedViews(state.views.map((view) => ({
+    ...view,
+    pinned: view.id === input.viewId,
+    updatedAt: view.id === input.viewId ? nowIso : view.updatedAt,
+  })));
+  return normalizeSavedViewState({
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId: input.viewId,
+    views,
+  });
+}
+
+export function activateExceptionSavedView(
+  state: ExceptionSavedViewState,
+  viewId: string,
+): ExceptionSavedViewState {
+  if (!state.views.some((view) => view.id === viewId)) {
+    return state;
+  }
+  return normalizeSavedViewState({
+    version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+    activeViewId: viewId,
+    views: state.views,
+  });
+}
+
+export function buildExceptionQueryFromSavedView(
+  state: ExceptionSavedViewState,
+  viewId: string,
+): ExceptionQueryState | null {
+  const view = state.views.find((candidate) => candidate.id === viewId);
+  if (!view) {
+    return null;
+  }
+  const next: ExceptionQueryState = {
+    ...DEFAULT_EXCEPTION_QUERY_STATE,
+    ...normalizeSavedViewQuery(view.query),
+    page: 1,
+    preset: '',
+  };
+  next.preset = resolveActiveExceptionPreset(next);
+  return next;
+}
+
+export function serializeExceptionSavedViewState(state: ExceptionSavedViewState): string {
+  const normalized = normalizeSavedViewState(state);
+  return JSON.stringify({
+    version: normalized.version,
+    activeViewId: normalized.activeViewId,
+    views: normalized.views.map((view) => ({
+      id: view.id,
+      name: view.name,
+      pinned: view.pinned,
+      query: view.query,
+      createdAt: view.createdAt,
+      updatedAt: view.updatedAt,
+    })),
+  });
+}
+
+function parseExceptionSavedViewStatePayload(
+  rawPayload: unknown,
+): { state: ExceptionSavedViewState; recoveryReasons: string[] } {
+  const payload = firstQueryValue(rawPayload)?.trim() ?? (typeof rawPayload === 'string' ? rawPayload.trim() : '');
+  if (!payload) {
+    return {
+      state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+      recoveryReasons: [],
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    if (parsed.version !== EXCEPTION_SAVED_VIEW_SCHEMA_VERSION) {
+      return {
+        state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+        recoveryReasons: [`Unsupported saved-view payload version "${String(parsed.version)}".`],
+      };
+    }
+    if (!Array.isArray(parsed.views)) {
+      return {
+        state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+        recoveryReasons: ['Saved-view payload is malformed (missing views array).'],
+      };
+    }
+    const views: ExceptionSavedView[] = [];
+    for (const rawView of parsed.views) {
+      if (!rawView || typeof rawView !== 'object') {
+        return {
+          state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+          recoveryReasons: ['Saved-view payload is malformed (invalid row).'],
+        };
+      }
+      const view = rawView as Record<string, unknown>;
+      if (typeof view.id !== 'string' || !view.id.trim()) {
+        return {
+          state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+          recoveryReasons: ['Saved-view payload is malformed (missing id).'],
+        };
+      }
+      if (typeof view.name !== 'string') {
+        return {
+          state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+          recoveryReasons: ['Saved-view payload is malformed (missing name).'],
+        };
+      }
+      if (typeof view.createdAt !== 'string' || typeof view.updatedAt !== 'string') {
+        return {
+          state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+          recoveryReasons: ['Saved-view payload is malformed (missing timestamps).'],
+        };
+      }
+      const query = normalizeSavedViewQuery((view.query ?? {}) as Partial<ExceptionSavedViewQuery>);
+      views.push({
+        id: view.id.trim(),
+        name: normalizeSavedViewName(view.name, views.length + 1),
+        pinned: Boolean(view.pinned),
+        query,
+        createdAt: view.createdAt,
+        updatedAt: view.updatedAt,
+      });
+    }
+    const activeViewId = typeof parsed.activeViewId === 'string' ? parsed.activeViewId : '';
+    return {
+      state: normalizeSavedViewState({
+        version: EXCEPTION_SAVED_VIEW_SCHEMA_VERSION,
+        activeViewId,
+        views,
+      }),
+      recoveryReasons: [],
+    };
+  } catch {
+    return {
+      state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+      recoveryReasons: ['Saved-view payload is not valid JSON.'],
+    };
+  }
+}
+
+export function restoreExceptionSavedViewState(input: {
+  queryPayload: unknown;
+  storagePayload: unknown;
+}): ExceptionSavedViewRestoreResult {
+  const queryParsed = parseExceptionSavedViewStatePayload(input.queryPayload);
+  if (queryParsed.recoveryReasons.length === 0 && queryParsed.state.views.length > 0) {
+    return {
+      state: queryParsed.state,
+      source: 'query',
+      recoveryReasons: [],
+    };
+  }
+  const storageParsed = parseExceptionSavedViewStatePayload(input.storagePayload);
+  if (storageParsed.recoveryReasons.length === 0 && storageParsed.state.views.length > 0) {
+    return {
+      state: storageParsed.state,
+      source: 'storage',
+      recoveryReasons: queryParsed.recoveryReasons,
+    };
+  }
+  return {
+    state: DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+    source: 'default',
+    recoveryReasons: [...queryParsed.recoveryReasons, ...storageParsed.recoveryReasons],
+  };
+}
+
 export function validateExceptionActionInput(reason: string): string | null {
   const normalized = reason.trim();
   if (!normalized) {

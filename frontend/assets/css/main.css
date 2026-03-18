@@ -272,6 +272,31 @@ button.danger {
   color: #92400e;
 }
 
+.saved-view-panel {
+  border: 1px solid #99f6e4;
+  background: #ecfeff;
+  border-radius: 10px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.saved-view-create {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
+  margin-bottom: 0.65rem;
+}
+
+.saved-view-create > button {
+  width: auto;
+  min-width: 180px;
+}
+
+.saved-view-active {
+  background: #f0fdfa;
+}
+
 .bulk-preview-panel {
   border: 1px solid #93c5fd;
   background: #eff6ff;
@@ -471,6 +496,14 @@ td small {
   }
 
   .fixture-bar > button {
+    width: 100%;
+  }
+
+  .saved-view-create {
+    grid-template-columns: 1fr;
+  }
+
+  .saved-view-create > button {
     width: 100%;
   }
 

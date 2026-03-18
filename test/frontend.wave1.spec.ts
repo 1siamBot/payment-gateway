@@ -1,11 +1,20 @@
 import {
+  activateExceptionSavedView,
   applyRefundStatus,
+  buildExceptionQueryFromSavedView,
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
+  createExceptionSavedView,
+  DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
+  deleteExceptionSavedView,
   DEFAULT_EXCEPTION_QUERY_STATE,
+  pinExceptionSavedView,
+  renameExceptionSavedView,
+  restoreExceptionSavedViewState,
+  serializeExceptionSavedViewState,
   canRefundStatus,
   filterSettlementMerchants,
   parseExceptionQueryState,
@@ -264,5 +273,93 @@ describe('frontend wave1 helpers', () => {
     expect(preview.malformedCount).toBe(2);
     expect(preview.malformedMessage).toContain('2 malformed row');
     expect(preview.csvPreview).toContain('warning,malformed_rows_present');
+  });
+
+  it('creates, renames, pins, applies, and deletes saved triage views deterministically', () => {
+    const created = createExceptionSavedView(DEFAULT_EXCEPTION_SAVED_VIEW_STATE, {
+      name: 'Ops Investigating',
+      query: {
+        merchantId: 'merchant-7',
+        provider: 'mock-b',
+        status: 'investigating',
+        startDate: '2026-03-12',
+        endDate: '2026-03-18',
+        pageSize: 25,
+      },
+      nowIso: '2026-03-19T01:00:00.000Z',
+    });
+    expect(created.views).toHaveLength(1);
+    expect(created.views[0].pinned).toBe(true);
+
+    const createdSecond = createExceptionSavedView(created, {
+      name: 'Open Backlog',
+      query: {
+        status: 'open',
+        pageSize: 20,
+      },
+      nowIso: '2026-03-19T01:05:00.000Z',
+    });
+    const secondId = createdSecond.views.find((view) => view.name === 'Open Backlog')?.id;
+    expect(secondId).toBeTruthy();
+
+    const renamed = renameExceptionSavedView(createdSecond, {
+      viewId: secondId!,
+      name: 'Open Queue',
+      nowIso: '2026-03-19T01:06:00.000Z',
+    });
+    expect(renamed.views.some((view) => view.name === 'Open Queue')).toBe(true);
+
+    const pinned = pinExceptionSavedView(renamed, {
+      viewId: secondId!,
+      nowIso: '2026-03-19T01:07:00.000Z',
+    });
+    expect(pinned.views.filter((view) => view.pinned)).toHaveLength(1);
+    expect(pinned.activeViewId).toBe(secondId);
+
+    const activated = activateExceptionSavedView(pinned, secondId!);
+    const query = buildExceptionQueryFromSavedView(activated, secondId!);
+    expect(query?.status).toBe('open');
+    expect(query?.page).toBe(1);
+    expect(query?.pageSize).toBe(20);
+
+    const deleted = deleteExceptionSavedView(activated, secondId!);
+    expect(deleted.views).toHaveLength(1);
+    expect(deleted.activeViewId).toBe(deleted.views[0].id);
+  });
+
+  it('restores saved triage view state from URL payload first, with local storage fallback', () => {
+    const state = createExceptionSavedView(DEFAULT_EXCEPTION_SAVED_VIEW_STATE, {
+      name: 'Investigating',
+      query: {
+        status: 'investigating',
+        pageSize: 50,
+      },
+      nowIso: '2026-03-19T02:00:00.000Z',
+    });
+    const payload = serializeExceptionSavedViewState(state);
+
+    const fromQuery = restoreExceptionSavedViewState({
+      queryPayload: payload,
+      storagePayload: '',
+    });
+    expect(fromQuery.source).toBe('query');
+    expect(fromQuery.state.views).toHaveLength(1);
+
+    const fromStorage = restoreExceptionSavedViewState({
+      queryPayload: '',
+      storagePayload: payload,
+    });
+    expect(fromStorage.source).toBe('storage');
+    expect(fromStorage.state.views[0].name).toBe('Investigating');
+  });
+
+  it('falls back safely when saved-view payload is corrupted or unsupported', () => {
+    const restored = restoreExceptionSavedViewState({
+      queryPayload: '{"version":999,"views":[]}',
+      storagePayload: '{bad-json',
+    });
+    expect(restored.source).toBe('default');
+    expect(restored.state).toEqual(DEFAULT_EXCEPTION_SAVED_VIEW_STATE);
+    expect(restored.recoveryReasons.length).toBeGreaterThan(0);
   });
 });
