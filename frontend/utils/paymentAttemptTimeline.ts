@@ -30,6 +30,8 @@ export type TimelineEventRow = RawAttemptEvent & {
   orderLabel: string;
 };
 
+export type TimelineFilterKey = 'all' | 'retry' | 'failed' | 'refund-eligible';
+
 export type TimelineViewState = {
   message: string;
   recoveryHint: string;
@@ -166,6 +168,39 @@ export function normalizeTimelineEvents(rawEvents: RawAttemptEvent[]): {
   });
 
   return { rows: validRows, malformedCount };
+}
+
+export function isRetryEvent(row: TimelineEventRow): boolean {
+  return row.stage.toLowerCase().includes('retry');
+}
+
+export function isRefundEligibleEvent(row: TimelineEventRow, rows: TimelineEventRow[]): boolean {
+  if (row.status !== 'failed') {
+    return false;
+  }
+  const laterRows = rows.filter((candidate) => candidate.occurredAtEpochMs > row.occurredAtEpochMs);
+  const hasRecoveryAfterFailure = laterRows.some((candidate) => {
+    const stage = candidate.stage.toLowerCase();
+    return (
+      stage.includes('capture retry sent')
+      || stage.includes('capture confirmed')
+      || stage.includes('settlement completed')
+    );
+  });
+  return !hasRecoveryAfterFailure;
+}
+
+export function filterTimelineEvents(rows: TimelineEventRow[], filterKey: TimelineFilterKey): TimelineEventRow[] {
+  if (filterKey === 'all') {
+    return rows;
+  }
+  if (filterKey === 'retry') {
+    return rows.filter((row) => isRetryEvent(row));
+  }
+  if (filterKey === 'failed') {
+    return rows.filter((row) => row.status === 'failed');
+  }
+  return rows.filter((row) => isRefundEligibleEvent(row, rows));
 }
 
 export function buildTimelineViewState(input: {

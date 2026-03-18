@@ -1,6 +1,8 @@
 import {
   buildTimelineViewState,
+  filterTimelineEvents,
   getPaymentAttemptFixture,
+  isRefundEligibleEvent,
   normalizeTimelineEvents,
 } from '../frontend/utils/paymentAttemptTimeline';
 
@@ -65,5 +67,35 @@ describe('payment attempt timeline fixtures', () => {
 
     expect(state.message).toBe('Timeline fixture failed to load.');
     expect(state.recoveryHint).toContain('pay_ref_001');
+  });
+
+  it('filters retry rows deterministically', () => {
+    const fixture = getPaymentAttemptFixture('retry_then_success');
+    const { rows } = normalizeTimelineEvents(fixture.events);
+    const retryRows = filterTimelineEvents(rows, 'retry');
+
+    expect(retryRows).toHaveLength(2);
+    expect(retryRows.map((row) => row.id)).toEqual(['ev-106', 'ev-107']);
+  });
+
+  it('returns empty result set when filter has no matching rows', () => {
+    const fixture = getPaymentAttemptFixture('successful_capture');
+    const { rows } = normalizeTimelineEvents(fixture.events);
+    const refundEligibleRows = filterTimelineEvents(rows, 'refund-eligible');
+
+    expect(refundEligibleRows).toHaveLength(0);
+  });
+
+  it('marks failed terminal events as refund-eligible and excludes recovered failures', () => {
+    const terminalFixture = getPaymentAttemptFixture('terminal_failure');
+    const { rows: terminalRows } = normalizeTimelineEvents(terminalFixture.events);
+    const terminalEligibleRows = terminalRows.filter((row) => isRefundEligibleEvent(row, terminalRows));
+    expect(terminalEligibleRows.map((row) => row.id)).toEqual(['ev-206', 'ev-208']);
+
+    const retryFixture = getPaymentAttemptFixture('retry_then_success');
+    const { rows: retryRows } = normalizeTimelineEvents(retryFixture.events);
+    const retryFailure = retryRows.find((row) => row.id === 'ev-105');
+    expect(retryFailure).toBeDefined();
+    expect(isRefundEligibleEvent(retryFailure!, retryRows)).toBe(false);
   });
 });

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import {
   buildTimelineViewState,
+  filterTimelineEvents,
+  isRefundEligibleEvent,
   type PaymentAttemptFixture,
+  type TimelineFilterKey,
   type TimelineEventRow,
   type TimelineScenarioKey,
   loadPaymentAttemptScenario,
@@ -39,6 +42,13 @@ function shouldAutoOpenDrawer(): boolean {
 }
 
 const selectedScenario = ref<TimelineScenarioKey>(parseScenarioFromRoute());
+const filterChoices: Array<{ key: TimelineFilterKey; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'retry', label: 'Retry' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'refund-eligible', label: 'Refund Eligible' },
+];
+const selectedFilter = ref<TimelineFilterKey>('all');
 const autoOpenDrawer = shouldAutoOpenDrawer();
 const selectedFixture = ref<PaymentAttemptFixture | null>(null);
 const timelineRows = ref<TimelineEventRow[]>([]);
@@ -52,11 +62,13 @@ const stateError = ref('');
 const expandedEventIds = ref<Set<string>>(new Set());
 
 const currentScenarioLabel = computed(() => resolveScenarioLabel(selectedScenario.value));
+const filteredTimelineRows = computed(() => filterTimelineEvents(timelineRows.value, selectedFilter.value));
 
 async function loadDrawerData() {
   loading.value = true;
   stateError.value = '';
   expandedEventIds.value = new Set();
+  selectedFilter.value = 'all';
   try {
     const fixture = await loadPaymentAttemptScenario(selectedScenario.value);
     selectedFixture.value = fixture;
@@ -122,6 +134,16 @@ function toggleEventExpanded(eventId: string) {
     next.add(eventId);
   }
   expandedEventIds.value = next;
+}
+
+function getFilterEmptyStateText(): string {
+  if (selectedFilter.value === 'all') {
+    return 'No timeline rows to show for this scenario.';
+  }
+  if (selectedFilter.value === 'refund-eligible') {
+    return 'No refund-eligible rows match this scenario.';
+  }
+  return `No ${selectedFilter.value} rows match this scenario.`;
 }
 
 watch(selectedScenario, () => {
@@ -216,7 +238,20 @@ onMounted(() => {
             {{ malformedCount }} malformed event(s) were skipped to keep operator diagnostics safe.
           </p>
 
-          <div v-if="timelineRows.length && !drawerCollapsed" class="table-wrap drawer-table-wrap">
+          <div v-if="timelineRows.length && !drawerCollapsed" class="filter-chips" role="tablist" aria-label="Timeline filters">
+            <button
+              v-for="choice in filterChoices"
+              :key="choice.key"
+              type="button"
+              class="preset-chip"
+              :class="{ active: selectedFilter === choice.key }"
+              @click="selectedFilter = choice.key"
+            >
+              {{ choice.label }}
+            </button>
+          </div>
+
+          <div v-if="filteredTimelineRows.length && !drawerCollapsed" class="table-wrap drawer-table-wrap">
             <table>
               <thead>
                 <tr>
@@ -229,13 +264,18 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(event, idx) in timelineRows" :key="event.id">
+                <tr v-for="(event, idx) in filteredTimelineRows" :key="event.id">
                   <td>
                     <strong>{{ event.orderLabel }}</strong>
                     <small>#{{ idx + 1 }}</small>
                   </td>
                   <td>{{ new Date(event.occurredAt).toISOString() }}</td>
-                  <td><span :class="`attempt-status status-${event.status}`">{{ event.status }}</span></td>
+                  <td>
+                    <span :class="`attempt-status status-${event.status}`">{{ event.status }}</span>
+                    <span v-if="isRefundEligibleEvent(event, timelineRows)" class="attempt-status refund-eligible">
+                      Refund eligible
+                    </span>
+                  </td>
                   <td>{{ event.stage }}</td>
                   <td>{{ event.actor }}</td>
                   <td>
@@ -253,7 +293,7 @@ onMounted(() => {
               </tbody>
             </table>
           </div>
-          <p v-else-if="!timelineRows.length" class="state">No timeline rows to show for this scenario.</p>
+          <p v-else-if="!drawerCollapsed" class="state">{{ getFilterEmptyStateText() }}</p>
           <p v-else class="state">Drawer collapsed. Expand to view timeline rows.</p>
         </template>
       </aside>
