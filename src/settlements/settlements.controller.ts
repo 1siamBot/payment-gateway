@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -53,11 +53,15 @@ export class SettlementsController {
   updateException(
     @Req() request: AuthenticatedRequest,
     @Param('exceptionId') exceptionId: string,
+    @Headers('idempotency-key') idempotencyHeader?: string,
     @Body() body: UpdateSettlementExceptionDto,
   ) {
     return this.settlements.updateSettlementException(
       exceptionId,
-      body,
+      {
+        ...body,
+        idempotencyKey: body.idempotencyKey ?? idempotencyHeader,
+      },
       request.auth?.role ?? 'system',
     );
   }

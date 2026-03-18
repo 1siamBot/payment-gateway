@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsISO8601, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 
 export class UpdateSettlementExceptionDto {
   @IsIn(['resolve', 'ignore'])
@@ -13,8 +13,17 @@ export class UpdateSettlementExceptionDto {
   @IsString()
   note?: string;
 
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  idempotencyKey?: string;
+
   @Type(() => Number)
   @IsInt()
   @Min(1)
   expectedVersion!: number;
+
+  @IsOptional()
+  @IsISO8601()
+  expectedUpdatedAt?: string;
 }

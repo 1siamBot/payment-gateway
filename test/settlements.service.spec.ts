@@ -24,6 +24,7 @@ function createPrismaMock(seedTransactions: TransactionRow[] = []) {
   const exceptionStore = new Map<string, any>();
   const exceptionByFingerprint = new Map<string, string>();
   const exceptionAuditStore: any[] = [];
+  const idempotencyStore = new Map<string, { responseBody: string }>();
 
   const applyUpdateData = (row: any, data: Record<string, unknown>) => {
     const next = { ...row };
@@ -42,6 +43,7 @@ function createPrismaMock(seedTransactions: TransactionRow[] = []) {
     store: {
       exceptionStore,
       exceptionAuditStore,
+      idempotencyStore,
     },
     prisma: {
       transaction: {
@@ -73,6 +75,37 @@ function createPrismaMock(seedTransactions: TransactionRow[] = []) {
       },
       auditLog: {
         create: jest.fn(async () => ({})),
+      },
+      idempotencyKey: {
+        findUnique: jest.fn(async ({ where }: any) => (
+          idempotencyStore.get(`${where.scope_key.scope}:${where.scope_key.key}`) ?? null
+        )),
+        create: jest.fn(async ({ data }: any) => {
+          const key = `${data.scope}:${data.key}`;
+          if (idempotencyStore.has(key)) {
+            const error = new Error('Unique constraint failed');
+            (error as any).code = 'P2002';
+            throw error;
+          }
+          const row = { responseBody: data.responseBody };
+          idempotencyStore.set(key, row);
+          return row;
+        }),
+        update: jest.fn(async ({ where, data }: any) => {
+          const key = `${where.scope_key.scope}:${where.scope_key.key}`;
+          const current = idempotencyStore.get(key);
+          if (!current) {
+            throw new Error('Idempotency key not found');
+          }
+          const merged = { ...current, ...data };
+          idempotencyStore.set(key, merged);
+          return merged;
+        }),
+        delete: jest.fn(async ({ where }: any) => {
+          const key = `${where.scope_key.scope}:${where.scope_key.key}`;
+          idempotencyStore.delete(key);
+          return {};
+        }),
       },
       settlementException: {
         findUnique: jest.fn(async ({ where, include }: any) => {
@@ -501,6 +534,100 @@ describe('SettlementsService', () => {
       action: 'resolve',
       reason: 'done',
       expectedVersion: initial.exceptions[0].version,
-    }, 'ops')).rejects.toThrow('Version conflict; refresh and retry with current version');
+    }, 'ops')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+        reason: 'stale_version',
+        message: 'Version conflict; refresh and retry with current version',
+        retryable: true,
+        currentVersion: expect.any(Number),
+        currentUpdatedAt: expect.any(String),
+      }),
+      status: 409,
+    });
+  });
+
+  it('replays response for duplicate action submit with same idempotency key', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+    const target = detected.exceptions[0];
+
+    const first = await service.updateSettlementException(target.id, {
+      action: 'resolve',
+      reason: 'provider statement validated',
+      expectedVersion: target.version,
+      idempotencyKey: 'idem-settlement-action-1',
+    }, 'ops');
+
+    const second = await service.updateSettlementException(target.id, {
+      action: 'resolve',
+      reason: 'provider statement validated',
+      expectedVersion: target.version,
+      idempotencyKey: 'idem-settlement-action-1',
+    }, 'ops');
+
+    expect(second).toEqual(first);
+    expect(prismaMock.store.exceptionAuditStore).toHaveLength(2);
+  });
+
+  it('rejects idempotency key reuse when payload fingerprint changes', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+    const target = detected.exceptions[0];
+
+    await service.updateSettlementException(target.id, {
+      action: 'resolve',
+      reason: 'provider statement validated',
+      expectedVersion: target.version,
+      idempotencyKey: 'idem-settlement-action-2',
+    }, 'ops');
+
+    await expect(service.updateSettlementException(target.id, {
+      action: 'resolve',
+      reason: 'different payload',
+      expectedVersion: target.version,
+      idempotencyKey: 'idem-settlement-action-2',
+    }, 'ops')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+        reason: 'idempotency_key_reused',
+        retryable: false,
+      }),
+      status: 409,
+    });
   });
 });

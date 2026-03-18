@@ -102,6 +102,19 @@ type ExceptionDetail = ExceptionListItem & {
   audits: ExceptionAuditItem[];
 };
 
+type ExceptionActionIdempotencyEnvelope = {
+  status: 'pending' | 'completed';
+  fingerprint: string;
+  response?: ExceptionDetail;
+};
+
+type ExceptionActionConflictReason =
+  | 'stale_version'
+  | 'stale_updated_at'
+  | 'terminal_status'
+  | 'idempotency_key_reused'
+  | 'idempotency_in_progress';
+
 @Injectable()
 export class SettlementsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -330,6 +343,8 @@ export class SettlementsService {
     if (!reason) {
       throw new BadRequestException('reason is required');
     }
+    const note = input.note?.trim() || null;
+    const idempotencyKey = input.idempotencyKey?.trim() || null;
 
     const existing = await this.prisma.settlementException.findUnique({ where: { id: exceptionId } });
 
@@ -337,50 +352,360 @@ export class SettlementsService {
       throw new NotFoundException('Settlement exception not found');
     }
 
-    if (
-      existing.status === SettlementExceptionStatus.RESOLVED
-      || existing.status === SettlementExceptionStatus.IGNORED
-    ) {
-      throw new ConflictException('Settlement exception is already in terminal status');
+    const requestFingerprint = this.exceptionActionRequestFingerprint(exceptionId, {
+      action: input.action,
+      reason,
+      note,
+      expectedVersion: input.expectedVersion,
+      expectedUpdatedAt: input.expectedUpdatedAt?.trim() || null,
+    });
+
+    let claimedIdempotency = false;
+    if (idempotencyKey) {
+      const replay = await this.claimOrReplayExceptionAction(
+        exceptionId,
+        existing,
+        idempotencyKey,
+        requestFingerprint,
+      );
+      if (replay) {
+        return replay;
+      }
+      claimedIdempotency = true;
     }
 
     const toStatus = input.action === 'resolve'
       ? SettlementExceptionStatus.RESOLVED
       : SettlementExceptionStatus.IGNORED;
 
-    const updated = await this.prisma.settlementException.updateMany({
-      where: {
-        id: exceptionId,
-        version: input.expectedVersion,
-      },
-      data: {
-        status: toStatus,
-        latestOperatorReason: reason,
-        latestOperatorNote: input.note?.trim() || null,
-        resolutionActor: actor,
-        resolutionAt: new Date(),
-        version: {
-          increment: 1,
+    await this.logExceptionActionEvent('attempted', existing, actor, {
+      action: input.action,
+      expectedVersion: input.expectedVersion,
+      expectedUpdatedAt: input.expectedUpdatedAt?.trim() || null,
+      idempotencyKeyPresent: Boolean(idempotencyKey),
+    });
+
+    try {
+      if (input.expectedUpdatedAt && existing.updatedAt.toISOString() !== input.expectedUpdatedAt) {
+        await this.logExceptionActionEvent('conflict', existing, actor, {
+          reason: 'stale_updated_at',
+          action: input.action,
+          expectedVersion: input.expectedVersion,
+          expectedUpdatedAt: input.expectedUpdatedAt,
+        });
+        throw this.buildActionConflict(
+          existing,
+          'stale_updated_at',
+          'Version conflict; refresh and retry with current version',
+          input.expectedVersion,
+          input.expectedUpdatedAt,
+          true,
+        );
+      }
+
+      if (
+        existing.status === SettlementExceptionStatus.RESOLVED
+        || existing.status === SettlementExceptionStatus.IGNORED
+      ) {
+        await this.logExceptionActionEvent('invalid', existing, actor, {
+          reason: 'terminal_status',
+          action: input.action,
+        });
+        throw this.buildActionConflict(
+          existing,
+          'terminal_status',
+          'Settlement exception is already in terminal status',
+          input.expectedVersion,
+          input.expectedUpdatedAt?.trim() || null,
+          false,
+        );
+      }
+
+      const updated = await this.prisma.settlementException.updateMany({
+        where: {
+          id: exceptionId,
+          version: input.expectedVersion,
         },
+        data: {
+          status: toStatus,
+          latestOperatorReason: reason,
+          latestOperatorNote: note,
+          resolutionActor: actor,
+          resolutionAt: new Date(),
+          version: {
+            increment: 1,
+          },
+        },
+      });
+
+      if (updated.count !== 1) {
+        const latest = await this.prisma.settlementException.findUnique({ where: { id: exceptionId } });
+        if (latest) {
+          await this.logExceptionActionEvent('conflict', latest, actor, {
+            reason: 'stale_version',
+            action: input.action,
+            expectedVersion: input.expectedVersion,
+          });
+          throw this.buildActionConflict(
+            latest,
+            'stale_version',
+            'Version conflict; refresh and retry with current version',
+            input.expectedVersion,
+            input.expectedUpdatedAt?.trim() || null,
+            true,
+          );
+        }
+
+        throw new ConflictException('Version conflict; refresh and retry with current version');
+      }
+
+      await this.prisma.settlementExceptionAudit.create({
+        data: {
+          settlementExceptionId: exceptionId,
+          fromStatus: existing.status,
+          toStatus,
+          reason,
+          note,
+          actor,
+        },
+      });
+
+      const response = await this.getSettlementException(exceptionId);
+      await this.logExceptionActionEvent('succeeded', {
+        ...existing,
+        status: response.status,
+        version: response.version,
+        updatedAt: new Date(response.updatedAt),
+      }, actor, {
+        action: input.action,
+        toStatus: response.status,
+      });
+
+      if (idempotencyKey) {
+        await this.prisma.idempotencyKey.update({
+          where: {
+            scope_key: {
+              scope: this.exceptionActionIdempotencyScope(exceptionId),
+              key: idempotencyKey,
+            },
+          },
+          data: {
+            responseBody: JSON.stringify({
+              status: 'completed',
+              fingerprint: requestFingerprint,
+              response,
+            } satisfies ExceptionActionIdempotencyEnvelope),
+          },
+        });
+      }
+
+      return response;
+    } catch (error) {
+      if (idempotencyKey && claimedIdempotency) {
+        await this.releasePendingExceptionActionIdempotency(exceptionId, idempotencyKey, requestFingerprint);
+      }
+      throw error;
+    }
+  }
+
+  private async claimOrReplayExceptionAction(
+    exceptionId: string,
+    existing: {
+      id: string;
+      merchantId: string;
+      providerName: string;
+      status: SettlementExceptionStatus;
+      version: number;
+      updatedAt: Date;
+    },
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<ExceptionDetail | null> {
+    const scope = this.exceptionActionIdempotencyScope(exceptionId);
+
+    try {
+      await this.prisma.idempotencyKey.create({
+        data: {
+          scope,
+          key: idempotencyKey,
+          responseBody: JSON.stringify({
+            status: 'pending',
+            fingerprint: requestFingerprint,
+          } satisfies ExceptionActionIdempotencyEnvelope),
+        },
+      });
+      return null;
+    } catch (error) {
+      if (!this.isPrismaUniqueViolation(error)) {
+        throw error;
+      }
+
+      const existingKey = await this.prisma.idempotencyKey.findUnique({
+        where: {
+          scope_key: { scope, key: idempotencyKey },
+        },
+      });
+
+      if (!existingKey) {
+        throw error;
+      }
+
+      const envelope = this.parseExceptionActionIdempotencyEnvelope(existingKey.responseBody);
+      if (envelope && envelope.fingerprint === requestFingerprint) {
+        if (envelope.status === 'completed' && envelope.response) {
+          return envelope.response;
+        }
+        throw this.buildActionConflict(
+          existing,
+          'idempotency_in_progress',
+          'Action request with this idempotency key is in progress; retry shortly',
+          existing.version,
+          existing.updatedAt.toISOString(),
+          true,
+        );
+      }
+
+      throw this.buildActionConflict(
+        existing,
+        'idempotency_key_reused',
+        'Idempotency key already used with different request payload',
+        existing.version,
+        existing.updatedAt.toISOString(),
+        false,
+      );
+    }
+  }
+
+  private parseExceptionActionIdempotencyEnvelope(responseBody: string): ExceptionActionIdempotencyEnvelope | null {
+    try {
+      const parsed = JSON.parse(responseBody) as ExceptionActionIdempotencyEnvelope;
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+      if ((parsed.status !== 'pending' && parsed.status !== 'completed') || typeof parsed.fingerprint !== 'string') {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  private async releasePendingExceptionActionIdempotency(
+    exceptionId: string,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<void> {
+    const scope = this.exceptionActionIdempotencyScope(exceptionId);
+    const existingKey = await this.prisma.idempotencyKey.findUnique({
+      where: {
+        scope_key: { scope, key: idempotencyKey },
       },
     });
 
-    if (updated.count !== 1) {
-      throw new ConflictException('Version conflict; refresh and retry with current version');
+    if (!existingKey) {
+      return;
     }
 
-    await this.prisma.settlementExceptionAudit.create({
+    const envelope = this.parseExceptionActionIdempotencyEnvelope(existingKey.responseBody);
+    if (envelope?.status === 'pending' && envelope.fingerprint === requestFingerprint) {
+      await this.prisma.idempotencyKey.delete({
+        where: {
+          scope_key: { scope, key: idempotencyKey },
+        },
+      });
+    }
+  }
+
+  private exceptionActionIdempotencyScope(exceptionId: string): string {
+    return `settlement_exception_action:${exceptionId}`;
+  }
+
+  private exceptionActionRequestFingerprint(
+    exceptionId: string,
+    input: {
+      action: 'resolve' | 'ignore';
+      reason: string;
+      note: string | null;
+      expectedVersion: number;
+      expectedUpdatedAt: string | null;
+    },
+  ): string {
+    return JSON.stringify({
+      exceptionId,
+      action: input.action,
+      reason: input.reason,
+      note: input.note,
+      expectedVersion: input.expectedVersion,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+    });
+  }
+
+  private isPrismaUniqueViolation(error: unknown): boolean {
+    return (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && (error as { code?: string }).code === 'P2002'
+    );
+  }
+
+  private buildActionConflict(
+    exception: {
+      id: string;
+      status?: SettlementExceptionStatus;
+      version: number;
+      updatedAt: Date;
+    },
+    reason: ExceptionActionConflictReason,
+    message: string,
+    expectedVersion: number,
+    expectedUpdatedAt: string | null,
+    retryable: boolean,
+  ): ConflictException {
+    return new ConflictException({
+      code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+      reason,
+      message,
+      retryable,
+      exceptionId: exception.id,
+      expectedVersion,
+      expectedUpdatedAt,
+      currentStatus: exception.status ?? null,
+      currentVersion: exception.version,
+      currentUpdatedAt: exception.updatedAt.toISOString(),
+    });
+  }
+
+  private async logExceptionActionEvent(
+    outcome: 'attempted' | 'succeeded' | 'conflict' | 'invalid',
+    exception: {
+      id: string;
+      merchantId: string;
+      providerName: string;
+      status: SettlementExceptionStatus;
+      version: number;
+      updatedAt: Date;
+    },
+    actor: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.prisma.auditLog.create({
       data: {
-        settlementExceptionId: exceptionId,
-        fromStatus: existing.status,
-        toStatus,
-        reason,
-        note: input.note?.trim() || null,
+        eventType: `settlement.exception.action.${outcome}`,
         actor,
+        entityType: 'settlement_exception',
+        entityId: exception.id,
+        metadata: JSON.stringify({
+          merchantId: exception.merchantId,
+          providerName: exception.providerName,
+          status: exception.status,
+          version: exception.version,
+          updatedAt: exception.updatedAt.toISOString(),
+          ...metadata,
+        }),
       },
     });
-
-    return this.getSettlementException(exceptionId);
   }
 
   private async upsertMismatchException(
