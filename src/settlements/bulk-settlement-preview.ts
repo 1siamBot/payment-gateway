@@ -24,6 +24,16 @@ export const BULK_SETTLEMENT_PREVIEW_WARNING_CODES = [
 
 export type BulkSettlementPreviewWarningCode = (typeof BULK_SETTLEMENT_PREVIEW_WARNING_CODES)[number];
 
+export const BULK_SETTLEMENT_PREVIEW_WARNING_HINTS: Record<BulkSettlementPreviewWarningCode, string> = {
+  'BSP-001_INVALID_ROW_SHAPE': 'Provide each row as an object with id, status, deltaAmount, and optional riskBucket.',
+  'BSP-002_INVALID_EXCEPTION_ID': 'Set row.id to a non-empty unique string.',
+  'BSP-003_DUPLICATE_EXCEPTION_ID': 'De-duplicate rows so each exception id appears only once.',
+  'BSP-004_INVALID_STATUS': 'Use one of OPEN, INVESTIGATING, RESOLVED, or IGNORED.',
+  'BSP-005_INVALID_DELTA_AMOUNT': 'Set deltaAmount to a finite number value.',
+  'BSP-006_INVALID_RISK_BUCKET': 'Use riskBucket as low, medium, high, or critical; omit to auto-classify.',
+  'BSP-007_SELECTED_ID_NOT_FOUND': 'Ensure selectedExceptionIds only includes ids that exist in valid rows.',
+};
+
 export type BulkSettlementPreviewInput = {
   rows: unknown[];
   selectedExceptionIds: string[];

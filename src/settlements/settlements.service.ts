@@ -12,6 +12,16 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  BULK_SETTLEMENT_PREVIEW_WARNING_HINTS,
+  BulkSettlementPreviewStatusBucket,
+  BulkSettlementPreviewRiskBucket,
+  BulkSettlementPreviewWarningCode,
+  buildBulkSettlementActionPreviewExport,
+} from './bulk-settlement-preview';
+import {
+  BuildSettlementBulkActionPreviewDto,
+} from './dto/build-settlement-bulk-action-preview.dto';
+import {
   ExceptionQaScenario,
   SETTLEMENT_EXCEPTION_QA_FIXTURES,
   SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
@@ -138,6 +148,35 @@ type ExceptionQaFixtureItem = {
   resolutionActor: string | null;
   resolutionAt: string | null;
   version: number;
+};
+
+type SettlementBulkActionPreviewContractWarning = {
+  code: BulkSettlementPreviewWarningCode;
+  message: string;
+  remediationHint: string;
+  rowIndex: number | null;
+  exceptionId: string | null;
+  field: 'row' | 'id' | 'status' | 'deltaAmount' | 'riskBucket' | 'selection';
+};
+
+type SettlementBulkActionPreviewContractResponse = {
+  contract: 'settlement-bulk-action-preview.v1';
+  selectedCount: number;
+  byStatus: Record<BulkSettlementPreviewStatusBucket, number>;
+  byRiskBucket: Record<BulkSettlementPreviewRiskBucket, number>;
+  malformedCount: number;
+  warnings: SettlementBulkActionPreviewContractWarning[];
+  metadata: {
+    requestedCount: number;
+    validCount: number;
+    hasMismatch: boolean;
+    warningCount: number;
+    warningByCode: Record<BulkSettlementPreviewWarningCode, number>;
+    errorCodeMap: Array<{
+      code: BulkSettlementPreviewWarningCode;
+      remediationHint: string;
+    }>;
+  };
 };
 
 @Injectable()
@@ -362,6 +401,37 @@ export class SettlementsService {
         windowDate: SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
       })),
       total: fixtures.length,
+    };
+  }
+
+  buildSettlementExceptionBulkActionPreview(
+    input: BuildSettlementBulkActionPreviewDto,
+  ): SettlementBulkActionPreviewContractResponse {
+    const preview = buildBulkSettlementActionPreviewExport(input);
+
+    return {
+      contract: 'settlement-bulk-action-preview.v1',
+      selectedCount: preview.summary.selection.validCount,
+      byStatus: preview.summary.statusBuckets,
+      byRiskBucket: preview.summary.riskBuckets,
+      malformedCount: preview.summary.selection.malformedCount,
+      warnings: preview.warnings.map((warning) => ({
+        ...warning,
+        remediationHint: BULK_SETTLEMENT_PREVIEW_WARNING_HINTS[warning.code],
+      })),
+      metadata: {
+        requestedCount: preview.summary.selection.requestedCount,
+        validCount: preview.summary.selection.validCount,
+        hasMismatch: preview.summary.selection.hasMismatch,
+        warningCount: preview.warningSummary.totalWarnings,
+        warningByCode: preview.warningSummary.byCode,
+        errorCodeMap: Object.entries(BULK_SETTLEMENT_PREVIEW_WARNING_HINTS).map(
+          ([code, remediationHint]) => ({
+            code: code as BulkSettlementPreviewWarningCode,
+            remediationHint,
+          }),
+        ),
+      },
     };
   }
 

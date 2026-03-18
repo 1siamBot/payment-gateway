@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
+import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk-action-preview.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
@@ -43,6 +44,11 @@ export class SettlementsController {
   @Get('exceptions')
   listExceptions(@Query() query: ListSettlementExceptionsDto) {
     return this.settlements.listSettlementExceptions(query);
+  }
+
+  @Post('exceptions/bulk-action-preview')
+  bulkActionPreview(@Body() body: BuildSettlementBulkActionPreviewDto) {
+    return this.settlements.buildSettlementExceptionBulkActionPreview(body);
   }
 
   @Get('exceptions/qa-fixtures')
