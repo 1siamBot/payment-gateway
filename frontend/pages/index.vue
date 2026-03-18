@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import {
+  applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   applyRefundStatus,
   buildExceptionActionIdempotencyKey,
   canRefundStatus,
   classifyExceptionActionFailure,
+  DEFAULT_EXCEPTION_QUERY_STATE,
   filterSettlementMerchants,
+  listExceptionQueryPresets,
+  parseExceptionQueryState,
   normalizeExceptionStatus,
   normalizeOptional,
   prependExceptionAudit,
+  resolveActiveExceptionPreset,
+  serializeExceptionQueryState,
   validateExceptionActionInput,
 } from '../utils/wave1';
 
@@ -167,6 +173,9 @@ type WebhookDelivery = {
 };
 
 const { request } = useGatewayApi();
+const route = useRoute();
+const router = useRouter();
+const exceptionPresets = listExceptionQueryPresets();
 
 const auth = reactive({
   internalToken: 'dev-internal-token',
@@ -284,6 +293,20 @@ const exceptionAction = reactive({
 });
 const exceptionFixtureMode = ref<ExceptionFixtureMode>('api');
 const exceptionFixtureRetryCount = ref(0);
+const exceptionQueryRecovery = reactive({
+  active: false,
+  message: '',
+});
+const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
+  merchantId: exceptionFilters.merchantId,
+  provider: exceptionFilters.provider,
+  status: exceptionFilters.status,
+  startDate: exceptionFilters.startDate,
+  endDate: exceptionFilters.endDate,
+  page: exceptionPagination.page,
+  pageSize: exceptionFilters.pageSize,
+  preset: '',
+}));
 
 const webhookFilters = reactive({
   merchantId: '',
@@ -901,11 +924,16 @@ function isExceptionFixtureMode(input: unknown): input is ExceptionFixtureMode {
       || input === 'action_failure_retry';
 }
 
+function readRouteQueryString(key: string): string | undefined {
+  const raw = route.query[key];
+  if (Array.isArray(raw)) {
+    return typeof raw[0] === 'string' ? raw[0] : undefined;
+  }
+  return typeof raw === 'string' ? raw : undefined;
+}
+
 function resolveInitialFixtureMode(): ExceptionFixtureMode {
-  const route = useRoute();
-  const raw = Array.isArray(route.query.exceptionFixture)
-    ? route.query.exceptionFixture[0]
-    : route.query.exceptionFixture;
+  const raw = readRouteQueryString('exceptionFixture');
   if (isExceptionFixtureMode(raw)) {
     return raw;
   }
@@ -1025,12 +1053,104 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   }
 }
 
+function buildExceptionQueryState(page = 1) {
+  return {
+    merchantId: exceptionFilters.merchantId,
+    provider: exceptionFilters.provider,
+    status: exceptionFilters.status,
+    startDate: exceptionFilters.startDate,
+    endDate: exceptionFilters.endDate,
+    page,
+    pageSize: exceptionFilters.pageSize,
+    preset: activeExceptionPreset.value,
+  };
+}
+
+function applyExceptionQueryState(state: {
+  merchantId: string;
+  provider: string;
+  status: '' | SettlementExceptionStatus;
+  startDate: string;
+  endDate: string;
+  page: number;
+  pageSize: number;
+}) {
+  exceptionFilters.merchantId = state.merchantId;
+  exceptionFilters.provider = state.provider;
+  exceptionFilters.status = state.status;
+  exceptionFilters.startDate = state.startDate;
+  exceptionFilters.endDate = state.endDate;
+  exceptionFilters.page = state.page;
+  exceptionFilters.pageSize = state.pageSize;
+  exceptionPagination.page = state.page;
+  exceptionPagination.pageSize = state.pageSize;
+}
+
+function setExceptionQueryRecovery(message: string) {
+  exceptionQueryRecovery.active = true;
+  exceptionQueryRecovery.message = message;
+  exceptionState.error = message;
+}
+
+function clearExceptionQueryRecovery() {
+  exceptionQueryRecovery.active = false;
+  exceptionQueryRecovery.message = '';
+}
+
+async function syncExceptionQueryToRoute(page = 1) {
+  const queryState = buildExceptionQueryState(page);
+  const exceptionQuery = serializeExceptionQueryState(queryState);
+  if (exceptionFixtureMode.value !== 'api') {
+    exceptionQuery.exceptionFixture = exceptionFixtureMode.value;
+  }
+
+  const nextQuery = {
+    ...route.query,
+    ...exceptionQuery,
+  } as Record<string, string | (string | null)[] | null | undefined>;
+
+  delete nextQuery.exceptionMerchant;
+  delete nextQuery.exceptionProvider;
+  delete nextQuery.exceptionStatus;
+  delete nextQuery.exceptionStartDate;
+  delete nextQuery.exceptionEndDate;
+  delete nextQuery.exceptionPage;
+  delete nextQuery.exceptionPageSize;
+  delete nextQuery.exceptionPreset;
+  delete nextQuery.exceptionFixture;
+
+  await router.replace({
+    query: {
+      ...nextQuery,
+      ...exceptionQuery,
+    },
+  });
+}
+
+function applyExceptionPresetAndLoad(presetKey: 'open' | 'investigating' | 'resolved' | 'ignored' | 'high_risk_merchant') {
+  const next = applyExceptionQueryPreset(buildExceptionQueryState(1), presetKey);
+  applyExceptionQueryState(next);
+  clearExceptionQueryRecovery();
+  void loadExceptions(1);
+}
+
+function resetExceptionQueryState() {
+  applyExceptionQueryState(DEFAULT_EXCEPTION_QUERY_STATE);
+  exceptionFixtureMode.value = 'api';
+  clearExceptionQueryRecovery();
+  void loadExceptions(1);
+}
+
 async function loadExceptions(page = 1) {
   resetState(exceptionState);
   if (!ensureAuth(exceptionState)) return;
 
+  exceptionFilters.page = page;
+  await syncExceptionQueryToRoute(page);
+
   if (exceptionFixtureMode.value !== 'api') {
     applyExceptionFixture(exceptionFixtureMode.value);
+    clearExceptionQueryRecovery();
     return;
   }
 
@@ -1065,6 +1185,10 @@ async function loadExceptions(page = 1) {
     exceptionPagination.totalPages = totalPages || 1;
     exceptionPagination.page = currentPage;
     exceptionPagination.pageSize = currentPageSize;
+    exceptionFilters.page = currentPage;
+    exceptionFilters.pageSize = currentPageSize;
+    await syncExceptionQueryToRoute(currentPage);
+    clearExceptionQueryRecovery();
     exceptionState.message = `Loaded ${exceptionRows.value.length} exception row(s), page ${exceptionPagination.page} of ${exceptionPagination.totalPages}.`;
 
     if (selectedExceptionId.value && !exceptionRows.value.some((item) => item.id === selectedExceptionId.value)) {
@@ -1239,11 +1363,21 @@ async function submitExceptionAction() {
 }
 
 onMounted(() => {
+  const parsedQuery = parseExceptionQueryState(route.query as Record<string, unknown>);
+  applyExceptionQueryState(parsedQuery.state);
+  if (parsedQuery.recoveryReasons.length) {
+    setExceptionQueryRecovery(
+      `Invalid or expired query state detected. ${parsedQuery.recoveryReasons.join(' ')} Use reset to continue safely.`,
+    );
+  }
+
   const initialFixture = resolveInitialFixtureMode();
   if (initialFixture !== 'api') {
     applyExceptionFixture(initialFixture);
   }
   exceptionFixtureMode.value = initialFixture;
+  void syncExceptionQueryToRoute(parsedQuery.state.page);
+  void loadExceptions(parsedQuery.state.page);
   void loadMerchants();
 });
 </script>
@@ -1602,6 +1736,27 @@ onMounted(() => {
           Apply Fixture
         </button>
       </div>
+
+      <div class="preset-bar">
+        <button
+          v-for="preset in exceptionPresets"
+          :key="preset.key"
+          type="button"
+          class="preset-chip"
+          :class="{ active: activeExceptionPreset === preset.key }"
+          @click="applyExceptionPresetAndLoad(preset.key)"
+        >
+          {{ preset.label }}
+        </button>
+      </div>
+
+      <div v-if="exceptionQueryRecovery.active" class="query-recovery">
+        <p>{{ exceptionQueryRecovery.message }}</p>
+        <button type="button" class="link" @click="resetExceptionQueryState">
+          Reset Query To Safe Defaults
+        </button>
+      </div>
+
       <form class="grid" @submit.prevent="loadExceptions(1)">
         <label>
           Merchant filter

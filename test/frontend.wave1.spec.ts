@@ -1,13 +1,18 @@
 import {
   applyRefundStatus,
+  applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
+  DEFAULT_EXCEPTION_QUERY_STATE,
   canRefundStatus,
   filterSettlementMerchants,
+  parseExceptionQueryState,
   normalizeExceptionStatus,
   normalizeOptional,
   prependExceptionAudit,
+  resolveActiveExceptionPreset,
+  serializeExceptionQueryState,
   validateExceptionActionInput,
 } from '../frontend/utils/wave1';
 
@@ -167,5 +172,57 @@ describe('frontend wave1 helpers', () => {
     const second = buildExceptionActionIdempotencyKey(input);
     expect(first).toBe(second);
     expect(first.startsWith('settlement-action-')).toBe(true);
+  });
+
+  it('applies deterministic exception preset filters and marks active preset', () => {
+    const state = applyExceptionQueryPreset(
+      {
+        ...DEFAULT_EXCEPTION_QUERY_STATE,
+        merchantId: 'merchant-override',
+        status: 'resolved',
+      },
+      'high_risk_merchant',
+    );
+    expect(state.merchantId).toBe('merchant-high-risk');
+    expect(state.status).toBe('open');
+    expect(resolveActiveExceptionPreset(state)).toBe('high_risk_merchant');
+  });
+
+  it('serializes and restores exception query state from URL params', () => {
+    const source = {
+      ...DEFAULT_EXCEPTION_QUERY_STATE,
+      merchantId: 'merchant-77',
+      provider: 'mock-a',
+      status: 'investigating' as const,
+      startDate: '2026-03-10',
+      endDate: '2026-03-18',
+      page: 3,
+      pageSize: 25,
+      preset: 'investigating' as const,
+    };
+    const query = serializeExceptionQueryState(source);
+    const parsed = parseExceptionQueryState(query, new Date('2026-03-19T00:00:00.000Z'));
+    expect(parsed.recoveryReasons).toHaveLength(0);
+    expect(parsed.state.merchantId).toBe('merchant-77');
+    expect(parsed.state.provider).toBe('mock-a');
+    expect(parsed.state.status).toBe('investigating');
+    expect(parsed.state.startDate).toBe('2026-03-10');
+    expect(parsed.state.endDate).toBe('2026-03-18');
+    expect(parsed.state.page).toBe(3);
+    expect(parsed.state.pageSize).toBe(25);
+    expect(parsed.state.preset).toBe('');
+  });
+
+  it('falls back to default query state for invalid or expired URL params', () => {
+    const parsed = parseExceptionQueryState(
+      {
+        exceptionStatus: 'not-valid',
+        exceptionEndDate: '2025-01-01',
+        exceptionPage: '-2',
+      },
+      new Date('2026-03-19T00:00:00.000Z'),
+    );
+    expect(parsed.recoveryReasons.length).toBeGreaterThan(0);
+    expect(parsed.state).toEqual(DEFAULT_EXCEPTION_QUERY_STATE);
   });
 });

@@ -42,6 +42,7 @@ export function filterSettlementMerchants(
 export type ExceptionStatus = 'open' | 'investigating' | 'resolved' | 'ignored';
 export type ExceptionAction = 'resolve' | 'ignore';
 export type ExceptionActionErrorKind = 'version_conflict' | 'permission' | 'transient' | 'unknown';
+export type ExceptionPresetKey = 'open' | 'investigating' | 'resolved' | 'ignored' | 'high_risk_merchant';
 
 export type SettlementExceptionRow = {
   id: string;
@@ -63,6 +64,242 @@ export type SettlementExceptionAuditEntry = {
 export function normalizeOptional(value: string | null | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
+}
+
+export type ExceptionQueryState = {
+  merchantId: string;
+  provider: string;
+  status: '' | ExceptionStatus;
+  startDate: string;
+  endDate: string;
+  page: number;
+  pageSize: number;
+  preset: '' | ExceptionPresetKey;
+};
+
+export type ExceptionQueryPreset = {
+  key: ExceptionPresetKey;
+  label: string;
+  filters: Pick<ExceptionQueryState, 'merchantId' | 'provider' | 'status' | 'startDate' | 'endDate'>;
+};
+
+export const DEFAULT_EXCEPTION_QUERY_STATE: ExceptionQueryState = {
+  merchantId: '',
+  provider: '',
+  status: 'open',
+  startDate: '',
+  endDate: '',
+  page: 1,
+  pageSize: 10,
+  preset: 'open',
+};
+
+const EXCEPTION_QUERY_PRESETS: ExceptionQueryPreset[] = [
+  {
+    key: 'open',
+    label: 'Open',
+    filters: { merchantId: '', provider: '', status: 'open', startDate: '', endDate: '' },
+  },
+  {
+    key: 'investigating',
+    label: 'Investigating',
+    filters: { merchantId: '', provider: '', status: 'investigating', startDate: '', endDate: '' },
+  },
+  {
+    key: 'resolved',
+    label: 'Resolved',
+    filters: { merchantId: '', provider: '', status: 'resolved', startDate: '', endDate: '' },
+  },
+  {
+    key: 'ignored',
+    label: 'Ignored',
+    filters: { merchantId: '', provider: '', status: 'ignored', startDate: '', endDate: '' },
+  },
+  {
+    key: 'high_risk_merchant',
+    label: 'High-Risk Merchant',
+    filters: { merchantId: 'merchant-high-risk', provider: '', status: 'open', startDate: '', endDate: '' },
+  },
+];
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function firstQueryValue(input: unknown): string | undefined {
+  if (Array.isArray(input)) {
+    const hit = input.find((value) => typeof value === 'string');
+    return typeof hit === 'string' ? hit : undefined;
+  }
+  return typeof input === 'string' ? input : undefined;
+}
+
+function isValidDateOnly(input: string): boolean {
+  if (!DATE_ONLY_RE.test(input)) {
+    return false;
+  }
+  const date = new Date(`${input}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === input;
+}
+
+function parsePositiveInt(input: string | undefined): number | null {
+  if (!input) {
+    return null;
+  }
+  if (!/^\d+$/.test(input)) {
+    return null;
+  }
+  const value = Number(input);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isExceptionPresetKey(input: string): input is ExceptionPresetKey {
+  return EXCEPTION_QUERY_PRESETS.some((preset) => preset.key === input);
+}
+
+function resolvePreset(key: ExceptionPresetKey): ExceptionQueryPreset {
+  return EXCEPTION_QUERY_PRESETS.find((preset) => preset.key === key) ?? EXCEPTION_QUERY_PRESETS[0];
+}
+
+export function listExceptionQueryPresets(): ExceptionQueryPreset[] {
+  return EXCEPTION_QUERY_PRESETS;
+}
+
+export function applyExceptionQueryPreset(state: ExceptionQueryState, key: ExceptionPresetKey): ExceptionQueryState {
+  const preset = resolvePreset(key);
+  return {
+    ...DEFAULT_EXCEPTION_QUERY_STATE,
+    pageSize: state.pageSize,
+    ...preset.filters,
+    page: 1,
+    preset: preset.key,
+  };
+}
+
+export function resolveActiveExceptionPreset(state: ExceptionQueryState): '' | ExceptionPresetKey {
+  for (const preset of EXCEPTION_QUERY_PRESETS) {
+    if (
+      state.merchantId.trim() === preset.filters.merchantId
+      && state.provider.trim() === preset.filters.provider
+      && state.status === preset.filters.status
+      && state.startDate === preset.filters.startDate
+      && state.endDate === preset.filters.endDate
+    ) {
+      return preset.key;
+    }
+  }
+  return '';
+}
+
+export function serializeExceptionQueryState(state: ExceptionQueryState): Record<string, string> {
+  const query: Record<string, string> = {};
+  const merchantId = state.merchantId.trim();
+  const provider = state.provider.trim();
+  const activePreset = resolveActiveExceptionPreset(state);
+  if (merchantId) query.exceptionMerchant = merchantId;
+  if (provider) query.exceptionProvider = provider;
+  if (state.status) query.exceptionStatus = state.status;
+  if (state.startDate) query.exceptionStartDate = state.startDate;
+  if (state.endDate) query.exceptionEndDate = state.endDate;
+  if (state.page > 1) query.exceptionPage = String(state.page);
+  if (state.pageSize !== DEFAULT_EXCEPTION_QUERY_STATE.pageSize) query.exceptionPageSize = String(state.pageSize);
+  if (activePreset) query.exceptionPreset = activePreset;
+  return query;
+}
+
+export type ExceptionQueryParseResult = {
+  state: ExceptionQueryState;
+  recoveryReasons: string[];
+};
+
+export function parseExceptionQueryState(
+  query: Record<string, unknown>,
+  now = new Date(),
+): ExceptionQueryParseResult {
+  const recoveryReasons: string[] = [];
+  const presetRaw = firstQueryValue(query.exceptionPreset)?.trim() ?? '';
+  const hasPreset = Boolean(presetRaw);
+  const state = hasPreset && isExceptionPresetKey(presetRaw)
+    ? applyExceptionQueryPreset(DEFAULT_EXCEPTION_QUERY_STATE, presetRaw)
+    : { ...DEFAULT_EXCEPTION_QUERY_STATE };
+
+  if (hasPreset && !isExceptionPresetKey(presetRaw)) {
+    recoveryReasons.push(`Unknown preset "${presetRaw}".`);
+  }
+
+  const merchant = normalizeOptional(firstQueryValue(query.exceptionMerchant));
+  if (merchant) state.merchantId = merchant;
+
+  const provider = normalizeOptional(firstQueryValue(query.exceptionProvider));
+  if (provider) state.provider = provider;
+
+  const statusRaw = normalizeOptional(firstQueryValue(query.exceptionStatus));
+  if (statusRaw) {
+    if (statusRaw === 'open' || statusRaw === 'investigating' || statusRaw === 'resolved' || statusRaw === 'ignored') {
+      state.status = statusRaw;
+    } else {
+      recoveryReasons.push(`Unknown status "${statusRaw}".`);
+    }
+  }
+
+  const startDate = normalizeOptional(firstQueryValue(query.exceptionStartDate));
+  if (startDate) {
+    if (isValidDateOnly(startDate)) {
+      state.startDate = startDate;
+    } else {
+      recoveryReasons.push(`Invalid start date "${startDate}".`);
+    }
+  }
+
+  const endDate = normalizeOptional(firstQueryValue(query.exceptionEndDate));
+  if (endDate) {
+    if (isValidDateOnly(endDate)) {
+      state.endDate = endDate;
+    } else {
+      recoveryReasons.push(`Invalid end date "${endDate}".`);
+    }
+  }
+
+  if (state.startDate && state.endDate && state.startDate > state.endDate) {
+    recoveryReasons.push('Start date is after end date.');
+  }
+
+  if (state.endDate) {
+    const end = new Date(`${state.endDate}T23:59:59.000Z`);
+    const ageMs = now.getTime() - end.getTime();
+    const maxAgeMs = 90 * 24 * 60 * 60 * 1000;
+    if (ageMs > maxAgeMs) {
+      recoveryReasons.push(`Query window expired for end date "${state.endDate}".`);
+    }
+  }
+
+  const pageRaw = firstQueryValue(query.exceptionPage);
+  if (pageRaw) {
+    const parsed = parsePositiveInt(pageRaw);
+    if (parsed && parsed >= 1) {
+      state.page = parsed;
+    } else {
+      recoveryReasons.push(`Invalid page "${pageRaw}".`);
+    }
+  }
+
+  const pageSizeRaw = firstQueryValue(query.exceptionPageSize);
+  if (pageSizeRaw) {
+    const parsed = parsePositiveInt(pageSizeRaw);
+    if (parsed && parsed >= 1 && parsed <= 100) {
+      state.pageSize = parsed;
+    } else {
+      recoveryReasons.push(`Invalid page size "${pageSizeRaw}".`);
+    }
+  }
+
+  state.preset = resolveActiveExceptionPreset(state);
+  if (recoveryReasons.length > 0) {
+    return {
+      state: { ...DEFAULT_EXCEPTION_QUERY_STATE },
+      recoveryReasons,
+    };
+  }
+
+  return { state, recoveryReasons };
 }
 
 export function validateExceptionActionInput(reason: string): string | null {

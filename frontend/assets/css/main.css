@@ -236,6 +236,42 @@ button.danger {
   min-width: 160px;
 }
 
+.preset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin: 0 0 0.75rem;
+}
+
+.preset-chip {
+  width: auto;
+  min-width: 120px;
+  border: 1px solid #b9c8d8;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #0b3c5d;
+  padding: 0.4rem 0.75rem;
+}
+
+.preset-chip.active {
+  background: #0b3c5d;
+  color: #ffffff;
+  border-color: #0b3c5d;
+}
+
+.query-recovery {
+  border: 1px solid #f59e0b;
+  background: #fff7ed;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.query-recovery p {
+  margin: 0 0 0.45rem;
+  color: #92400e;
+}
+
 .detail-panel {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -392,6 +428,10 @@ td small {
   }
 
   .fixture-bar > button {
+    width: 100%;
+  }
+
+  .preset-chip {
     width: 100%;
   }
 
