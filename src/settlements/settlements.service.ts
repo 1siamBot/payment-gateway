@@ -1,0 +1,687 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  Prisma,
+  SettlementExceptionStatus,
+  TransactionStatus,
+  TransactionType,
+} from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import type {
+  DetectSettlementExceptionsDto,
+  DetectSettlementRecord,
+} from './dto/detect-settlement-exceptions.dto';
+import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
+import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
+
+type ReconciliationMismatchReason =
+  | 'paid_without_success_callback'
+  | 'failed_with_success_callback'
+  | 'stuck_non_terminal';
+
+type ReconciliationMismatch = {
+  transactionId: string;
+  transactionReference: string;
+  merchantId: string;
+  status: TransactionStatus;
+  amount: number;
+  currency: string;
+  reason: ReconciliationMismatchReason;
+};
+
+type MerchantReconciliationSummary = {
+  merchantId: string;
+  paidDepositAmount: number;
+  paidWithdrawAmount: number;
+  refundedAmount: number;
+  netSettledAmount: number;
+  transactionCount: number;
+};
+
+type ReconciliationReport = {
+  reportDate: string;
+  windowStart: string;
+  windowEnd: string;
+  generatedAt: string;
+  merchants: MerchantReconciliationSummary[];
+  mismatches: ReconciliationMismatch[];
+};
+
+type DailySettlementSummary = {
+  reportDate: string;
+  windowStart: string;
+  windowEnd: string;
+  generatedAt: string;
+  summary: {
+    merchantCount: number;
+    transactionCount: number;
+    paidDepositAmount: number;
+    paidWithdrawAmount: number;
+    refundedAmount: number;
+    netSettledAmount: number;
+    mismatchCount: number;
+  };
+  merchants: MerchantReconciliationSummary[];
+};
+
+type ExceptionListItem = {
+  id: string;
+  merchantId: string;
+  providerName: string;
+  windowDate: string;
+  ledgerTotal: number;
+  providerTotal: number;
+  deltaAmount: number;
+  status: SettlementExceptionStatus;
+  openedReason: string;
+  openedNote: string | null;
+  latestOperatorReason: string | null;
+  latestOperatorNote: string | null;
+  resolutionActor: string | null;
+  resolutionAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ExceptionAuditItem = {
+  id: string;
+  fromStatus: SettlementExceptionStatus | null;
+  toStatus: SettlementExceptionStatus;
+  reason: string;
+  note: string | null;
+  actor: string;
+  createdAt: string;
+};
+
+type ExceptionDetail = ExceptionListItem & {
+  audits: ExceptionAuditItem[];
+};
+
+@Injectable()
+export class SettlementsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async generateDailyReconciliation(date?: string): Promise<ReconciliationReport> {
+    const report = await this.buildReport(date);
+
+    await this.prisma.auditLog.create({
+      data: {
+        eventType: 'settlement.reconciliation.generated',
+        actor: 'system',
+        entityType: 'settlement_report',
+        entityId: report.reportDate,
+        metadata: JSON.stringify({
+          reportDate: report.reportDate,
+          generatedAt: report.generatedAt,
+          merchants: report.merchants.length,
+          mismatches: report.mismatches.length,
+        }),
+      },
+    });
+
+    return report;
+  }
+
+  async queryMismatches(filters: {
+    date?: string;
+    merchantId?: string;
+    transactionReference?: string;
+  }): Promise<ReconciliationReport> {
+    const report = await this.buildReport(filters.date);
+    return {
+      ...report,
+      mismatches: report.mismatches.filter((row) => {
+        if (filters.merchantId && row.merchantId !== filters.merchantId) {
+          return false;
+        }
+        if (filters.transactionReference && row.transactionReference !== filters.transactionReference) {
+          return false;
+        }
+        return true;
+      }),
+    };
+  }
+
+  async getDailySummary(date?: string, merchantId?: string): Promise<DailySettlementSummary> {
+    const report = await this.buildReport(date);
+    const merchants = merchantId
+      ? report.merchants.filter((row) => row.merchantId === merchantId)
+      : report.merchants;
+
+    const summary = merchants.reduce(
+      (acc, row) => {
+        acc.transactionCount += row.transactionCount;
+        acc.paidDepositAmount += row.paidDepositAmount;
+        acc.paidWithdrawAmount += row.paidWithdrawAmount;
+        acc.refundedAmount += row.refundedAmount;
+        acc.netSettledAmount += row.netSettledAmount;
+        return acc;
+      },
+      {
+        merchantCount: merchants.length,
+        transactionCount: 0,
+        paidDepositAmount: 0,
+        paidWithdrawAmount: 0,
+        refundedAmount: 0,
+        netSettledAmount: 0,
+        mismatchCount: report.mismatches.filter((row) => (merchantId ? row.merchantId === merchantId : true)).length,
+      },
+    );
+
+    return {
+      reportDate: report.reportDate,
+      windowStart: report.windowStart,
+      windowEnd: report.windowEnd,
+      generatedAt: report.generatedAt,
+      summary,
+      merchants,
+    };
+  }
+
+  async detectSettlementExceptions(input: DetectSettlementExceptionsDto, actor: string) {
+    if (!input.records.length) {
+      throw new BadRequestException('records must not be empty');
+    }
+
+    const { dateKey, start, end } = this.resolveDayWindow(input.windowDate);
+    const uniqueKeys = new Set<string>();
+    for (const record of input.records) {
+      const key = `${record.merchantId}::${record.providerName}`;
+      if (uniqueKeys.has(key)) {
+        throw new BadRequestException(`Duplicate record for merchant/provider pair: ${key}`);
+      }
+      uniqueKeys.add(key);
+    }
+
+    const merchantIds = [...new Set(input.records.map((record) => record.merchantId))];
+    const providerNames = [...new Set(input.records.map((record) => record.providerName))];
+
+    const transactions = await this.prisma.transaction.findMany({
+      where: {
+        merchantId: { in: merchantIds },
+        providerName: { in: providerNames },
+        createdAt: {
+          gte: start,
+          lt: end,
+        },
+      },
+      select: {
+        merchantId: true,
+        providerName: true,
+        type: true,
+        status: true,
+        amount: true,
+      },
+    });
+
+    const ledgerByKey = new Map<string, number>();
+    for (const tx of transactions) {
+      if (!tx.providerName) {
+        continue;
+      }
+      const key = `${tx.merchantId}::${tx.providerName}`;
+      const running = ledgerByKey.get(key) ?? 0;
+      const amount = this.decimalToNumber(tx.amount);
+
+      if (tx.status === TransactionStatus.PAID) {
+        if (tx.type === TransactionType.DEPOSIT) {
+          ledgerByKey.set(key, running + amount);
+        } else {
+          ledgerByKey.set(key, running - amount);
+        }
+      } else if (tx.status === TransactionStatus.REFUNDED) {
+        ledgerByKey.set(key, running - amount);
+      }
+    }
+
+    const detected: ExceptionListItem[] = [];
+    for (const record of input.records) {
+      const exception = await this.upsertMismatchException(record, {
+        actor,
+        dateKey,
+        ledgerTotal: ledgerByKey.get(`${record.merchantId}::${record.providerName}`) ?? 0,
+      });
+      if (exception) {
+        detected.push(exception);
+      }
+    }
+
+    return {
+      reportDate: dateKey,
+      detectedCount: detected.length,
+      exceptions: detected,
+    };
+  }
+
+  async listSettlementExceptions(query: ListSettlementExceptionsDto) {
+    const take = this.clampTake(query.take);
+    const where: Prisma.SettlementExceptionWhereInput = {};
+
+    if (query.merchantId) {
+      where.merchantId = query.merchantId;
+    }
+    if (query.providerName) {
+      where.providerName = query.providerName;
+    }
+    if (query.status) {
+      where.status = query.status;
+    }
+
+    if (query.dateFrom || query.dateTo) {
+      where.windowDate = {
+        ...(query.dateFrom ? { gte: this.resolveDayWindow(query.dateFrom).start } : {}),
+        ...(query.dateTo ? { lt: this.resolveDayWindow(query.dateTo).end } : {}),
+      };
+    }
+
+    const rows = await this.prisma.settlementException.findMany({
+      where,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      take: take + 1,
+      ...(query.cursor
+        ? {
+          cursor: { id: query.cursor },
+          skip: 1,
+        }
+        : {}),
+    });
+
+    const hasNext = rows.length > take;
+    const page = hasNext ? rows.slice(0, take) : rows;
+
+    return {
+      data: page.map((item) => this.toExceptionListItem(item)),
+      pageInfo: {
+        take,
+        hasNext,
+        nextCursor: hasNext ? page[page.length - 1]?.id ?? null : null,
+      },
+    };
+  }
+
+  async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
+    const exception = await this.prisma.settlementException.findUnique({
+      where: { id: exceptionId },
+      include: {
+        audits: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!exception) {
+      throw new NotFoundException('Settlement exception not found');
+    }
+
+    return this.toExceptionDetail(exception);
+  }
+
+  async updateSettlementException(
+    exceptionId: string,
+    input: UpdateSettlementExceptionDto,
+    actor: string,
+  ): Promise<ExceptionDetail> {
+    const reason = input.reason.trim();
+    if (!reason) {
+      throw new BadRequestException('reason is required');
+    }
+
+    const existing = await this.prisma.settlementException.findUnique({ where: { id: exceptionId } });
+
+    if (!existing) {
+      throw new NotFoundException('Settlement exception not found');
+    }
+
+    if (
+      existing.status === SettlementExceptionStatus.RESOLVED
+      || existing.status === SettlementExceptionStatus.IGNORED
+    ) {
+      throw new ConflictException('Settlement exception is already in terminal status');
+    }
+
+    const toStatus = input.action === 'resolve'
+      ? SettlementExceptionStatus.RESOLVED
+      : SettlementExceptionStatus.IGNORED;
+
+    const updated = await this.prisma.settlementException.updateMany({
+      where: {
+        id: exceptionId,
+        version: input.expectedVersion,
+      },
+      data: {
+        status: toStatus,
+        latestOperatorReason: reason,
+        latestOperatorNote: input.note?.trim() || null,
+        resolutionActor: actor,
+        resolutionAt: new Date(),
+        version: {
+          increment: 1,
+        },
+      },
+    });
+
+    if (updated.count !== 1) {
+      throw new ConflictException('Version conflict; refresh and retry with current version');
+    }
+
+    await this.prisma.settlementExceptionAudit.create({
+      data: {
+        settlementExceptionId: exceptionId,
+        fromStatus: existing.status,
+        toStatus,
+        reason,
+        note: input.note?.trim() || null,
+        actor,
+      },
+    });
+
+    return this.getSettlementException(exceptionId);
+  }
+
+  private async upsertMismatchException(
+    record: DetectSettlementRecord,
+    context: {
+      actor: string;
+      dateKey: string;
+      ledgerTotal: number;
+    },
+  ): Promise<ExceptionListItem | null> {
+    const providerTotal = this.normalizeAmount(record.providerTotal);
+    const ledgerTotal = this.normalizeAmount(context.ledgerTotal);
+    const deltaAmount = this.normalizeAmount(ledgerTotal - providerTotal);
+
+    if (Math.abs(deltaAmount) < 0.000001) {
+      return null;
+    }
+
+    const fingerprint = this.exceptionFingerprint(context.dateKey, record.merchantId, record.providerName);
+    const existing = await this.prisma.settlementException.findUnique({
+      where: { fingerprint },
+    });
+
+    if (!existing) {
+      const created = await this.prisma.settlementException.create({
+        data: {
+          merchantId: record.merchantId,
+          providerName: record.providerName,
+          windowDate: new Date(`${context.dateKey}T00:00:00.000Z`),
+          ledgerTotal: new Prisma.Decimal(ledgerTotal),
+          providerTotal: new Prisma.Decimal(providerTotal),
+          deltaAmount: new Prisma.Decimal(deltaAmount),
+          fingerprint,
+          status: SettlementExceptionStatus.OPEN,
+          openedReason: 'ledger_provider_mismatch',
+          openedNote: record.note?.trim() || null,
+        },
+      });
+
+      await this.prisma.settlementExceptionAudit.create({
+        data: {
+          settlementExceptionId: created.id,
+          fromStatus: null,
+          toStatus: SettlementExceptionStatus.OPEN,
+          reason: 'mismatch_detected',
+          note: record.note?.trim() || null,
+          actor: context.actor,
+        },
+      });
+
+      return this.toExceptionListItem(created);
+    }
+
+    let nextStatus = existing.status;
+    let auditReason: string | null = null;
+    if (
+      existing.status === SettlementExceptionStatus.RESOLVED
+      || existing.status === SettlementExceptionStatus.IGNORED
+    ) {
+      nextStatus = SettlementExceptionStatus.OPEN;
+      auditReason = 'mismatch_reopened';
+    }
+
+    const updated = await this.prisma.settlementException.update({
+      where: { id: existing.id },
+      data: {
+        ledgerTotal: new Prisma.Decimal(ledgerTotal),
+        providerTotal: new Prisma.Decimal(providerTotal),
+        deltaAmount: new Prisma.Decimal(deltaAmount),
+        status: nextStatus,
+        latestOperatorReason: null,
+        latestOperatorNote: null,
+        resolutionActor: null,
+        resolutionAt: null,
+        version: {
+          increment: 1,
+        },
+      },
+    });
+
+    if (auditReason) {
+      await this.prisma.settlementExceptionAudit.create({
+        data: {
+          settlementExceptionId: existing.id,
+          fromStatus: existing.status,
+          toStatus: SettlementExceptionStatus.OPEN,
+          reason: auditReason,
+          note: record.note?.trim() || null,
+          actor: context.actor,
+        },
+      });
+    }
+
+    return this.toExceptionListItem(updated);
+  }
+
+  private toExceptionListItem(exception: {
+    id: string;
+    merchantId: string;
+    providerName: string;
+    windowDate: Date;
+    ledgerTotal: Prisma.Decimal | number;
+    providerTotal: Prisma.Decimal | number;
+    deltaAmount: Prisma.Decimal | number;
+    status: SettlementExceptionStatus;
+    openedReason: string;
+    openedNote: string | null;
+    latestOperatorReason: string | null;
+    latestOperatorNote: string | null;
+    resolutionActor: string | null;
+    resolutionAt: Date | null;
+    version: number;
+    createdAt: Date;
+    updatedAt: Date;
+  }): ExceptionListItem {
+    return {
+      id: exception.id,
+      merchantId: exception.merchantId,
+      providerName: exception.providerName,
+      windowDate: exception.windowDate.toISOString().slice(0, 10),
+      ledgerTotal: this.decimalToNumber(exception.ledgerTotal),
+      providerTotal: this.decimalToNumber(exception.providerTotal),
+      deltaAmount: this.decimalToNumber(exception.deltaAmount),
+      status: exception.status,
+      openedReason: exception.openedReason,
+      openedNote: exception.openedNote,
+      latestOperatorReason: exception.latestOperatorReason,
+      latestOperatorNote: exception.latestOperatorNote,
+      resolutionActor: exception.resolutionActor,
+      resolutionAt: exception.resolutionAt ? exception.resolutionAt.toISOString() : null,
+      version: exception.version,
+      createdAt: exception.createdAt.toISOString(),
+      updatedAt: exception.updatedAt.toISOString(),
+    };
+  }
+
+  private toExceptionDetail(exception: {
+    id: string;
+    merchantId: string;
+    providerName: string;
+    windowDate: Date;
+    ledgerTotal: Prisma.Decimal | number;
+    providerTotal: Prisma.Decimal | number;
+    deltaAmount: Prisma.Decimal | number;
+    status: SettlementExceptionStatus;
+    openedReason: string;
+    openedNote: string | null;
+    latestOperatorReason: string | null;
+    latestOperatorNote: string | null;
+    resolutionActor: string | null;
+    resolutionAt: Date | null;
+    version: number;
+    createdAt: Date;
+    updatedAt: Date;
+    audits: Array<{
+      id: string;
+      fromStatus: SettlementExceptionStatus | null;
+      toStatus: SettlementExceptionStatus;
+      reason: string;
+      note: string | null;
+      actor: string;
+      createdAt: Date;
+    }>;
+  }): ExceptionDetail {
+    return {
+      ...this.toExceptionListItem(exception),
+      audits: exception.audits.map((audit) => ({
+        id: audit.id,
+        fromStatus: audit.fromStatus,
+        toStatus: audit.toStatus,
+        reason: audit.reason,
+        note: audit.note,
+        actor: audit.actor,
+        createdAt: audit.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  private clampTake(value?: number): number {
+    if (!value || Number.isNaN(value)) {
+      return 20;
+    }
+    return Math.max(1, Math.min(100, value));
+  }
+
+  private normalizeAmount(amount: number): number {
+    return Number(amount.toFixed(2));
+  }
+
+  private decimalToNumber(value: Prisma.Decimal | number): number {
+    if (typeof value === 'number') {
+      return value;
+    }
+    return Number(value.toString());
+  }
+
+  private exceptionFingerprint(windowDate: string, merchantId: string, providerName: string): string {
+    return `${windowDate}:${merchantId}:${providerName}`;
+  }
+
+  private async buildReport(date?: string): Promise<ReconciliationReport> {
+    const { dateKey, start, end } = this.resolveDayWindow(date);
+    const transactions = await this.prisma.transaction.findMany({
+      where: {
+        createdAt: {
+          gte: start,
+          lt: end,
+        },
+      },
+      include: {
+        callbackEvents: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const byMerchant = new Map<string, MerchantReconciliationSummary>();
+    const mismatches: ReconciliationMismatch[] = [];
+
+    for (const tx of transactions) {
+      const amount = Number(tx.amount);
+      const merchant = byMerchant.get(tx.merchantId) ?? {
+        merchantId: tx.merchantId,
+        paidDepositAmount: 0,
+        paidWithdrawAmount: 0,
+        refundedAmount: 0,
+        netSettledAmount: 0,
+        transactionCount: 0,
+      };
+      merchant.transactionCount += 1;
+
+      if (tx.status === TransactionStatus.PAID) {
+        if (tx.type === TransactionType.DEPOSIT) {
+          merchant.paidDepositAmount += amount;
+        } else {
+          merchant.paidWithdrawAmount += amount;
+        }
+      } else if (tx.status === TransactionStatus.REFUNDED) {
+        merchant.refundedAmount += amount;
+      }
+
+      merchant.netSettledAmount = merchant.paidDepositAmount - merchant.paidWithdrawAmount - merchant.refundedAmount;
+      byMerchant.set(tx.merchantId, merchant);
+
+      const hasSuccessCallback = tx.callbackEvents.some((event) => event.status === 'succeeded');
+      if (tx.status === TransactionStatus.PAID && !hasSuccessCallback) {
+        mismatches.push(this.toMismatch(tx, amount, 'paid_without_success_callback'));
+        continue;
+      }
+      if (tx.status === TransactionStatus.FAILED && hasSuccessCallback) {
+        mismatches.push(this.toMismatch(tx, amount, 'failed_with_success_callback'));
+        continue;
+      }
+      if (tx.status === TransactionStatus.CREATED || tx.status === TransactionStatus.PENDING) {
+        mismatches.push(this.toMismatch(tx, amount, 'stuck_non_terminal'));
+      }
+    }
+
+    return {
+      reportDate: dateKey,
+      windowStart: start.toISOString(),
+      windowEnd: end.toISOString(),
+      generatedAt: new Date().toISOString(),
+      merchants: [...byMerchant.values()].sort((a, b) => a.merchantId.localeCompare(b.merchantId)),
+      mismatches,
+    };
+  }
+
+  private toMismatch(
+    tx: {
+      id: string;
+      reference: string;
+      merchantId: string;
+      status: TransactionStatus;
+      amount: unknown;
+      currency: string;
+    },
+    amount: number,
+    reason: ReconciliationMismatchReason,
+  ): ReconciliationMismatch {
+    return {
+      transactionId: tx.id,
+      transactionReference: tx.reference,
+      merchantId: tx.merchantId,
+      status: tx.status,
+      amount,
+      currency: tx.currency,
+      reason,
+    };
+  }
+
+  private resolveDayWindow(rawDate?: string): { dateKey: string; start: Date; end: Date } {
+    const dateKey = rawDate?.trim() || new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+      throw new BadRequestException('date must be YYYY-MM-DD');
+    }
+
+    const start = new Date(`${dateKey}T00:00:00.000Z`);
+    if (Number.isNaN(start.getTime())) {
+      throw new BadRequestException('Invalid date');
+    }
+    const end = new Date(start.getTime() + (24 * 60 * 60 * 1000));
+    return { dateKey, start, end };
+  }
+}

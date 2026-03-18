@@ -9,6 +9,7 @@ import { MerchantsModule } from './merchants/merchants.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProvidersModule } from './providers/providers.module';
+import { SettlementsModule } from './settlements/settlements.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     PrismaModule,
     ProvidersModule,
     PaymentsModule,
+    SettlementsModule,
     ApiKeysModule,
     MaintenanceModule,
     WebhooksModule,
