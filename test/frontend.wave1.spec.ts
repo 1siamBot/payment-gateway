@@ -9,6 +9,7 @@ import {
   buildExceptionBulkDiffInspector,
   buildExceptionBulkConfirmation,
   buildExceptionReasonQuickActions,
+  buildExceptionReasonTimeline,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
   createExceptionSavedView,
@@ -23,6 +24,8 @@ import {
   filterSettlementMerchants,
   parseExceptionQueryState,
   resetExceptionCompareState,
+  resolveExceptionDecisionNoteShortcut,
+  resolveExceptionDecisionNoteTemplate,
   normalizeExceptionStatus,
   normalizeOptional,
   moveExceptionDiffInspectorFocus,
@@ -503,11 +506,63 @@ describe('frontend wave1 helpers', () => {
 
   it('resets compare state without mutating selected exception ids', () => {
     const selectedExceptionIds = ['exc-1', 'exc-2', 'exc-3'];
-    const resetState = resetExceptionCompareState({ selectedExceptionIds });
+    const resetState = resetExceptionCompareState({
+      selectedExceptionIds,
+      activeTimelineRowId: 'exc-2',
+    });
 
     expect(resetState.selectedExceptionIds).toEqual(selectedExceptionIds);
     expect(resetState.compareRowIds).toEqual([]);
+    expect(resetState.decisionNoteDraft).toBe('');
+    expect(resetState.decisionNoteReason).toBe('');
+    expect(resetState.activeTimelineRowId).toBe('exc-2');
     expect(resetState.selectedExceptionIds).not.toBe(selectedExceptionIds);
+  });
+
+  it('builds deterministic reason timeline ordering for selected anomaly row', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        incomingUpdatedAt: '2026-03-18T08:01:00.000Z',
+        mismatchCount: 4,
+      },
+    ]);
+
+    const first = buildExceptionReasonTimeline({
+      rows: inspector.rows,
+      activeRowId: 'exc-a',
+    });
+    const second = buildExceptionReasonTimeline({
+      rows: inspector.rows,
+      activeRowId: 'exc-a',
+    });
+
+    expect(first).toEqual(second);
+    expect(first.map((entry) => entry.reason)).toEqual(['mixed_status', 'stale_version', 'high_delta']);
+    expect(first.map((entry) => entry.severity)).toEqual(['warning', 'critical', 'warning']);
+    expect(first[0].timestampLabel).toBe(first[0].occurredAt);
+  });
+
+  it('maps note templates and shortcuts to deterministic reason buckets', () => {
+    const staleTemplate = resolveExceptionDecisionNoteTemplate('stale_version');
+    const malformedTemplate = resolveExceptionDecisionNoteTemplate('malformed');
+
+    expect(staleTemplate.shortcut).toBe('1');
+    expect(staleTemplate.body).toContain('stale_version');
+    expect(malformedTemplate.shortcut).toBe('2');
+    expect(malformedTemplate.body).toContain('malformed');
+    expect(resolveExceptionDecisionNoteShortcut('1')).toBe('stale_version');
+    expect(resolveExceptionDecisionNoteShortcut('4')).toBe('mixed_status');
+    expect(resolveExceptionDecisionNoteShortcut('0')).toBeNull();
   });
 
   it('moves keyboard focus deterministically across filtered diff rows', () => {

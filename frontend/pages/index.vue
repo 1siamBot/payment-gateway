@@ -8,6 +8,7 @@ import {
   buildExceptionCompareDrawerModel,
   buildExceptionQueryFromSavedView,
   buildExceptionReasonQuickActions,
+  buildExceptionReasonTimeline,
   buildExceptionActionIdempotencyKey,
   buildExceptionBulkConfirmation,
   buildExceptionBulkPreview,
@@ -28,6 +29,8 @@ import {
   prependExceptionAudit,
   renameExceptionSavedView,
   resetExceptionCompareState,
+  resolveExceptionDecisionNoteShortcut,
+  resolveExceptionDecisionNoteTemplate,
   resolveActiveExceptionPreset,
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
@@ -361,6 +364,9 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
 const activeBulkDiffRowId = ref('');
 const compareDrawerOpen = ref(false);
 const compareRowIds = ref<string[]>([]);
+const decisionNoteDraft = ref('');
+const decisionNoteReason = ref<'' | ExceptionConflictReason>('');
+const activeTimelineRowId = ref('');
 const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
   bulkDiffInspector.value.rows,
   activeConflictDrilldown.value,
@@ -375,6 +381,18 @@ const bulkDiffEmptyState = computed(() => resolveExceptionDiffInspectorEmptyStat
   totalRows: bulkDiffInspector.value.rows.length,
   filteredRows: filteredBulkDiffRows.value.length,
 }));
+const activeTimelineTargetRowId = computed(() => activeTimelineRowId.value || activeBulkDiffRowId.value);
+const reasonTimeline = computed(() => buildExceptionReasonTimeline({
+  rows: bulkDiffInspector.value.rows,
+  activeRowId: activeTimelineTargetRowId.value,
+}));
+const activeTimelineTarget = computed(() => reasonTimeline.value[0]?.rowId ?? '');
+const activeDecisionTemplate = computed(() => {
+  if (!decisionNoteReason.value) {
+    return null;
+  }
+  return resolveExceptionDecisionNoteTemplate(decisionNoteReason.value);
+});
 const bulkConfirmation = computed(() => buildExceptionBulkConfirmation({
   action: bulkPreviewDrawer.action,
   preview: bulkExceptionPreview.value,
@@ -1089,16 +1107,25 @@ watch(() => bulkDiffInspector.value.rows, (rows) => {
   if (compareRowIds.value.length < 2) {
     compareDrawerOpen.value = false;
   }
+  if (!rows.length) {
+    activeTimelineRowId.value = '';
+    return;
+  }
+  if (!rows.some((row) => row.id === activeTimelineRowId.value)) {
+    activeTimelineRowId.value = activeBulkDiffRowId.value || rows[0].id;
+  }
 }, { immediate: true });
 
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
   activeConflictDrilldown.value = key;
   const nextRows = filterExceptionDiffInspectorRows(bulkDiffInspector.value.rows, key);
   activeBulkDiffRowId.value = nextRows[0]?.id ?? '';
+  activeTimelineRowId.value = activeBulkDiffRowId.value;
 }
 
 function setActiveBulkDiffRow(rowId: string) {
   activeBulkDiffRowId.value = rowId;
+  activeTimelineRowId.value = rowId;
 }
 
 function setCompareRowSelection(rowId: string, checked: boolean) {
@@ -1131,8 +1158,12 @@ function openCompareDrawer() {
 function resetCompareStateSafe() {
   const compareReset = resetExceptionCompareState({
     selectedExceptionIds: selectedExceptionIds.value,
+    activeTimelineRowId: activeTimelineRowId.value || activeBulkDiffRowId.value,
   });
   compareRowIds.value = compareReset.compareRowIds;
+  decisionNoteDraft.value = compareReset.decisionNoteDraft;
+  decisionNoteReason.value = compareReset.decisionNoteReason;
+  activeTimelineRowId.value = compareReset.activeTimelineRowId;
   compareDrawerOpen.value = false;
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Compare state safely reset. Selected rows are preserved.';
@@ -1150,11 +1181,26 @@ function applyReasonQuickAction(reason: ExceptionConflictReason) {
   bulkPreviewConfirmState.message = `Quick action applied for ${reason}.`;
 }
 
+function applyDecisionNoteTemplate(reason: ExceptionConflictReason) {
+  const template = resolveExceptionDecisionNoteTemplate(reason);
+  decisionNoteReason.value = reason;
+  decisionNoteDraft.value = template.body;
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = `Decision note template applied for ${reason}.`;
+}
+
 function resetBulkInspectorViewState() {
+  const compareReset = resetExceptionCompareState({
+    selectedExceptionIds: selectedExceptionIds.value,
+    activeTimelineRowId: activeTimelineRowId.value || activeBulkDiffRowId.value,
+  });
   activeConflictDrilldown.value = 'all';
-  activeBulkDiffRowId.value = filteredBulkDiffRows.value[0]?.id ?? '';
+  activeBulkDiffRowId.value = compareReset.activeTimelineRowId || bulkDiffInspector.value.rows[0]?.id || '';
+  activeTimelineRowId.value = activeBulkDiffRowId.value;
   compareDrawerOpen.value = false;
-  compareRowIds.value = [];
+  compareRowIds.value = compareReset.compareRowIds;
+  decisionNoteDraft.value = compareReset.decisionNoteDraft;
+  decisionNoteReason.value = compareReset.decisionNoteReason;
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Inspector and compare view reset. Bulk selection is preserved.';
 }
@@ -1168,6 +1214,12 @@ function onBulkDiffKeydown(event: KeyboardEvent) {
   if (shortcutReason && event.altKey && shortcutReason !== 'all') {
     event.preventDefault();
     applyReasonQuickAction(shortcutReason);
+    return;
+  }
+  const noteShortcutReason = resolveExceptionDecisionNoteShortcut(event.key);
+  if (noteShortcutReason && event.shiftKey) {
+    event.preventDefault();
+    applyDecisionNoteTemplate(noteShortcutReason);
     return;
   }
   if (shortcutReason) {
@@ -1253,6 +1305,7 @@ function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
   resetBulkInspectorViewState();
+  activeTimelineRowId.value = '';
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
@@ -1287,6 +1340,9 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   exceptionAction.reason = '';
   exceptionAction.note = '';
   exceptionAction.error = '';
+  decisionNoteDraft.value = '';
+  decisionNoteReason.value = '';
+  activeTimelineRowId.value = '';
   resetState(exceptionState);
   resetState(exceptionDetailState);
   resetBulkPreviewConfirmState();
@@ -2380,13 +2436,46 @@ onMounted(() => {
           <div>
             <h4>Diff Inspector</h4>
             <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
-            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Alt+1..4</code> for reason quick actions, <code>Esc</code> to reset view.</p>
+            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Alt+1..4</code> for reason quick actions, <code>Shift+1..4</code> for note templates, <code>Esc</code> to reset view.</p>
             <div class="sticky-anomaly-bar" role="status" aria-live="polite">
               <span>stale_version {{ bulkDiffInspector.reasonCounts.stale_version }}</span>
               <span>malformed {{ bulkDiffInspector.reasonCounts.malformed }}</span>
               <span>high_delta {{ bulkDiffInspector.reasonCounts.high_delta }}</span>
               <span>mixed_status {{ bulkDiffInspector.reasonCounts.mixed_status }}</span>
             </div>
+            <article class="reason-timeline-panel">
+              <h4>Anomaly Reason Timeline</h4>
+              <p class="state">Focused row: <strong>{{ activeTimelineTarget || '-' }}</strong></p>
+              <ul v-if="reasonTimeline.length" class="timeline-list">
+                <li v-for="entry in reasonTimeline" :key="entry.id">
+                  <strong>{{ entry.reason }}</strong>
+                  <span> · {{ entry.severity }} · {{ entry.source }} · {{ entry.timestampLabel }}</span>
+                </li>
+              </ul>
+              <p v-else class="state">No deterministic reason timeline entries for current selection.</p>
+            </article>
+            <article class="decision-note-widget">
+              <h4>Sticky Decision Notes</h4>
+              <p class="state">Timeline focus target is preserved on reset, while this draft and template selection are cleared.</p>
+              <div class="quick-action-row">
+                <button
+                  v-for="action in reasonQuickActions"
+                  :key="`note-${action.reason}`"
+                  type="button"
+                  class="quick-action-btn"
+                  :disabled="action.disabled"
+                  @click="applyDecisionNoteTemplate(action.reason)"
+                >
+                  Shift+{{ action.shortcut }} {{ action.reason }}
+                </button>
+              </div>
+              <p class="state">Template: {{ activeDecisionTemplate?.label || 'none' }}</p>
+              <textarea
+                v-model="decisionNoteDraft"
+                rows="3"
+                placeholder="Operator decision note draft..."
+              />
+            </article>
             <div class="quick-action-row">
               <button
                 v-for="action in reasonQuickActions"

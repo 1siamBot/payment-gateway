@@ -133,6 +133,26 @@ export type ExceptionReasonQuickAction = {
   ariaLabel: string;
 };
 
+export type ExceptionReasonSeverity = 'critical' | 'warning';
+export type ExceptionReasonTimelineSource = 'current_snapshot' | 'incoming_snapshot' | 'normalizer';
+
+export type ExceptionReasonTimelineEntry = {
+  id: string;
+  rowId: string;
+  reason: ExceptionConflictReason;
+  severity: ExceptionReasonSeverity;
+  source: ExceptionReasonTimelineSource;
+  occurredAt: string;
+  timestampLabel: string;
+};
+
+export type ExceptionDecisionNoteTemplate = {
+  reason: ExceptionConflictReason;
+  shortcut: string;
+  label: string;
+  body: string;
+};
+
 export type ExceptionCompareDrawerModel = {
   rowIds: string[];
   rows: ExceptionDiffInspectorRow[];
@@ -164,6 +184,44 @@ const CONFLICT_REASON_SHORTCUTS: Record<ExceptionConflictReason, string> = {
   malformed: '2',
   high_delta: '3',
   mixed_status: '4',
+};
+const CONFLICT_REASON_SEVERITY: Record<ExceptionConflictReason, ExceptionReasonSeverity> = {
+  stale_version: 'critical',
+  malformed: 'critical',
+  high_delta: 'warning',
+  mixed_status: 'warning',
+};
+const CONFLICT_REASON_TIMELINE_SOURCE: Record<ExceptionConflictReason, ExceptionReasonTimelineSource> = {
+  stale_version: 'incoming_snapshot',
+  malformed: 'normalizer',
+  high_delta: 'incoming_snapshot',
+  mixed_status: 'current_snapshot',
+};
+const DECISION_NOTE_TEMPLATE_MAP: Record<ExceptionConflictReason, ExceptionDecisionNoteTemplate> = {
+  stale_version: {
+    reason: 'stale_version',
+    shortcut: '1',
+    label: 'Stale version',
+    body: 'Template[stale_version]: Refreshed fixture snapshot and revalidated version before operator action.',
+  },
+  malformed: {
+    reason: 'malformed',
+    shortcut: '2',
+    label: 'Malformed payload',
+    body: 'Template[malformed]: Excluded malformed rows and requested corrected payload before retry.',
+  },
+  high_delta: {
+    reason: 'high_delta',
+    shortcut: '3',
+    label: 'High delta',
+    body: 'Template[high_delta]: Escalated high delta variance for manual finance approval prior to resolve.',
+  },
+  mixed_status: {
+    reason: 'mixed_status',
+    shortcut: '4',
+    label: 'Mixed status',
+    body: 'Template[mixed_status]: Split mixed status rows into isolated batches to keep action deterministic.',
+  },
 };
 
 function parseFiniteNumber(input: unknown): number | null {
@@ -537,11 +595,80 @@ export function buildExceptionReasonQuickActions(rows: ExceptionDiffInspectorRow
 
 export function resetExceptionCompareState(input: {
   selectedExceptionIds: string[];
-}): { selectedExceptionIds: string[]; compareRowIds: string[] } {
+  activeTimelineRowId?: string;
+}): {
+  selectedExceptionIds: string[];
+  compareRowIds: string[];
+  decisionNoteDraft: string;
+  decisionNoteReason: '' | ExceptionConflictReason;
+  activeTimelineRowId: string;
+} {
   return {
     selectedExceptionIds: [...input.selectedExceptionIds],
     compareRowIds: [],
+    decisionNoteDraft: '',
+    decisionNoteReason: '',
+    activeTimelineRowId: input.activeTimelineRowId ?? '',
   };
+}
+
+function resolveDeltaTimestamp(row: ExceptionDiffInspectorRow, field: 'current' | 'incoming'): string {
+  const delta = row.deltas.find((item) => item.field === 'updatedAt');
+  const timestamp = field === 'current' ? delta?.current : delta?.incoming;
+  if (typeof timestamp !== 'string') {
+    return DIFF_FALLBACK_TIMESTAMP;
+  }
+  const parsed = new Date(timestamp);
+  if (!Number.isFinite(parsed.getTime())) {
+    return DIFF_FALLBACK_TIMESTAMP;
+  }
+  return parsed.toISOString();
+}
+
+export function buildExceptionReasonTimeline(input: {
+  rows: ExceptionDiffInspectorRow[];
+  activeRowId: string;
+}): ExceptionReasonTimelineEntry[] {
+  const activeRow = input.rows.find((row) => row.id === input.activeRowId) ?? input.rows[0];
+  if (!activeRow) {
+    return [];
+  }
+  const baseCurrent = new Date(resolveDeltaTimestamp(activeRow, 'current')).getTime();
+  const baseIncoming = new Date(resolveDeltaTimestamp(activeRow, 'incoming')).getTime();
+  const orderedReasons = normalizeReasons(activeRow.reasons);
+
+  return orderedReasons
+    .map((reason, index) => {
+      const source = CONFLICT_REASON_TIMELINE_SOURCE[reason];
+      const seed = source === 'current_snapshot' ? baseCurrent : baseIncoming;
+      const occurredAt = new Date(seed + (index * 1000)).toISOString();
+      return {
+        id: `${activeRow.id}-${reason}`,
+        rowId: activeRow.id,
+        reason,
+        severity: CONFLICT_REASON_SEVERITY[reason],
+        source,
+        occurredAt,
+        timestampLabel: occurredAt,
+      } satisfies ExceptionReasonTimelineEntry;
+    })
+    .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.reason.localeCompare(right.reason));
+}
+
+export function listExceptionDecisionNoteTemplates(): ExceptionDecisionNoteTemplate[] {
+  return CONFLICT_REASON_ORDER.map((reason) => DECISION_NOTE_TEMPLATE_MAP[reason]);
+}
+
+export function resolveExceptionDecisionNoteTemplate(reason: ExceptionConflictReason): ExceptionDecisionNoteTemplate {
+  return DECISION_NOTE_TEMPLATE_MAP[reason];
+}
+
+export function resolveExceptionDecisionNoteShortcut(key: string): ExceptionConflictReason | null {
+  const resolved = resolveExceptionConflictShortcutDrilldown(key);
+  if (resolved === null || resolved === 'all') {
+    return null;
+  }
+  return resolved;
 }
 
 export function resolveExceptionConflictShortcutDrilldown(key: string): ExceptionConflictDrilldownKey | null {

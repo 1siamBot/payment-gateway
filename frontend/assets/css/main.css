@@ -82,6 +82,7 @@ label {
 
 input,
 select,
+textarea,
 button {
   width: 100%;
   font: inherit;
@@ -350,6 +351,15 @@ button.danger {
 
 .quick-action-btn:disabled {
   opacity: 0.55;
+}
+
+.reason-timeline-panel,
+.decision-note-widget {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0.55rem 0.65rem;
+  margin: 0.45rem 0;
 }
 
 .bulk-diff-table-wrap {
