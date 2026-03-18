@@ -1,9 +1,11 @@
 import {
   applyRefundStatus,
   applyExceptionActionOptimistic,
+  buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
   canRefundStatus,
   filterSettlementMerchants,
+  normalizeExceptionStatus,
   normalizeOptional,
   prependExceptionAudit,
   validateExceptionActionInput,
@@ -110,10 +112,60 @@ describe('frontend wave1 helpers', () => {
     expect(failure.userMessage).toContain('updated by another operator');
   });
 
+  it('classifies canonical stale_version conflicts using machine fields', () => {
+    const failure = classifyExceptionActionFailure({
+      statusCode: 409,
+      message: {
+        code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+        reason: 'stale_version',
+        retryable: true,
+        message: 'Version conflict',
+      },
+    });
+    expect(failure.kind).toBe('version_conflict');
+    expect(failure.retryable).toBe(true);
+  });
+
   it('classifies transient action failures as retryable', () => {
     const failure = classifyExceptionActionFailure('Gateway timeout while updating exception action');
     expect(failure.kind).toBe('transient');
     expect(failure.retryable).toBe(true);
     expect(failure.userMessage).toContain('temporary backend issue');
+  });
+
+  it('classifies canonical idempotency_in_progress as transient', () => {
+    const failure = classifyExceptionActionFailure({
+      statusCode: 409,
+      message: {
+        code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+        reason: 'idempotency_in_progress',
+        retryable: true,
+        message: 'in progress',
+      },
+    });
+    expect(failure.kind).toBe('transient');
+    expect(failure.retryable).toBe(true);
+  });
+
+  it('normalizes uppercase backend exception statuses', () => {
+    expect(normalizeExceptionStatus('OPEN')).toBe('open');
+    expect(normalizeExceptionStatus('INVESTIGATING')).toBe('investigating');
+    expect(normalizeExceptionStatus('RESOLVED')).toBe('resolved');
+    expect(normalizeExceptionStatus('IGNORED')).toBe('ignored');
+  });
+
+  it('builds deterministic idempotency keys for same exception action payload', () => {
+    const input = {
+      exceptionId: 'exc-1',
+      action: 'resolve' as const,
+      reason: 'reconciled with provider report',
+      note: 'case-123',
+      expectedVersion: 3,
+      expectedUpdatedAt: '2026-03-18T10:00:00.000Z',
+    };
+    const first = buildExceptionActionIdempotencyKey(input);
+    const second = buildExceptionActionIdempotencyKey(input);
+    expect(first).toBe(second);
+    expect(first.startsWith('settlement-action-')).toBe(true);
   });
 });

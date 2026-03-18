@@ -2,9 +2,11 @@
 import {
   applyExceptionActionOptimistic,
   applyRefundStatus,
+  buildExceptionActionIdempotencyKey,
   canRefundStatus,
   classifyExceptionActionFailure,
   filterSettlementMerchants,
+  normalizeExceptionStatus,
   normalizeOptional,
   prependExceptionAudit,
   validateExceptionActionInput,
@@ -116,6 +118,7 @@ type SettlementExceptionRow = {
   merchantId: string;
   provider: string;
   status: SettlementExceptionStatus;
+  version: number;
   fingerprint: string;
   mismatchCount: number;
   openedAt: string;
@@ -843,19 +846,13 @@ function fmtAmount(value: string, currency: string) {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(num);
 }
 
-function normalizeExceptionStatus(input: unknown): SettlementExceptionStatus {
-  if (input === 'open' || input === 'investigating' || input === 'resolved' || input === 'ignored') {
-    return input;
-  }
-  return 'open';
-}
-
 function mapExceptionRow(input: any): SettlementExceptionRow {
   return {
     id: String(input?.id ?? input?.exceptionId ?? ''),
     merchantId: String(input?.merchantId ?? ''),
     provider: String(input?.provider ?? input?.providerName ?? '-'),
     status: normalizeExceptionStatus(input?.status),
+    version: Number(input?.version ?? input?.currentVersion ?? 1),
     fingerprint: String(input?.fingerprint ?? '-'),
     mismatchCount: Number(input?.mismatchCount ?? input?.mismatches?.length ?? 0),
     openedAt: String(input?.openedAt ?? input?.createdAt ?? new Date().toISOString()),
@@ -922,6 +919,7 @@ function fixtureExceptionDetail(status: SettlementExceptionStatus): SettlementEx
     provider: 'mock-a',
     status,
     fingerprint: 'fx-fingerprint-001',
+    version: 1,
     mismatchCount: 2,
     openedAt: '2026-03-18T08:00:00.000Z',
     updatedAt: '2026-03-18T08:30:00.000Z',
@@ -1154,6 +1152,18 @@ async function submitExceptionAction() {
   const exceptionId = exceptionDetail.value.id;
   const reason = exceptionAction.reason.trim();
   const note = normalizeOptional(exceptionAction.note) ?? null;
+  const expectedVersion = Number.isFinite(Number(exceptionDetail.value.version))
+    ? Number(exceptionDetail.value.version)
+    : 1;
+  const expectedUpdatedAt = exceptionDetail.value.updatedAt || null;
+  const idempotencyKey = buildExceptionActionIdempotencyKey({
+    exceptionId,
+    action: exceptionAction.action,
+    reason,
+    note,
+    expectedVersion,
+    expectedUpdatedAt,
+  });
   const optimisticAt = new Date().toISOString();
   const previousRows = [...exceptionRows.value];
   const previousDetail = exceptionDetail.value;
@@ -1168,6 +1178,7 @@ async function submitExceptionAction() {
   exceptionDetail.value = {
     ...exceptionDetail.value,
     status: exceptionAction.action === 'resolve' ? 'resolved' : 'ignored',
+    version: exceptionDetail.value.version + 1,
     updatedAt: optimisticAt,
     audits: prependExceptionAudit(exceptionDetail.value.audits, {
       id: `optimistic-${optimisticAt}`,
@@ -1198,11 +1209,17 @@ async function submitExceptionAction() {
 
     await request(`/settlements/exceptions/${exceptionId}/action`, {
       method: 'POST',
-      headers: authHeaders(),
+      headers: {
+        ...authHeaders(),
+        'Idempotency-Key': idempotencyKey,
+      },
       body: {
         action: exceptionAction.action,
         reason,
         note,
+        idempotencyKey,
+        expectedVersion,
+        expectedUpdatedAt,
       },
     });
     closeExceptionAction();
@@ -1211,7 +1228,7 @@ async function submitExceptionAction() {
   } catch (error: any) {
     exceptionRows.value = previousRows;
     exceptionDetail.value = previousDetail;
-    const failure = classifyExceptionActionFailure(String(error?.message ?? ''));
+    const failure = classifyExceptionActionFailure(error?.payload ?? error?.message ?? '');
     exceptionAction.error = failure.userMessage;
     if (failure.kind === 'version_conflict') {
       await loadExceptionDetail(exceptionId);
