@@ -6,6 +6,7 @@ import {
   applyRefundStatus,
   buildExceptionQueryFromSavedView,
   buildExceptionActionIdempotencyKey,
+  buildExceptionBulkConfirmation,
   buildExceptionBulkPreview,
   canRefundStatus,
   classifyExceptionActionFailure,
@@ -310,6 +311,12 @@ const bulkPreviewConfirmState = reactive({
   message: '',
   error: '',
 });
+const bulkPreviewDrawer = reactive({
+  open: false,
+  action: 'resolve' as SettlementExceptionAction,
+  error: '',
+});
+const staleExceptionSelectionCount = ref(0);
 const exceptionQueryRecovery = reactive({
   active: false,
   message: '',
@@ -333,6 +340,11 @@ const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
 }));
 const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) => selectedExceptionIds.value.includes(row.id)));
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
+const bulkConfirmation = computed(() => buildExceptionBulkConfirmation({
+  action: bulkPreviewDrawer.action,
+  preview: bulkExceptionPreview.value,
+  staleSelectionCount: staleExceptionSelectionCount.value,
+}));
 const areAllExceptionRowsSelected = computed(() => exceptionRows.value.length > 0
   && exceptionRows.value.every((row) => selectedExceptionIds.value.includes(row.id)));
 const exceptionSavedViews = computed(() => exceptionSavedViewState.value.views);
@@ -1024,7 +1036,14 @@ function resetBulkPreviewConfirmState() {
   bulkPreviewConfirmState.error = '';
 }
 
+function resetBulkPreviewDrawer() {
+  bulkPreviewDrawer.open = false;
+  bulkPreviewDrawer.action = 'resolve';
+  bulkPreviewDrawer.error = '';
+}
+
 function toggleExceptionSelection(exceptionId: string, checked: boolean) {
+  staleExceptionSelectionCount.value = 0;
   if (checked) {
     if (!selectedExceptionIds.value.includes(exceptionId)) {
       selectedExceptionIds.value = [...selectedExceptionIds.value, exceptionId];
@@ -1035,6 +1054,7 @@ function toggleExceptionSelection(exceptionId: string, checked: boolean) {
 }
 
 function toggleAllExceptionSelections(checked: boolean) {
+  staleExceptionSelectionCount.value = 0;
   if (checked) {
     selectedExceptionIds.value = exceptionRows.value.map((row) => row.id);
     return;
@@ -1052,20 +1072,39 @@ function onToggleExceptionSelection(exceptionId: string, event: Event) {
   toggleExceptionSelection(exceptionId, Boolean(target?.checked));
 }
 
-function confirmBulkPreview(action: SettlementExceptionAction) {
+function openBulkPreviewDrawer(action: SettlementExceptionAction) {
   resetBulkPreviewConfirmState();
-  if (bulkExceptionPreview.value.isEmpty) {
-    bulkPreviewConfirmState.error = `${bulkExceptionPreview.value.emptyMessage} ${bulkExceptionPreview.value.recoveryHint}`;
+  bulkPreviewDrawer.action = action;
+  bulkPreviewDrawer.error = '';
+  bulkPreviewDrawer.open = true;
+}
+
+function closeBulkPreviewDrawer() {
+  resetBulkPreviewDrawer();
+}
+
+function resetBulkSelectionSafe() {
+  selectedExceptionIds.value = [];
+  staleExceptionSelectionCount.value = 0;
+  bulkPreviewDrawer.error = '';
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
+}
+
+function confirmBulkPreviewFromDrawer() {
+  resetBulkPreviewConfirmState();
+  bulkPreviewDrawer.error = '';
+  if (!bulkConfirmation.value.canConfirm) {
+    bulkPreviewDrawer.error = bulkConfirmation.value.fallbackMessage || 'Selection is not ready for confirmation.';
     return;
   }
-  if (bulkExceptionPreview.value.malformedCount > 0) {
-    bulkPreviewConfirmState.error = `${bulkExceptionPreview.value.malformedMessage} ${bulkExceptionPreview.value.recoveryHint}`;
-    return;
-  }
-  bulkPreviewConfirmState.message = `Bulk ${action} preview confirmed for ${bulkExceptionPreview.value.validCount} valid row(s). Deterministic export summaries are ready below.`;
+  bulkPreviewConfirmState.message = `Bulk ${bulkPreviewDrawer.action} preview confirmed for ${bulkConfirmation.value.validCount} valid row(s). Deterministic export summaries are ready below.`;
+  staleExceptionSelectionCount.value = 0;
+  closeBulkPreviewDrawer();
 }
 
 function applyExceptionFixture(mode: ExceptionFixtureMode) {
+  staleExceptionSelectionCount.value = selectedExceptionIds.value.length;
   exceptionFixtureMode.value = mode;
   exceptionFixtureRetryCount.value = 0;
   exceptionState.loading = false;
@@ -1084,6 +1123,7 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   resetState(exceptionState);
   resetState(exceptionDetailState);
   resetBulkPreviewConfirmState();
+  resetBulkPreviewDrawer();
 
   if (mode === 'loading') {
     exceptionState.loading = true;
@@ -1363,6 +1403,7 @@ function resetExceptionQueryState() {
 async function loadExceptions(page = 1) {
   resetState(exceptionState);
   resetBulkPreviewConfirmState();
+  resetBulkPreviewDrawer();
   if (!ensureAuth(exceptionState)) return;
 
   exceptionFilters.page = page;
@@ -1397,7 +1438,9 @@ async function loadExceptions(page = 1) {
     const items = Array.isArray(response) ? response : (response?.items ?? response?.data ?? []);
 
     exceptionRows.value = items.map((item: any) => mapExceptionRow(item));
+    const previousSelectionCount = selectedExceptionIds.value.length;
     selectedExceptionIds.value = selectedExceptionIds.value.filter((id) => exceptionRows.value.some((row) => row.id === id));
+    staleExceptionSelectionCount.value = Math.max(0, previousSelectionCount - selectedExceptionIds.value.length);
     const total = Number(response?.total ?? response?.meta?.total ?? exceptionRows.value.length);
     const totalPages = Number(response?.totalPages ?? response?.meta?.totalPages ?? Math.max(1, Math.ceil(total / exceptionFilters.pageSize)));
     const currentPage = Number(response?.page ?? response?.meta?.page ?? page);
@@ -1421,6 +1464,7 @@ async function loadExceptions(page = 1) {
     }
   } catch (error: any) {
     exceptionRows.value = [];
+    staleExceptionSelectionCount.value = selectedExceptionIds.value.length;
     selectedExceptionIds.value = [];
     exceptionPagination.total = 0;
     exceptionPagination.totalPages = 1;
@@ -2141,8 +2185,9 @@ onMounted(() => {
           {{ bulkPreviewConfirmState.error || bulkPreviewConfirmState.message || 'Review selected rows before confirming a bulk action.' }}
         </p>
         <div class="inline-actions">
-          <button type="button" @click="confirmBulkPreview('resolve')">Confirm Bulk Resolve Preview</button>
-          <button type="button" class="danger" @click="confirmBulkPreview('ignore')">Confirm Bulk Ignore Preview</button>
+          <button type="button" @click="openBulkPreviewDrawer('resolve')">Review Bulk Resolve</button>
+          <button type="button" class="danger" @click="openBulkPreviewDrawer('ignore')">Review Bulk Ignore</button>
+          <button type="button" class="link" @click="resetBulkSelectionSafe">Safe Reset Selection</button>
         </div>
 
         <div class="bulk-preview-grid">
@@ -2158,6 +2203,12 @@ onMounted(() => {
             <p v-if="bulkExceptionPreview.isEmpty" class="state">{{ bulkExceptionPreview.emptyMessage }}</p>
             <p v-if="bulkExceptionPreview.malformedMessage" class="state error">{{ bulkExceptionPreview.malformedMessage }}</p>
             <p v-if="bulkExceptionPreview.isEmpty || bulkExceptionPreview.malformedCount > 0" class="state">{{ bulkExceptionPreview.recoveryHint }}</p>
+            <p v-if="staleExceptionSelectionCount > 0" class="state error">
+              Stale selection fallback: {{ staleExceptionSelectionCount }} row(s) dropped from current list scope. Use safe reset.
+            </p>
+            <p v-if="bulkConfirmation.needsRollbackHint" class="state">
+              {{ bulkConfirmation.rollbackHint }}
+            </p>
           </div>
           <div>
             <h4>Deterministic CSV Export Preview</h4>
@@ -2275,6 +2326,35 @@ onMounted(() => {
             <button type="button" class="link" :disabled="exceptionAction.loading" @click="closeExceptionAction">Cancel</button>
           </form>
           <p class="state error" v-if="exceptionAction.error">{{ exceptionAction.error }}</p>
+        </div>
+      </div>
+
+      <div v-if="bulkPreviewDrawer.open" class="modal-backdrop" @click.self="closeBulkPreviewDrawer">
+        <div class="modal">
+          <h3>{{ bulkPreviewDrawer.action === 'resolve' ? 'Bulk Resolve Confirmation' : 'Bulk Ignore Confirmation' }}</h3>
+          <p class="state">
+            Confirm {{ bulkPreviewDrawer.action }} for {{ bulkConfirmation.validCount }} valid row(s) out of {{ bulkConfirmation.selectedCount }} selected.
+          </p>
+          <ul class="timeline-list">
+            <li>Status breakdown: open {{ bulkConfirmation.statusCounts.open }}, investigating {{ bulkConfirmation.statusCounts.investigating }}, resolved {{ bulkConfirmation.statusCounts.resolved }}, ignored {{ bulkConfirmation.statusCounts.ignored }}</li>
+            <li>Risk buckets: high {{ bulkConfirmation.riskCounts.high }}, medium {{ bulkConfirmation.riskCounts.medium }}, low {{ bulkConfirmation.riskCounts.low }}</li>
+            <li v-if="bulkConfirmation.needsRollbackHint">{{ bulkConfirmation.rollbackHint }}</li>
+          </ul>
+          <p v-if="bulkConfirmation.hasFallback" class="state error">
+            {{ bulkConfirmation.fallbackTitle }}: {{ bulkConfirmation.fallbackMessage }}
+          </p>
+          <p v-if="bulkPreviewDrawer.error" class="state error">{{ bulkPreviewDrawer.error }}</p>
+          <div class="inline-actions">
+            <button type="button" :disabled="!bulkConfirmation.canConfirm" @click="confirmBulkPreviewFromDrawer">
+              Confirm {{ bulkPreviewDrawer.action === 'resolve' ? 'Resolve' : 'Ignore' }} Preview
+            </button>
+            <button type="button" class="link" @click="resetBulkSelectionSafe">
+              Safe Reset Selection
+            </button>
+            <button type="button" class="link" @click="closeBulkPreviewDrawer">
+              Cancel
+            </button>
+          </div>
         </div>
       </div>
     </section>

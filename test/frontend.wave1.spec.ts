@@ -5,6 +5,7 @@ import {
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
+  buildExceptionBulkConfirmation,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
   createExceptionSavedView,
@@ -273,6 +274,60 @@ describe('frontend wave1 helpers', () => {
     expect(preview.malformedCount).toBe(2);
     expect(preview.malformedMessage).toContain('2 malformed row');
     expect(preview.csvPreview).toContain('warning,malformed_rows_present');
+  });
+
+  it('builds deterministic bulk confirmation summary for render state', () => {
+    const preview = buildExceptionBulkPreview([
+      { id: 'exc-1', merchantId: 'm-1', provider: 'mock-a', status: 'open', mismatchCount: 4 },
+      { id: 'exc-2', merchantId: 'm-2', provider: 'mock-a', status: 'investigating', mismatchCount: 1 },
+    ]);
+    const confirmation = buildExceptionBulkConfirmation({
+      action: 'resolve',
+      preview,
+      staleSelectionCount: 0,
+    });
+    expect(confirmation.canConfirm).toBe(true);
+    expect(confirmation.validCount).toBe(2);
+    expect(confirmation.statusCounts.open).toBe(1);
+    expect(confirmation.statusCounts.investigating).toBe(1);
+    expect(confirmation.riskCounts.high).toBe(1);
+    expect(confirmation.riskCounts.medium).toBe(1);
+  });
+
+  it('emits deterministic rollback hint when malformed rows are in preview', () => {
+    const preview = buildExceptionBulkPreview([
+      { id: 'exc-1', merchantId: 'm-1', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+      { id: '', merchantId: 'm-2', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+    ]);
+    const confirmation = buildExceptionBulkConfirmation({
+      action: 'ignore',
+      preview,
+      staleSelectionCount: 0,
+    });
+    expect(confirmation.needsRollbackHint).toBe(true);
+    expect(confirmation.rollbackHint).toContain('Rollback hint');
+    expect(confirmation.canConfirm).toBe(false);
+  });
+
+  it('returns explicit stale/no-selection fallback for safe reset UX', () => {
+    const preview = buildExceptionBulkPreview([]);
+    const staleFallback = buildExceptionBulkConfirmation({
+      action: 'resolve',
+      preview,
+      staleSelectionCount: 2,
+    });
+    expect(staleFallback.hasFallback).toBe(true);
+    expect(staleFallback.fallbackTitle).toBe('Stale selection detected');
+    expect(staleFallback.canConfirm).toBe(false);
+
+    const noSelectionFallback = buildExceptionBulkConfirmation({
+      action: 'resolve',
+      preview,
+      staleSelectionCount: 0,
+    });
+    expect(noSelectionFallback.hasFallback).toBe(true);
+    expect(noSelectionFallback.fallbackTitle).toBe('No rows selected');
+    expect(noSelectionFallback.fallbackMessage).toContain('safe reset');
   });
 
   it('creates, renames, pins, applies, and deletes saved triage views deterministically', () => {

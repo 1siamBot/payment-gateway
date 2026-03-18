@@ -83,6 +83,22 @@ export type ExceptionBulkPreview = {
   jsonPreview: string;
 };
 
+export type ExceptionBulkConfirmation = {
+  action: ExceptionAction;
+  selectedCount: number;
+  validCount: number;
+  malformedCount: number;
+  staleSelectionCount: number;
+  statusCounts: Record<ExceptionStatus, number>;
+  riskCounts: Record<ExceptionRiskBucket, number>;
+  hasFallback: boolean;
+  fallbackTitle: string;
+  fallbackMessage: string;
+  needsRollbackHint: boolean;
+  rollbackHint: string;
+  canConfirm: boolean;
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -201,6 +217,59 @@ export function buildExceptionBulkPreview(selectedRows: unknown[]): ExceptionBul
     recoveryHint: 'Clear invalid rows or refresh fixture data before confirming bulk action.',
     csvPreview,
     jsonPreview,
+  };
+}
+
+export function buildExceptionBulkConfirmation(input: {
+  action: ExceptionAction;
+  preview: ExceptionBulkPreview;
+  staleSelectionCount: number;
+}): ExceptionBulkConfirmation {
+  const staleSelectionCount = Number.isFinite(input.staleSelectionCount)
+    ? Math.max(0, Math.trunc(input.staleSelectionCount))
+    : 0;
+  const hasNoSelection = input.preview.isEmpty;
+  const hasMalformedRows = input.preview.malformedCount > 0;
+  const hasMixedConflictRisk = input.preview.riskCounts.high > 0
+    && (input.preview.riskCounts.medium > 0 || input.preview.riskCounts.low > 0);
+  const needsRollbackHint = hasMalformedRows || hasMixedConflictRisk;
+
+  let fallbackTitle = '';
+  let fallbackMessage = '';
+  if (staleSelectionCount > 0) {
+    fallbackTitle = 'Stale selection detected';
+    fallbackMessage = `${staleSelectionCount} selected row(s) are no longer in the current fixture scope. Use safe reset before confirming.`;
+  } else if (hasNoSelection) {
+    fallbackTitle = 'No rows selected';
+    fallbackMessage = `${input.preview.emptyMessage} Use safe reset to clear selection state and reselect rows.`;
+  } else if (hasMalformedRows) {
+    fallbackTitle = 'Malformed rows detected';
+    fallbackMessage = `${input.preview.malformedMessage ?? 'Malformed rows are present.'} Use safe reset and reselect only valid rows.`;
+  }
+
+  const rollbackHint = hasMalformedRows
+    ? 'Rollback hint: malformed rows are excluded. Clear malformed selections and re-run preview before submit.'
+    : (hasMixedConflictRisk
+      ? 'Rollback hint: mixed high-risk and non-high-risk rows detected. Split actions by risk bucket to keep rollback deterministic.'
+      : 'Rollback hint: selection is deterministic and safe for fixture confirmation.');
+
+  const canConfirm = fallbackMessage.length === 0
+    && input.preview.validCount > 0;
+
+  return {
+    action: input.action,
+    selectedCount: input.preview.selectedCount,
+    validCount: input.preview.validCount,
+    malformedCount: input.preview.malformedCount,
+    staleSelectionCount,
+    statusCounts: { ...input.preview.statusCounts },
+    riskCounts: { ...input.preview.riskCounts },
+    hasFallback: fallbackMessage.length > 0,
+    fallbackTitle,
+    fallbackMessage,
+    needsRollbackHint,
+    rollbackHint,
+    canConfirm,
   };
 }
 
