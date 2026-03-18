@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  buildTimelineViewState,
   type PaymentAttemptFixture,
   type TimelineEventRow,
   type TimelineScenarioKey,
@@ -32,38 +33,58 @@ function parseScenarioFromRoute(): TimelineScenarioKey {
   return 'successful_capture';
 }
 
+function shouldAutoOpenDrawer(): boolean {
+  const rawValue = Array.isArray(route.query.openDrawer) ? route.query.openDrawer[0] : route.query.openDrawer;
+  return rawValue === '1';
+}
+
 const selectedScenario = ref<TimelineScenarioKey>(parseScenarioFromRoute());
+const autoOpenDrawer = shouldAutoOpenDrawer();
 const selectedFixture = ref<PaymentAttemptFixture | null>(null);
 const timelineRows = ref<TimelineEventRow[]>([]);
 const malformedCount = ref(0);
 const drawerOpen = ref(false);
+const drawerCollapsed = ref(false);
 const loading = ref(false);
 const stateMessage = ref('Select a scenario and open the drawer.');
+const recoveryHint = ref('Open the drawer to inspect deterministic event ordering and fallback behavior.');
 const stateError = ref('');
+const expandedEventIds = ref<Set<string>>(new Set());
 
 const currentScenarioLabel = computed(() => resolveScenarioLabel(selectedScenario.value));
 
 async function loadDrawerData() {
   loading.value = true;
   stateError.value = '';
+  expandedEventIds.value = new Set();
   try {
     const fixture = await loadPaymentAttemptScenario(selectedScenario.value);
     selectedFixture.value = fixture;
     const normalized = normalizeTimelineEvents(fixture.events);
     timelineRows.value = normalized.rows;
     malformedCount.value = normalized.malformedCount;
-
-    if (!timelineRows.value.length) {
-      stateMessage.value = 'No attempt events are available for this payment yet.';
-      return;
-    }
-
-    stateMessage.value = `Loaded ${timelineRows.value.length} event(s) for ${fixture.paymentReference}.`;
+    const nextState = buildTimelineViewState({
+      rowsCount: timelineRows.value.length,
+      malformedCount: malformedCount.value,
+      paymentReference: fixture.paymentReference,
+    });
+    stateMessage.value = nextState.message;
+    recoveryHint.value = nextState.recoveryHint;
   } catch (error: any) {
+    const paymentReferenceForHint = selectedFixture.value?.paymentReference || `scenario:${selectedScenario.value}`;
     selectedFixture.value = null;
     timelineRows.value = [];
     malformedCount.value = 0;
-    stateError.value = error?.message || 'Unable to load timeline fixture.';
+    const errorMessage = error?.message || 'Unable to load timeline fixture.';
+    stateError.value = errorMessage;
+    const nextState = buildTimelineViewState({
+      rowsCount: 0,
+      malformedCount: 0,
+      paymentReference: paymentReferenceForHint,
+      loadErrorMessage: errorMessage,
+    });
+    stateMessage.value = nextState.message;
+    recoveryHint.value = nextState.recoveryHint;
   } finally {
     loading.value = false;
   }
@@ -71,16 +92,47 @@ async function loadDrawerData() {
 
 function openDrawer() {
   drawerOpen.value = true;
+  drawerCollapsed.value = false;
   void loadDrawerData();
 }
 
 function closeDrawer() {
   drawerOpen.value = false;
+  drawerCollapsed.value = false;
+  expandedEventIds.value = new Set();
+}
+
+function toggleDrawerCollapse() {
+  drawerCollapsed.value = !drawerCollapsed.value;
+}
+
+function isLongNote(note: string): boolean {
+  return note.length > 96;
+}
+
+function isExpanded(eventId: string): boolean {
+  return expandedEventIds.value.has(eventId);
+}
+
+function toggleEventExpanded(eventId: string) {
+  const next = new Set(expandedEventIds.value);
+  if (next.has(eventId)) {
+    next.delete(eventId);
+  } else {
+    next.add(eventId);
+  }
+  expandedEventIds.value = next;
 }
 
 watch(selectedScenario, () => {
   if (drawerOpen.value) {
     void loadDrawerData();
+  }
+});
+
+onMounted(() => {
+  if (autoOpenDrawer) {
+    openDrawer();
   }
 });
 </script>
@@ -141,28 +193,34 @@ watch(selectedScenario, () => {
     </section>
 
     <section v-if="drawerOpen" class="drawer-shell" @click.self="closeDrawer">
-      <aside class="timeline-drawer">
+      <aside class="timeline-drawer" :class="{ collapsed: drawerCollapsed }">
         <header class="drawer-header">
           <div>
             <h3>{{ currentScenarioLabel }} Timeline</h3>
             <small>{{ selectedFixture?.paymentReference || 'payment fixture' }}</small>
           </div>
-          <button type="button" class="link" @click="closeDrawer">Close</button>
+          <div class="inline-actions">
+            <button type="button" class="link" @click="toggleDrawerCollapse">
+              {{ drawerCollapsed ? 'Expand' : 'Collapse' }}
+            </button>
+            <button type="button" class="link" @click="closeDrawer">Close</button>
+          </div>
         </header>
 
         <p v-if="loading" class="state">Loading deterministic timeline fixture...</p>
 
         <template v-else>
           <p class="state" :class="{ error: stateError }">{{ stateError || stateMessage }}</p>
+          <p class="state">{{ recoveryHint }}</p>
           <p v-if="malformedCount > 0" class="state malformed-note">
             {{ malformedCount }} malformed event(s) were skipped to keep operator diagnostics safe.
           </p>
 
-          <div v-if="timelineRows.length" class="table-wrap drawer-table-wrap">
+          <div v-if="timelineRows.length && !drawerCollapsed" class="table-wrap drawer-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>#</th>
+                  <th>Order</th>
                   <th>Timestamp (UTC)</th>
                   <th>Status</th>
                   <th>Event</th>
@@ -172,17 +230,31 @@ watch(selectedScenario, () => {
               </thead>
               <tbody>
                 <tr v-for="(event, idx) in timelineRows" :key="event.id">
-                  <td>{{ idx + 1 }}</td>
+                  <td>
+                    <strong>{{ event.orderLabel }}</strong>
+                    <small>#{{ idx + 1 }}</small>
+                  </td>
                   <td>{{ new Date(event.occurredAt).toISOString() }}</td>
                   <td><span :class="`attempt-status status-${event.status}`">{{ event.status }}</span></td>
                   <td>{{ event.stage }}</td>
                   <td>{{ event.actor }}</td>
-                  <td>{{ event.note }}</td>
+                  <td>
+                    <p :class="{ 'note-clamped': isLongNote(event.note) && !isExpanded(event.id) }">{{ event.note }}</p>
+                    <button
+                      v-if="isLongNote(event.note)"
+                      type="button"
+                      class="link"
+                      @click="toggleEventExpanded(event.id)"
+                    >
+                      {{ isExpanded(event.id) ? 'Collapse note' : 'Expand note' }}
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <p v-else class="state">No timeline rows to show for this scenario.</p>
+          <p v-else-if="!timelineRows.length" class="state">No timeline rows to show for this scenario.</p>
+          <p v-else class="state">Drawer collapsed. Expand to view timeline rows.</p>
         </template>
       </aside>
     </section>

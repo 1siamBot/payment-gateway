@@ -27,6 +27,12 @@ export type PaymentAttemptFixture = {
 
 export type TimelineEventRow = RawAttemptEvent & {
   occurredAtEpochMs: number;
+  orderLabel: string;
+};
+
+export type TimelineViewState = {
+  message: string;
+  recoveryHint: string;
 };
 
 const FIXTURES: Record<TimelineScenarioKey, PaymentAttemptFixture> = {
@@ -144,6 +150,7 @@ export function normalizeTimelineEvents(rawEvents: RawAttemptEvent[]): {
     validRows.push({
       ...event,
       occurredAtEpochMs,
+      orderLabel: '',
     });
   });
 
@@ -154,7 +161,43 @@ export function normalizeTimelineEvents(rawEvents: RawAttemptEvent[]): {
     return a.occurredAtEpochMs - b.occurredAtEpochMs;
   });
 
+  validRows.forEach((row, index) => {
+    row.orderLabel = `EVT-${String(index + 1).padStart(3, '0')}`;
+  });
+
   return { rows: validRows, malformedCount };
+}
+
+export function buildTimelineViewState(input: {
+  rowsCount: number;
+  malformedCount: number;
+  paymentReference: string;
+  loadErrorMessage?: string;
+}): TimelineViewState {
+  if (input.loadErrorMessage) {
+    return {
+      message: 'Timeline fixture failed to load.',
+      recoveryHint: `Retry load. If this keeps happening, switch scenario and reopen drawer for ${input.paymentReference}.`,
+    };
+  }
+
+  if (input.rowsCount === 0) {
+    if (input.malformedCount > 0) {
+      return {
+        message: 'Timeline data contains malformed events only.',
+        recoveryHint: 'Switch to Successful Capture or Retry Then Success to validate drawer rendering.',
+      };
+    }
+    return {
+      message: 'No attempt events are available for this payment yet.',
+      recoveryHint: 'Switch to Successful Capture or Retry Then Success, then reopen drawer.',
+    };
+  }
+
+  return {
+    message: `Loaded ${input.rowsCount} event(s) for ${input.paymentReference}.`,
+    recoveryHint: 'Use scenario switcher to compare alternate deterministic timelines.',
+  };
 }
 
 export async function loadPaymentAttemptScenario(
