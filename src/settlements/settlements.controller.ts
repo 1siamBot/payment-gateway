@@ -53,8 +53,8 @@ export class SettlementsController {
   updateException(
     @Req() request: AuthenticatedRequest,
     @Param('exceptionId') exceptionId: string,
-    @Headers('idempotency-key') idempotencyHeader?: string,
     @Body() body: UpdateSettlementExceptionDto,
+    @Headers('idempotency-key') idempotencyHeader?: string,
   ) {
     return this.settlements.updateSettlementException(
       exceptionId,
