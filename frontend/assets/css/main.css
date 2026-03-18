@@ -1,14 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg: #f6efe3;
-  --paper: #fffef8;
-  --ink: #1f2933;
-  --muted: #5f6b73;
-  --line: #d9c9b6;
-  --brand: #0f766e;
-  --brand-dark: #0b4f4a;
+  --bg: #f1f5f9;
+  --paper: #ffffff;
+  --ink: #0f172a;
+  --muted: #475569;
+  --line: #d0d8e2;
+  --brand: #0b3c5d;
+  --brand-2: #127475;
+  --brand-soft: #d7ecef;
   --danger: #b42318;
+  --ok: #127475;
+  --warn: #b26a00;
+  --critical: #b42318;
 }
 
 * {
@@ -20,13 +24,13 @@ body {
   font-family: 'Space Grotesk', sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(900px 450px at 90% -10%, #ffd089 0%, transparent 55%),
-    radial-gradient(900px 400px at -10% 20%, #ff9f7a 0%, transparent 50%),
+    radial-gradient(1000px 500px at 120% -10%, #bae6fd 0%, transparent 60%),
+    radial-gradient(1000px 500px at -15% 0%, #bbf7d0 0%, transparent 50%),
     var(--bg);
 }
 
-.shell {
-  max-width: 1100px;
+.page {
+  width: min(1200px, 100%);
   margin: 0 auto;
   padding: 1rem;
   display: grid;
@@ -34,51 +38,46 @@ body {
 }
 
 .hero {
-  background: linear-gradient(115deg, #1e293b, #0f766e);
-  border-radius: 14px;
-  color: #fff;
+  border-radius: 16px;
   padding: 1.2rem;
+  background: linear-gradient(115deg, var(--brand), var(--brand-2));
+  color: #fff;
 }
 
 .hero h1 {
   margin: 0;
-  font-size: 1.6rem;
+  font-size: clamp(1.4rem, 1.5vw + 1rem, 2rem);
 }
 
 .hero p {
-  margin: 0.4rem 0 0.7rem;
+  margin: 0.4rem 0 1rem;
 }
 
-.hero code {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 0.85rem;
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 7px;
-  padding: 0.25rem 0.45rem;
+.auth-grid,
+.grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .card {
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 1rem;
 }
 
 h2,
-h3 {
+h3,
+h4 {
   margin-top: 0;
 }
 
-.grid {
+label {
   display: grid;
-  gap: 0.7rem;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-}
-
-.inline {
-  display: flex;
-  gap: 0.55rem;
-  flex-wrap: wrap;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
 input,
@@ -87,8 +86,8 @@ button {
   width: 100%;
   font: inherit;
   border-radius: 10px;
-  border: 1px solid #c9b8a4;
-  padding: 0.55rem 0.62rem;
+  border: 1px solid #c4d0dc;
+  padding: 0.58rem 0.64rem;
 }
 
 button {
@@ -100,7 +99,7 @@ button {
 }
 
 button:hover {
-  background: var(--brand-dark);
+  background: #082b44;
 }
 
 button:disabled {
@@ -109,25 +108,68 @@ button:disabled {
 }
 
 button.link {
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand);
 }
 
 button.danger {
-  margin-top: 0.55rem;
-  max-width: 240px;
   background: var(--danger);
 }
 
-.refund-field {
-  display: block;
+.inline-actions {
   margin-top: 0.75rem;
-  max-width: 420px;
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.inline-actions > button {
+  width: auto;
+  min-width: 160px;
+}
+
+.refund-grid {
+  margin-top: 0.75rem;
+}
+
+.checklist {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px dashed #9ab6c7;
+  border-radius: 10px;
+  background: #f8fbfe;
+}
+
+.checklist label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.checklist input {
+  width: auto;
+}
+
+.timeline ul {
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--muted);
+}
+
+.secret {
+  margin-top: 0.3rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.83rem;
+  padding: 0.5rem;
+  border-radius: 8px;
+  background: #f3f4f6;
+  overflow: auto;
 }
 
 .state {
   min-height: 1.2rem;
-  margin: 0.65rem 0 0;
+  margin: 0.7rem 0;
   color: var(--muted);
 }
 
@@ -135,51 +177,142 @@ button.danger {
   color: var(--danger);
 }
 
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.kpi-row article {
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.kpi-row p {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.state-healthy {
+  color: var(--ok);
+}
+
+.state-degraded {
+  color: var(--warn);
+}
+
+.state-critical {
+  color: var(--critical);
+}
+
+.state-unknown {
+  color: var(--muted);
+}
+
 .table-wrap {
   overflow-x: auto;
+}
+
+.triage-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 0.9rem;
+}
+
+.fixture-bar {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(220px, 340px) auto;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+
+.fixture-bar > button {
+  width: auto;
+  min-width: 160px;
+}
+
+.detail-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: #f8fafc;
+}
+
+.timeline-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.45rem;
+  color: var(--muted);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.48);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 30;
+}
+
+.modal {
+  width: min(540px, 100%);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 0.8rem;
 }
 
 th,
 td {
   text-align: left;
   border-bottom: 1px solid var(--line);
-  padding: 0.5rem;
+  padding: 0.55rem;
+  font-size: 0.9rem;
   vertical-align: top;
-  font-size: 0.93rem;
 }
 
-.pill {
-  background: #e0f2f1;
-  color: #134e4a;
-  border-radius: 999px;
-  padding: 0.18rem 0.52rem;
-  font-size: 0.8rem;
+td small {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
 }
 
-.detail {
-  background: #fbf6ee;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  max-height: 300px;
-  overflow: auto;
-  padding: 0.7rem;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 0.86rem;
-}
+@media (max-width: 860px) {
+  .page {
+    padding: 0.8rem;
+  }
 
-@media (max-width: 640px) {
-  .hero h1 {
-    font-size: 1.35rem;
+  .triage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .fixture-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .fixture-bar > button {
+    width: 100%;
   }
 
   th,
   td {
     font-size: 0.84rem;
+    padding: 0.5rem;
+  }
+
+  .inline-actions > button {
+    width: 100%;
   }
 }
