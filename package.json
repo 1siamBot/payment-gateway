@@ -18,6 +18,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "adjudication:replay:verify": "ts-node prisma/run-adjudication-replay-verifier.ts",
     "settlements:fixtures:seed": "ts-node prisma/seed-settlement-exception-fixtures.ts",
     "settlements:fixtures:replay": "ts-node prisma/replay-settlement-exception-fixtures.ts"
   },

@@ -202,6 +202,47 @@ retry_failure_reason=idempotency_in_progress
 retry_success=201:ok
 ```
 
+## Adjudication Replay Verifier (ONE-182)
+
+Deterministic verifier runner for ONE-125 checks 10/11/12 using the canonical schema constraints (ONE-180) and fixture matrix (ONE-181).
+
+### Run
+
+```bash
+npm run adjudication:replay:verify
+# optional artifact override:
+# ADJUDICATION_REPLAY_ARTIFACT_PATH=artifacts/custom-replay-summary.json npm run adjudication:replay:verify
+```
+
+### Artifact output
+
+- Default path: `artifacts/adjudication-replay-summary.json`
+- Per-check fields:
+  - `checkId`
+  - `verdict` (`PASS_FINAL` or `FAIL`)
+  - `signatureKey` (first failure key when failing)
+  - `firstOwner`
+  - `escalationOwner`
+- Includes `fixtureResults[]` and fixture totals for auditability.
+
+### Exit behavior
+
+- `0`: all checks (10/11/12) are `PASS_FINAL`
+- non-zero: one or more checks failed, or fixture shape is invalid
+
+### Stable console summary lines
+
+```text
+Adjudication replay verifier summary
+artifact=artifacts/adjudication-replay-summary.json
+check10=FAIL signatureKey=TXN_GUARD_FIELDS_MISSING signatures=TXN_GUARD_FIELDS_MISSING,TXN_STALE_VERSION_CONFLICT,TXN_CONFLICT_ENVELOPE_INCOMPLETE firstOwner=frontend escalationOwner=backend
+check11=FAIL signatureKey=TXN_EVIDENCE_FILENAME_DRIFT signatures=TXN_EVIDENCE_FILENAME_DRIFT,MX_08_QA_CHECKLIST_MISSING firstOwner=qa escalationOwner=frontend
+check12=FAIL signatureKey=MX_08_QA_CHECKLIST_MISSING signatures=MX_08_QA_CHECKLIST_MISSING,AC1_OWNER_ROUTE_MISSING firstOwner=frontend escalationOwner=pm
+fixtures.total=10
+fixtures.passed=4
+fixtures.failed=6
+```
+
 ## QA Handoff Package (ONE-38)
 
 Release baseline and execution package for QA rerun:
