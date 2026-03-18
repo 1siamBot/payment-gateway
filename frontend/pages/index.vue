@@ -26,11 +26,13 @@ import {
   prependExceptionAudit,
   renameExceptionSavedView,
   resolveActiveExceptionPreset,
+  resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
   restoreExceptionSavedViewState,
   serializeExceptionSavedViewState,
   serializeExceptionQueryState,
   filterExceptionDiffInspectorRows,
+  moveExceptionDiffInspectorFocus,
   validateExceptionActionInput,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
@@ -353,6 +355,7 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
   { key: 'high_delta', label: 'high_delta' },
   { key: 'mixed_status', label: 'mixed_status' },
 ];
+const activeBulkDiffRowId = ref('');
 const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
   bulkDiffInspector.value.rows,
   activeConflictDrilldown.value,
@@ -1058,6 +1061,71 @@ function resetBulkPreviewConfirmState() {
   bulkPreviewConfirmState.error = '';
 }
 
+watch(filteredBulkDiffRows, (rows) => {
+  if (!rows.length) {
+    activeBulkDiffRowId.value = '';
+    return;
+  }
+  if (!rows.some((row) => row.id === activeBulkDiffRowId.value)) {
+    activeBulkDiffRowId.value = rows[0].id;
+  }
+}, { immediate: true });
+
+function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
+  activeConflictDrilldown.value = key;
+  const nextRows = filterExceptionDiffInspectorRows(bulkDiffInspector.value.rows, key);
+  activeBulkDiffRowId.value = nextRows[0]?.id ?? '';
+}
+
+function setActiveBulkDiffRow(rowId: string) {
+  activeBulkDiffRowId.value = rowId;
+}
+
+function resetBulkInspectorViewState() {
+  activeConflictDrilldown.value = 'all';
+  activeBulkDiffRowId.value = filteredBulkDiffRows.value[0]?.id ?? '';
+  bulkPreviewConfirmState.error = '';
+  bulkPreviewConfirmState.message = 'Inspector view reset. Bulk selection is preserved.';
+}
+
+function onBulkDiffKeydown(event: KeyboardEvent) {
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
+    return;
+  }
+  const shortcutReason = resolveExceptionConflictShortcutDrilldown(event.key);
+  if (shortcutReason) {
+    event.preventDefault();
+    setActiveConflictDrilldown(shortcutReason);
+    return;
+  }
+
+  if (event.key === 'ArrowDown' || event.key.toLowerCase() === 'j') {
+    event.preventDefault();
+    activeBulkDiffRowId.value = moveExceptionDiffInspectorFocus({
+      rows: filteredBulkDiffRows.value,
+      activeRowId: activeBulkDiffRowId.value,
+      direction: 'next',
+    });
+    return;
+  }
+
+  if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    activeBulkDiffRowId.value = moveExceptionDiffInspectorFocus({
+      rows: filteredBulkDiffRows.value,
+      activeRowId: activeBulkDiffRowId.value,
+      direction: 'prev',
+    });
+    return;
+  }
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    resetBulkInspectorViewState();
+  }
+}
+
 function resetBulkPreviewDrawer() {
   bulkPreviewDrawer.open = false;
   bulkPreviewDrawer.action = 'resolve';
@@ -1108,7 +1176,7 @@ function closeBulkPreviewDrawer() {
 function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
-  activeConflictDrilldown.value = 'all';
+  resetBulkInspectorViewState();
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
@@ -2236,6 +2304,13 @@ onMounted(() => {
           <div>
             <h4>Diff Inspector</h4>
             <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
+            <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Esc</code> to reset view.</p>
+            <div class="sticky-anomaly-bar" role="status" aria-live="polite">
+              <span>stale_version {{ bulkDiffInspector.reasonCounts.stale_version }}</span>
+              <span>malformed {{ bulkDiffInspector.reasonCounts.malformed }}</span>
+              <span>high_delta {{ bulkDiffInspector.reasonCounts.high_delta }}</span>
+              <span>mixed_status {{ bulkDiffInspector.reasonCounts.mixed_status }}</span>
+            </div>
             <div class="chip-row">
               <button
                 v-for="option in conflictDrilldownOptions"
@@ -2243,18 +2318,25 @@ onMounted(() => {
                 type="button"
                 class="preset-chip"
                 :class="{ active: activeConflictDrilldown === option.key }"
-                @click="activeConflictDrilldown = option.key"
+                @click="setActiveConflictDrilldown(option.key)"
               >
                 {{ option.label }}
                 ({{ option.key === 'all'
                   ? bulkDiffInspector.rows.length
                   : bulkDiffInspector.reasonCounts[option.key] }})
               </button>
+              <button
+                type="button"
+                class="link"
+                @click="resetBulkInspectorViewState"
+              >
+                Reset Inspector View
+              </button>
             </div>
             <p v-if="bulkDiffEmptyState" class="state error">
               <strong>{{ bulkDiffEmptyState.title }}:</strong> {{ bulkDiffEmptyState.message }}
             </p>
-            <div v-else class="bulk-diff-table-wrap">
+            <div v-else class="bulk-diff-table-wrap" tabindex="0" @keydown="onBulkDiffKeydown">
               <table class="bulk-diff-table">
                 <thead>
                   <tr>
@@ -2267,8 +2349,17 @@ onMounted(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="row in filteredBulkDiffRows" :key="row.id">
-                    <td>{{ row.id }}<small>{{ row.merchantId }} / {{ row.provider }}</small></td>
+                  <tr
+                    v-for="row in filteredBulkDiffRows"
+                    :key="row.id"
+                    :class="{ 'bulk-diff-row-active': activeBulkDiffRowId === row.id }"
+                    @click="setActiveBulkDiffRow(row.id)"
+                  >
+                    <td>
+                      <span class="focus-indicator" :class="{ active: activeBulkDiffRowId === row.id }" aria-hidden="true"></span>
+                      {{ row.id }}
+                      <small>{{ row.merchantId }} / {{ row.provider }}</small>
+                    </td>
                     <td>{{ row.reasons.length ? row.reasons.join(', ') : 'none' }}</td>
                     <td v-for="delta in row.deltas" :key="`${row.id}-${delta.field}`">
                       <strong>{{ delta.current }}</strong>

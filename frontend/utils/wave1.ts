@@ -462,6 +462,44 @@ export function filterExceptionDiffInspectorRows(
   return rows.filter((row) => row.reasons.includes(drilldown));
 }
 
+export function resolveExceptionConflictShortcutDrilldown(key: string): ExceptionConflictDrilldownKey | null {
+  const normalized = key.trim();
+  if (normalized === '0') {
+    return 'all';
+  }
+  if (normalized === '1') {
+    return 'stale_version';
+  }
+  if (normalized === '2') {
+    return 'malformed';
+  }
+  if (normalized === '3') {
+    return 'high_delta';
+  }
+  if (normalized === '4') {
+    return 'mixed_status';
+  }
+  return null;
+}
+
+export function moveExceptionDiffInspectorFocus(input: {
+  rows: ExceptionDiffInspectorRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
 export function resolveExceptionDiffInspectorEmptyState(input: {
   activeReason: ExceptionConflictDrilldownKey;
   totalRows: number;

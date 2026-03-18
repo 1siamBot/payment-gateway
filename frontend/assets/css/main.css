@@ -318,6 +318,22 @@ button.danger {
   margin: 0.45rem 0 0.65rem;
 }
 
+.sticky-anomaly-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.4rem 0.45rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: rgba(239, 246, 255, 0.98);
+  font-size: 0.78rem;
+  color: #1e3a8a;
+  margin: 0.45rem 0;
+}
+
 .bulk-diff-table-wrap {
   border: 1px solid #bfdbfe;
   border-radius: 8px;
@@ -332,6 +348,28 @@ button.danger {
 
 .bulk-diff-table td strong {
   display: block;
+}
+
+.bulk-diff-table-wrap:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.bulk-diff-row-active {
+  background: #dbeafe;
+}
+
+.focus-indicator {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4rem;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.focus-indicator.active {
+  background: #2563eb;
 }
 
 .code-preview {

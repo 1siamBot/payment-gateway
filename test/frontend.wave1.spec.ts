@@ -22,8 +22,10 @@ import {
   parseExceptionQueryState,
   normalizeExceptionStatus,
   normalizeOptional,
+  moveExceptionDiffInspectorFocus,
   prependExceptionAudit,
   resolveActiveExceptionPreset,
+  resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
   serializeExceptionQueryState,
   filterExceptionDiffInspectorRows,
@@ -410,6 +412,71 @@ describe('frontend wave1 helpers', () => {
     expect(inspector.reasonCounts.malformed).toBe(1);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'high_delta').map((row) => row.id)).toEqual(['exc-a']);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'malformed').map((row) => row.id)).toEqual(['malformed-3']);
+  });
+
+  it('moves keyboard focus deterministically across filtered diff rows', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 4,
+      },
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'investigating',
+        version: 1,
+        currentAmount: 100,
+        incomingAmount: 105,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 1,
+      },
+    ]);
+    const filtered = filterExceptionDiffInspectorRows(inspector.rows, 'all');
+
+    expect(moveExceptionDiffInspectorFocus({
+      rows: filtered,
+      activeRowId: '',
+      direction: 'next',
+    })).toBe('exc-a');
+    expect(moveExceptionDiffInspectorFocus({
+      rows: filtered,
+      activeRowId: 'exc-a',
+      direction: 'next',
+    })).toBe('exc-b');
+    expect(moveExceptionDiffInspectorFocus({
+      rows: filtered,
+      activeRowId: 'exc-b',
+      direction: 'next',
+    })).toBe('exc-b');
+    expect(moveExceptionDiffInspectorFocus({
+      rows: filtered,
+      activeRowId: 'exc-b',
+      direction: 'prev',
+    })).toBe('exc-a');
+    expect(moveExceptionDiffInspectorFocus({
+      rows: filtered,
+      activeRowId: 'unknown-row',
+      direction: 'prev',
+    })).toBe('exc-a');
+  });
+
+  it('maps keyboard reason shortcuts to deterministic drilldown buckets', () => {
+    expect(resolveExceptionConflictShortcutDrilldown('0')).toBe('all');
+    expect(resolveExceptionConflictShortcutDrilldown('1')).toBe('stale_version');
+    expect(resolveExceptionConflictShortcutDrilldown('2')).toBe('malformed');
+    expect(resolveExceptionConflictShortcutDrilldown('3')).toBe('high_delta');
+    expect(resolveExceptionConflictShortcutDrilldown('4')).toBe('mixed_status');
+    expect(resolveExceptionConflictShortcutDrilldown('9')).toBeNull();
   });
 
   it('returns explicit empty drilldown fallback copy for safe reset path', () => {
