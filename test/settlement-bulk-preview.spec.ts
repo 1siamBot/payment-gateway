@@ -2,9 +2,11 @@ import { SettlementExceptionStatus } from '@prisma/client';
 import {
   buildBulkSettlementActionPreviewExport,
   buildBulkSettlementActionPreviewSummary,
+  buildBulkSettlementRollbackRecommendation,
   BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS,
   BULK_SETTLEMENT_PREVIEW_RISK_BUCKETS,
   BULK_SETTLEMENT_PREVIEW_WARNING_CODES,
+  BULK_SETTLEMENT_ROLLBACK_REASON_CODES,
 } from '../src/settlements/bulk-settlement-preview';
 
 describe('bulk settlement action preview', () => {
@@ -143,5 +145,58 @@ describe('bulk settlement action preview', () => {
     expect(first.csv.rows.map((row) => row[0])).toEqual(['se-a', 'se-m', 'se-z']);
     expect(first.warnings).toEqual(second.warnings);
     expect(first.summary).toEqual(second.summary);
+  });
+
+  it('classifies clean selection as safe_to_apply with deterministic reason map', () => {
+    const recommendation = buildBulkSettlementRollbackRecommendation({
+      rows: [
+        { id: 'se-1', status: SettlementExceptionStatus.OPEN, deltaAmount: 2 },
+        { id: 'se-2', status: SettlementExceptionStatus.OPEN, deltaAmount: 4 },
+      ],
+      selectedExceptionIds: ['se-1', 'se-2'],
+    });
+
+    expect(recommendation.classification).toBe('safe_to_apply');
+    expect(recommendation.reasonCodes).toEqual([]);
+    expect(recommendation.bucketCounts).toEqual({
+      safe_to_apply: 1,
+      needs_review: 0,
+      rollback_recommended: 0,
+    });
+    expect(recommendation.reasonCodeMap.map((row) => row.code)).toEqual([...BULK_SETTLEMENT_ROLLBACK_REASON_CODES]);
+  });
+
+  it('classifies malformed + mixed status selection as rollback_recommended', () => {
+    const recommendation = buildBulkSettlementRollbackRecommendation({
+      rows: [
+        { id: 'se-open', status: SettlementExceptionStatus.OPEN, deltaAmount: 3 },
+        { id: 'se-resolved', status: SettlementExceptionStatus.RESOLVED, deltaAmount: 4 },
+        { id: 'se-open', status: SettlementExceptionStatus.OPEN, deltaAmount: 3 },
+      ],
+      selectedExceptionIds: ['se-open', 'se-resolved'],
+    });
+
+    expect(recommendation.classification).toBe('rollback_recommended');
+    expect(recommendation.reasonCodes).toEqual(['MALFORMED_ROW', 'MIXED_STATUS_SELECTION']);
+    expect(recommendation.bucketCounts).toEqual({
+      safe_to_apply: 0,
+      needs_review: 0,
+      rollback_recommended: 1,
+    });
+  });
+
+  it('classifies stale selection risk as needs_review', () => {
+    const recommendation = buildBulkSettlementRollbackRecommendation({
+      rows: [{ id: 'se-1', status: SettlementExceptionStatus.OPEN, deltaAmount: 2 }],
+      selectedExceptionIds: ['se-1', 'se-missing'],
+    });
+
+    expect(recommendation.classification).toBe('needs_review');
+    expect(recommendation.reasonCodes).toEqual(['STALE_VERSION_RISK']);
+    expect(recommendation.bucketCounts).toEqual({
+      safe_to_apply: 0,
+      needs_review: 1,
+      rollback_recommended: 0,
+    });
   });
 });

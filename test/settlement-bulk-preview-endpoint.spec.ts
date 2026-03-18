@@ -5,6 +5,7 @@ import { SettlementExceptionStatus } from '@prisma/client';
 import * as request from 'supertest';
 import { AuthzGuard } from '../src/common/authz.guard';
 import {
+  BULK_SETTLEMENT_ROLLBACK_REASON_CODES,
   BULK_SETTLEMENT_PREVIEW_RISK_BUCKETS,
   BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS,
 } from '../src/settlements/bulk-settlement-preview';
@@ -83,6 +84,21 @@ describe('Settlement bulk action preview endpoint', () => {
     expect(response.body.metadata.requestedCount).toBe(4);
     expect(response.body.metadata.validCount).toBe(4);
     expect(response.body.metadata.hasMismatch).toBe(false);
+    expect(response.body.recommendation).toEqual({
+      contract: 'settlement-bulk-rollback-recommendation.v1',
+      classification: 'rollback_recommended',
+      bucketCounts: {
+        safe_to_apply: 0,
+        needs_review: 0,
+        rollback_recommended: 1,
+      },
+      reasonCodes: ['MIXED_STATUS_SELECTION', 'HIGH_DELTA_ANOMALY'],
+      reasonCodeMap: expect.any(Array),
+    });
+    expect(response.body.recommendation.reasonCodeMap).toHaveLength(4);
+    expect(response.body.recommendation.reasonCodeMap.map((row: { code: string }) => row.code)).toEqual(
+      [...BULK_SETTLEMENT_ROLLBACK_REASON_CODES],
+    );
     expect(Object.keys(response.body.byStatus)).toEqual([...BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS]);
     expect(Object.keys(response.body.byRiskBucket)).toEqual([...BULK_SETTLEMENT_PREVIEW_RISK_BUCKETS]);
   });
@@ -112,6 +128,8 @@ describe('Settlement bulk action preview endpoint', () => {
       high: 0,
       critical: 0,
     });
+    expect(response.body.recommendation.classification).toBe('safe_to_apply');
+    expect(response.body.recommendation.reasonCodes).toEqual([]);
   });
 
   it('reports malformed entries with stable codes and remediation hints', async () => {
@@ -162,6 +180,25 @@ describe('Settlement bulk action preview endpoint', () => {
       ]),
     );
     expect(response.body.metadata.errorCodeMap).toHaveLength(7);
+    expect(response.body.recommendation.classification).toBe('rollback_recommended');
+    expect(response.body.recommendation.reasonCodes).toEqual([
+      'MALFORMED_ROW',
+      'STALE_VERSION_RISK',
+    ]);
+  });
+
+  it('classifies stale selection as needs_review when no critical reason exists', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/settlements/exceptions/bulk-action-preview')
+      .set(authHeaders())
+      .send({
+        rows: [{ id: 'se-1', status: SettlementExceptionStatus.OPEN, deltaAmount: 2 }],
+        selectedExceptionIds: ['se-1', 'se-missing'],
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.recommendation.classification).toBe('needs_review');
+    expect(response.body.recommendation.reasonCodes).toEqual(['STALE_VERSION_RISK']);
   });
 
   it('remains byte-stable for deterministic key and warning ordering', async () => {
@@ -189,6 +226,9 @@ describe('Settlement bulk action preview endpoint', () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
     expect(JSON.stringify(first.body)).toBe(JSON.stringify(second.body));
+    expect(first.body.recommendation.reasonCodeMap.map((row: { code: string }) => row.code)).toEqual(
+      [...BULK_SETTLEMENT_ROLLBACK_REASON_CODES],
+    );
     expect(Object.keys(first.body.byStatus)).toEqual([...BULK_SETTLEMENT_PREVIEW_STATUS_BUCKETS]);
     expect(Object.keys(first.body.byRiskBucket)).toEqual([...BULK_SETTLEMENT_PREVIEW_RISK_BUCKETS]);
   });

@@ -13,10 +13,13 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BULK_SETTLEMENT_PREVIEW_WARNING_HINTS,
+  BulkSettlementRollbackReasonCode,
+  BulkSettlementRollbackReasonSeverity,
   BulkSettlementPreviewStatusBucket,
   BulkSettlementPreviewRiskBucket,
   BulkSettlementPreviewWarningCode,
   buildBulkSettlementActionPreviewExport,
+  buildBulkSettlementRollbackRecommendation,
 } from './bulk-settlement-preview';
 import {
   BuildSettlementBulkActionPreviewDto,
@@ -175,6 +178,17 @@ type SettlementBulkActionPreviewContractResponse = {
     errorCodeMap: Array<{
       code: BulkSettlementPreviewWarningCode;
       remediationHint: string;
+    }>;
+  };
+  recommendation: {
+    contract: 'settlement-bulk-rollback-recommendation.v1';
+    classification: 'safe_to_apply' | 'needs_review' | 'rollback_recommended';
+    bucketCounts: Record<'safe_to_apply' | 'needs_review' | 'rollback_recommended', number>;
+    reasonCodes: BulkSettlementRollbackReasonCode[];
+    reasonCodeMap: Array<{
+      code: BulkSettlementRollbackReasonCode;
+      severity: BulkSettlementRollbackReasonSeverity;
+      description: string;
     }>;
   };
 };
@@ -408,6 +422,7 @@ export class SettlementsService {
     input: BuildSettlementBulkActionPreviewDto,
   ): SettlementBulkActionPreviewContractResponse {
     const preview = buildBulkSettlementActionPreviewExport(input);
+    const recommendation = buildBulkSettlementRollbackRecommendation(input);
 
     return {
       contract: 'settlement-bulk-action-preview.v1',
@@ -431,6 +446,13 @@ export class SettlementsService {
             remediationHint,
           }),
         ),
+      },
+      recommendation: {
+        contract: recommendation.contract,
+        classification: recommendation.classification,
+        bucketCounts: recommendation.bucketCounts,
+        reasonCodes: recommendation.reasonCodes,
+        reasonCodeMap: recommendation.reasonCodeMap,
       },
     };
   }
