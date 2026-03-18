@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
+import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
 import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
 import { SettlementsService } from './settlements.service';
@@ -42,6 +43,11 @@ export class SettlementsController {
   @Get('exceptions')
   listExceptions(@Query() query: ListSettlementExceptionsDto) {
     return this.settlements.listSettlementExceptions(query);
+  }
+
+  @Get('exceptions/qa-fixtures')
+  listExceptionQaFixtures(@Query() query: ListSettlementExceptionQaFixturesDto) {
+    return this.settlements.listSettlementExceptionQaFixtures(query);
   }
 
   @Get('exceptions/:exceptionId')

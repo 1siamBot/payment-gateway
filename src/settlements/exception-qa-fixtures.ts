@@ -1,13 +1,16 @@
 import { SettlementExceptionStatus } from '@prisma/client';
 
-export type ExceptionQaScenario =
-  | 'resolve_success'
-  | 'ignore_success'
-  | 'stale_version_conflict'
-  | 'action_failure_retry'
-  | 'investigating_reference'
-  | 'resolved_reference'
-  | 'ignored_reference';
+export const SETTLEMENT_EXCEPTION_QA_SCENARIOS = [
+  'resolve_success',
+  'ignore_success',
+  'stale_version_conflict',
+  'action_failure_retry',
+  'investigating_reference',
+  'resolved_reference',
+  'ignored_reference',
+] as const;
+
+export type ExceptionQaScenario = (typeof SETTLEMENT_EXCEPTION_QA_SCENARIOS)[number];
 
 export type SettlementExceptionQaFixture = {
   id: string;

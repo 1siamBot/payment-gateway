@@ -11,10 +11,16 @@ import {
   TransactionType,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  ExceptionQaScenario,
+  SETTLEMENT_EXCEPTION_QA_FIXTURES,
+  SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
+} from './exception-qa-fixtures';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
 } from './dto/detect-settlement-exceptions.dto';
+import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
 import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
 
@@ -114,6 +120,25 @@ type ExceptionActionConflictReason =
   | 'terminal_status'
   | 'idempotency_key_reused'
   | 'idempotency_in_progress';
+
+type ExceptionQaFixtureItem = {
+  id: string;
+  scenario: ExceptionQaScenario;
+  merchantId: string;
+  providerName: string;
+  windowDate: string;
+  ledgerTotal: number;
+  providerTotal: number;
+  deltaAmount: number;
+  status: SettlementExceptionStatus;
+  openedReason: string;
+  openedNote: string;
+  latestOperatorReason: string | null;
+  latestOperatorNote: string | null;
+  resolutionActor: string | null;
+  resolutionAt: string | null;
+  version: number;
+};
 
 @Injectable()
 export class SettlementsService {
@@ -314,6 +339,29 @@ export class SettlementsService {
         hasNext,
         nextCursor: hasNext ? page[page.length - 1]?.id ?? null : null,
       },
+    };
+  }
+
+  listSettlementExceptionQaFixtures(query: ListSettlementExceptionQaFixturesDto): {
+    data: ExceptionQaFixtureItem[];
+    total: number;
+  } {
+    const fixtures = SETTLEMENT_EXCEPTION_QA_FIXTURES.filter((row) => {
+      if (query.scenario && row.scenario !== query.scenario) {
+        return false;
+      }
+      if (query.status && row.status !== query.status) {
+        return false;
+      }
+      return true;
+    });
+
+    return {
+      data: fixtures.map((row) => ({
+        ...row,
+        windowDate: SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
+      })),
+      total: fixtures.length,
     };
   }
 

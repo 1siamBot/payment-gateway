@@ -153,6 +153,15 @@ Mismatch reason codes:
 
 Deterministic fixture seeding and replay utilities for settlement exception triage QA.
 
+### Fixture read API
+
+- `GET /settlements/exceptions/qa-fixtures?scenario=&status=`
+  - Returns deterministic rows derived from `SETTLEMENT_EXCEPTION_QA_FIXTURES`.
+  - Optional filters:
+    - `scenario`: `resolve_success | ignore_success | stale_version_conflict | action_failure_retry | investigating_reference | resolved_reference | ignored_reference`
+    - `status`: `OPEN | INVESTIGATING | RESOLVED | IGNORED`
+  - Response keys: `data[]` (`id`, `scenario`, `merchantId`, `providerName`, `windowDate`, `status`, `version`, etc.) and `total`.
+
 ### 1) Reset + seed deterministic fixtures
 
 ```bash
