@@ -21,7 +21,8 @@
     "adjudication:replay:verify": "ts-node prisma/run-adjudication-replay-verifier.ts",
     "adjudication:payload:diff": "ts-node prisma/run-adjudication-payload-diff.ts",
     "settlements:fixtures:seed": "ts-node prisma/seed-settlement-exception-fixtures.ts",
-    "settlements:fixtures:replay": "ts-node prisma/replay-settlement-exception-fixtures.ts"
+    "settlements:fixtures:replay": "ts-node prisma/replay-settlement-exception-fixtures.ts",
+    "payments:timeline:fixtures:seed": "ts-node prisma/seed-payment-attempt-timeline-fixtures.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.1",
