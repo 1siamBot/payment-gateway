@@ -9,6 +9,7 @@ import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settleme
 import { BuildSettlementRemediationManifestDto } from './dto/build-settlement-remediation-manifest.dto';
 import { BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto } from './dto/build-settlement-remediation-publication-route-decision-envelope.dto';
 import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-remediation-runbook.dto';
+import { BuildSettlementReleaseGateEvidenceDigestDto } from './dto/build-settlement-release-gate-evidence-digest.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
@@ -163,6 +164,11 @@ export class SettlementsController {
     @Body() body: BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto,
   ) {
     return this.settlements.buildSettlementRemediationPublicationRouteDecisionEnvelope(body);
+  }
+
+  @Post('exceptions/release-gate-evidence-digest')
+  releaseGateEvidenceDigest(@Body() body: BuildSettlementReleaseGateEvidenceDigestDto) {
+    return this.settlements.buildSettlementReleaseGateEvidenceDigest(body);
   }
 
   @Get('exceptions/qa-fixtures')
