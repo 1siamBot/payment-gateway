@@ -90,6 +90,9 @@ import {
   buildBlockerAwareDispatchCockpit,
   buildReleaseReadinessSimulator,
   buildPublicationWindowPlanBoard,
+  buildDiagnosticsTrendDigestExplorer,
+  buildDiagnosticsBaselineCompareWorkspace,
+  buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
   filterReplayDiffInspectorRows,
@@ -101,6 +104,7 @@ import {
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
+  moveDiagnosticsBaselineDeltaSelection,
   moveRemediationRunbookTimelineSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
@@ -111,6 +115,7 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
+  resolveDiagnosticsBaselineCompareShortcut,
   resolvePublicationWindowScoreBandFromFinalScore,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
@@ -1474,6 +1479,230 @@ describe('frontend wave1 helpers', () => {
       activeLaneId: '',
       direction: 'next_lane',
     })).toBe('lane-links');
+  });
+
+  it('builds diagnostics trend digest rows in deterministic tuple order', () => {
+    const payload = [
+      {
+        id: 'digest-c',
+        sourceIssueIdentifier: 'ONE-276',
+        snapshotSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        generatedAt: '2026-03-19T07:10:00.000Z',
+      },
+      {
+        id: 'digest-a',
+        sourceIssueIdentifier: 'ONE-269',
+        snapshotSha256: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        generatedAt: '2026-03-19T07:12:00.000Z',
+      },
+      {
+        id: 'digest-b',
+        sourceIssueIdentifier: 'ONE-269',
+        snapshotSha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        generatedAt: '2026-03-19T07:11:00.000Z',
+      },
+    ];
+    const first = buildDiagnosticsTrendDigestExplorer({
+      rows: payload,
+      activeRowId: '',
+    });
+    const second = buildDiagnosticsTrendDigestExplorer({
+      rows: payload,
+      activeRowId: '',
+    });
+    expect(first.contract).toBe('settlement-diagnostics-trend-digest-explorer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['digest-b', 'digest-a', 'digest-c']);
+    expect(second.rows.map((row) => row.id)).toEqual(first.rows.map((row) => row.id));
+  });
+
+  it('maps regression gate rationale chips and canonical dependency links for active digest row', () => {
+    const explorer = buildDiagnosticsTrendDigestExplorer({
+      rows: [
+        {
+          id: 'digest-warn',
+          sourceIssueIdentifier: 'ONE-276',
+          snapshotSha256: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+          generatedAt: '2026-03-19T07:15:00.000Z',
+          recommendedGate: 'warning',
+          rationaleReasons: ['Severity Escalation', 'checksum-instability', 'new drift code', 'unknown_reason'],
+          dependencyLinks: [
+            {
+              issueIdentifier: 'ONE-272',
+              issueLink: '/issues/ONE-272',
+              documentLink: '/issues/ONE-272#document-plan',
+              commentLink: '/issues/ONE-272#comment-444',
+            },
+          ],
+        },
+      ],
+      activeRowId: 'digest-warn',
+    });
+
+    expect(explorer.rationalePanel.recommendedGate).toBe('warn');
+    expect(explorer.rationalePanel.reasonChips.map((chip) => chip.code)).toEqual([
+      'new_drift_code',
+      'checksum_instability',
+      'severity_escalation',
+    ]);
+    expect(explorer.canonicalDependencyLinks[0]).toMatchObject({
+      issueIdentifier: 'ONE-272',
+      issueLink: '/ONE/issues/ONE-272',
+      documentLink: '/ONE/issues/ONE-272#document-plan',
+      commentLink: '/ONE/issues/ONE-272#comment-444',
+      linksValid: true,
+    });
+  });
+
+  it('keeps diagnostics trend digest summary cards stable for fixed fixtures', () => {
+    const payload = [
+      {
+        id: 'digest-block',
+        sourceIssueIdentifier: 'ONE-276',
+        snapshotSha256: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        generatedAt: '2026-03-19T07:20:00.000Z',
+        recommendedGate: 'block',
+        rationaleReasons: ['spike_in_breaking_changes', 'missing_snapshot_window'],
+        summary: {
+          windowSize: 14,
+          stableSnapshotCount: 9,
+          driftSpikeCount: 3,
+          maxSeverity: 'critical',
+          regressionRiskScore: 92.4,
+        },
+      },
+    ];
+    const first = buildDiagnosticsTrendDigestExplorer({
+      rows: payload,
+      activeRowId: 'digest-block',
+    });
+    const second = buildDiagnosticsTrendDigestExplorer({
+      rows: payload,
+      activeRowId: 'digest-block',
+    });
+    expect(first.summaryCards).toEqual({
+      windowSize: 14,
+      stableSnapshotCount: 9,
+      driftSpikeCount: 3,
+      maxSeverity: 'critical',
+      regressionRiskScore: 92.4,
+    });
+    expect(second.summaryCards).toEqual(first.summaryCards);
+  });
+
+  it('builds diagnostics baseline compare workspace rows in deterministic tuple order', () => {
+    const workspace = buildDiagnosticsBaselineCompareWorkspace({
+      baselineDigest: [
+        {
+          issueIdentifier: 'ONE-276',
+          bundleCode: 'bundle-b',
+          fieldPath: 'recommendedGate',
+          value: 'warn',
+          deltaSeverityWeight: 2,
+          scoreBandShiftWeight: 3,
+        },
+        {
+          issueIdentifier: 'ONE-273',
+          bundleCode: 'bundle-a',
+          fieldPath: 'regressionRiskScore',
+          value: '78.2',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 2,
+        },
+      ],
+      candidateDigest: [
+        {
+          issueIdentifier: 'ONE-276',
+          bundleCode: 'bundle-b',
+          fieldPath: 'recommendedGate',
+          value: 'block',
+          deltaSeverityWeight: 2,
+          scoreBandShiftWeight: 3,
+        },
+        {
+          issueIdentifier: 'ONE-273',
+          bundleCode: 'bundle-a',
+          fieldPath: 'regressionRiskScore',
+          value: '70.5',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 2,
+        },
+      ],
+      activeDeltaId: '',
+    });
+
+    expect(workspace.contract).toBe('settlement-diagnostics-baseline-compare-workspace.v1');
+    expect(workspace.rows.map((row) => row.id)).toEqual([
+      'ONE-273|bundle-a|regressionRiskScore',
+      'ONE-276|bundle-b|recommendedGate',
+    ]);
+    expect(workspace.rows.map((row) => row.changed)).toEqual([true, true]);
+    expect(moveDiagnosticsBaselineDeltaSelection({
+      rows: workspace.rows,
+      activeDeltaId: workspace.rows[0].id,
+      direction: 'next_delta',
+    })).toBe(workspace.rows[1].id);
+  });
+
+  it('builds regression gate override simulator outcomes with deterministic machine reason handling', () => {
+    const first = buildRegressionGateOverrideSimulator({
+      rows: [
+        {
+          id: 'scenario-b',
+          issueIdentifier: 'ONE-273',
+          currentGate: 'warn',
+          overrideGate: 'pass',
+          reasonCodes: ['eta_drift'],
+        },
+        {
+          id: 'scenario-a',
+          issueIdentifier: 'ONE-276',
+          currentGate: 'warn',
+          overrideGate: 'pass',
+          reasonCodes: ['missing_evidence', 'artifact_gap'],
+        },
+      ],
+      activeScenarioId: '',
+    });
+    const second = buildRegressionGateOverrideSimulator({
+      rows: [
+        {
+          id: 'scenario-a',
+          issueIdentifier: 'ONE-276',
+          currentGate: 'warn',
+          overrideGate: 'pass',
+          reasonCodes: ['artifact_gap', 'missing_evidence'],
+        },
+        {
+          id: 'scenario-b',
+          issueIdentifier: 'ONE-273',
+          currentGate: 'warn',
+          overrideGate: 'pass',
+          reasonCodes: ['eta_drift'],
+        },
+      ],
+      activeScenarioId: '',
+    });
+
+    expect(first.scenarios.map((row) => row.id)).toEqual(['scenario-a', 'scenario-b']);
+    expect(first.scenarios.map((row) => row.whatIfOutcome)).toEqual(['block', 'warn']);
+    expect(second.scenarios).toEqual(first.scenarios);
+    expect(first.reasonCodeCounts).toMatchObject({
+      missing_evidence: 1,
+      artifact_gap: 1,
+      eta_drift: 1,
+    });
+  });
+
+  it('resolves diagnostics baseline compare keyboard shortcuts for compare/simulator workflow', () => {
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'd', altKey: true })).toBe('focus_baseline_compare');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_delta');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_delta');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'o', ctrlKey: true, shiftKey: true })).toBe('open_override_simulator');
+    expect(resolveDiagnosticsBaselineCompareShortcut({
+      key: 'Enter',
+      ctrlKey: true,
+      shiftKey: true,
+    })).toBe('validate_active_scenario');
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {

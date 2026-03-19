@@ -65,6 +65,7 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
+  resolveDiagnosticsBaselineCompareShortcut,
   resolveEvidencePacketLintShortcut,
   resolveManifestDiffShortcut,
   resolveAnomalyTriageShortcut,
@@ -88,6 +89,8 @@ import {
   buildChecklistAutofixHints,
   buildReleaseReadinessSimulator,
   buildPublicationWindowPlanBoard,
+  buildDiagnosticsBaselineCompareWorkspace,
+  buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
   moveEvidencePacketLintSelection,
@@ -95,6 +98,7 @@ import {
   moveEvidenceTimelineHeatmapSelection,
   moveRemediationRunbookTimelineSelection,
   movePublicationWindowLaneSelection,
+  moveDiagnosticsBaselineDeltaSelection,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
@@ -590,8 +594,16 @@ const publicationWindowState = reactive({
   message: '',
   error: '',
 });
+const diagnosticsBaselineState = reactive({
+  message: '',
+  error: '',
+});
 const activeReleaseReadinessLaneId = ref('');
 const activePublicationWindowLaneId = ref('');
+const activeDiagnosticsDeltaId = ref('');
+const activeOverrideScenarioId = ref('');
+const overrideScenarioLinksText = ref('');
+const overrideSimulatorOpen = ref(false);
 const releaseReadinessSnapshots = ref<Array<{
   laneId: string;
   issueIdentifier: string;
@@ -630,6 +642,7 @@ const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
 const dispatchCockpitPanelRef = ref<HTMLElement | null>(null);
 const releaseReadinessPanelRef = ref<HTMLElement | null>(null);
 const publicationWindowPanelRef = ref<HTMLElement | null>(null);
+const diagnosticsBaselinePanelRef = ref<HTMLElement | null>(null);
 const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
@@ -946,6 +959,49 @@ const filteredReviewQueueLedgerRows = computed(() => filterReviewQueueLedgerRows
 ));
 const activeReviewQueueRow = computed(() => reviewQueueLedger.value.rows
   .find((row) => row.id === activeReviewQueueRowId.value) ?? null);
+const diagnosticsBaselineDigestRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => ({
+  issueIdentifier: row.id.toUpperCase(),
+  bundleCode: index % 2 === 0 ? 'baseline-core' : 'baseline-edge',
+  fieldPath: 'recommendedGate',
+  value: row.priority === 'critical' ? 'block' : row.priority === 'high' ? 'warn' : 'pass',
+  deltaSeverityWeight: row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4,
+  scoreBandShiftWeight: index + 1,
+})));
+const diagnosticsCandidateDigestRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => ({
+  issueIdentifier: row.id.toUpperCase(),
+  bundleCode: index % 2 === 0 ? 'baseline-core' : 'baseline-edge',
+  fieldPath: 'recommendedGate',
+  value: row.priority === 'critical' || index % 3 === 0 ? 'block' : row.priority === 'high' ? 'warn' : 'pass',
+  deltaSeverityWeight: row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4,
+  scoreBandShiftWeight: index + 1,
+})));
+const diagnosticsBaselineCompareWorkspace = computed(() => buildDiagnosticsBaselineCompareWorkspace({
+  baselineDigest: diagnosticsBaselineDigestRows.value,
+  candidateDigest: diagnosticsCandidateDigestRows.value,
+  activeDeltaId: activeDiagnosticsDeltaId.value,
+}));
+const activeDiagnosticsDelta = computed(() => diagnosticsBaselineCompareWorkspace.value.rows
+  .find((row) => row.id === activeDiagnosticsDeltaId.value) ?? null);
+const regressionGateOverrideSimulator = computed(() => buildRegressionGateOverrideSimulator({
+  rows: diagnosticsBaselineCompareWorkspace.value.rows.map((row) => ({
+    id: `scenario-${row.id}`,
+    issueIdentifier: row.issueIdentifier,
+    currentGate: row.baselineValue,
+    overrideGate: row.candidateValue,
+    reasonCodes: [
+      row.changed ? 'eta_drift' : '',
+      row.candidateValue === 'block' ? 'dependency_open' : '',
+      row.issueIdentifier.endsWith('241') ? 'missing_evidence' : '',
+      row.bundleCode.includes('edge') ? 'artifact_gap' : '',
+    ].filter((code) => Boolean(code)),
+  })),
+  activeScenarioId: activeOverrideScenarioId.value,
+}));
+const activeOverrideScenario = computed(() => regressionGateOverrideSimulator.value.scenarios
+  .find((scenario) => scenario.id === activeOverrideScenarioId.value) ?? null);
+const overrideScenarioLinkPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: overrideScenarioLinksText.value,
+}));
 const evidencePacketLintFindingSourceRows = computed(() => {
   const baseRows = reviewQueueLedger.value.rows;
   if (!baseRows.length) {
@@ -1465,6 +1521,7 @@ onBeforeUnmount(clearAutoRefresh);
 onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
+  window.addEventListener('keydown', onDiagnosticsBaselineKeydown);
   window.addEventListener('keydown', onDispatchCockpitKeydown);
   window.addEventListener('keydown', onPublicationWindowKeydown);
   window.addEventListener('keydown', onManifestDiffKeydown);
@@ -1473,6 +1530,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
+  window.removeEventListener('keydown', onDiagnosticsBaselineKeydown);
   window.removeEventListener('keydown', onDispatchCockpitKeydown);
   window.removeEventListener('keydown', onPublicationWindowKeydown);
   window.removeEventListener('keydown', onManifestDiffKeydown);
@@ -2057,6 +2115,26 @@ watch(anomalyTriageBoard, (board) => {
   }
 }, { deep: true, immediate: true });
 
+watch(diagnosticsBaselineCompareWorkspace, (workspace) => {
+  if (!workspace.rows.length) {
+    activeDiagnosticsDeltaId.value = '';
+    return;
+  }
+  if (!workspace.rows.some((row) => row.id === activeDiagnosticsDeltaId.value)) {
+    activeDiagnosticsDeltaId.value = workspace.activeDeltaId;
+  }
+}, { deep: true, immediate: true });
+
+watch(regressionGateOverrideSimulator, (simulator) => {
+  if (!simulator.scenarios.length) {
+    activeOverrideScenarioId.value = '';
+    return;
+  }
+  if (!simulator.scenarios.some((scenario) => scenario.id === activeOverrideScenarioId.value)) {
+    activeOverrideScenarioId.value = simulator.activeScenarioId;
+  }
+}, { deep: true, immediate: true });
+
 watch(() => bulkDiffInspector.value.reasonCounts, () => {
   const applied = applyExplainabilityPresetSlot({
     slots: explainabilityPresetSlots.value,
@@ -2088,6 +2166,26 @@ function focusReleaseReadinessSimulator() {
 function focusPublicationWindowPlanBoard() {
   publicationWindowPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   publicationWindowPanelRef.value?.focus();
+}
+
+function focusDiagnosticsBaselineCompare() {
+  diagnosticsBaselinePanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  diagnosticsBaselinePanelRef.value?.focus();
+}
+
+function validateActiveOverrideScenario() {
+  diagnosticsBaselineState.error = '';
+  diagnosticsBaselineState.message = '';
+  const scenario = activeOverrideScenario.value;
+  if (!scenario) {
+    diagnosticsBaselineState.error = 'Select an override scenario before validation.';
+    return;
+  }
+  if (overrideScenarioLinkPreview.value.changedCount > 0) {
+    diagnosticsBaselineState.error = `Canonicalize ${overrideScenarioLinkPreview.value.changedCount} link(s) before save.`;
+    return;
+  }
+  diagnosticsBaselineState.message = `Scenario ${scenario.issueIdentifier} validated with simulated outcome ${scenario.whatIfOutcome}.`;
 }
 
 function saveReleaseReadinessSnapshot() {
@@ -3323,6 +3421,46 @@ function onPublicationWindowKeydown(event: KeyboardEvent) {
   }
   publicationWindowDependencyGatesOpen.value = true;
   publicationWindowState.message = 'Dependency-gate panel opened for active lane.';
+}
+
+function onDiagnosticsBaselineKeydown(event: KeyboardEvent) {
+  const shortcut = resolveDiagnosticsBaselineCompareShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_override_simulator'
+    && shortcut !== 'validate_active_scenario') {
+    return;
+  }
+  event.preventDefault();
+  diagnosticsBaselineState.error = '';
+  if (shortcut === 'focus_baseline_compare') {
+    focusDiagnosticsBaselineCompare();
+    return;
+  }
+  if (shortcut === 'next_delta' || shortcut === 'prev_delta') {
+    activeDiagnosticsDeltaId.value = moveDiagnosticsBaselineDeltaSelection({
+      rows: diagnosticsBaselineCompareWorkspace.value.rows,
+      activeDeltaId: activeDiagnosticsDeltaId.value,
+      direction: shortcut,
+    });
+    diagnosticsBaselineState.message = `Selected delta ${activeDiagnosticsDeltaId.value || 'none'}.`;
+    return;
+  }
+  if (shortcut === 'open_override_simulator') {
+    overrideSimulatorOpen.value = true;
+    diagnosticsBaselineState.message = 'Override simulator opened.';
+    return;
+  }
+  validateActiveOverrideScenario();
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
@@ -5191,6 +5329,138 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="diagnosticsBaselinePanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onDiagnosticsBaselineKeydown"
+            >
+              <h4>Diagnostics Baseline-Compare Workspace</h4>
+              <p class="state" :class="{ error: diagnosticsBaselineState.error }">
+                {{ diagnosticsBaselineState.error
+                  || diagnosticsBaselineState.message
+                  || 'Deterministic order: deltaSeverityWeight, scoreBandShiftWeight, issueIdentifier, bundleCode, fieldPath. Keyboard: Alt+D focus, Alt+Shift+J next delta, Alt+Shift+K previous delta, Ctrl+Shift+O open override simulator, Ctrl+Shift+Enter validate scenario.' }}
+              </p>
+              <p class="state">Active delta: {{ activeDiagnosticsDelta?.id || 'none' }}</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Band Shift</th>
+                      <th>Issue</th>
+                      <th>Bundle</th>
+                      <th>Field</th>
+                      <th>Baseline</th>
+                      <th>Candidate</th>
+                      <th>Changed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!diagnosticsBaselineCompareWorkspace.rows.length">
+                      <td colspan="8">No diagnostics baseline/candidate rows available.</td>
+                    </tr>
+                    <tr
+                      v-for="row in diagnosticsBaselineCompareWorkspace.rows"
+                      :key="`diagnostics-delta-${row.id}`"
+                      :class="{ 'queue-row-active': activeDiagnosticsDeltaId === row.id }"
+                      @click="activeDiagnosticsDeltaId = row.id"
+                    >
+                      <td>{{ row.deltaSeverityWeight }}</td>
+                      <td>{{ row.scoreBandShiftWeight }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.bundleCode }}</td>
+                      <td><code>{{ row.fieldPath }}</code></td>
+                      <td><code>{{ row.baselineValue || '-' }}</code></td>
+                      <td><code>{{ row.candidateValue || '-' }}</code></td>
+                      <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="inline-actions">
+                <button type="button" class="link" @click="overrideSimulatorOpen = true">Open Override Simulator</button>
+                <button type="button" class="link" @click="validateActiveOverrideScenario">Validate Active Scenario</button>
+              </div>
+
+              <div v-if="overrideSimulatorOpen">
+                <h5>Regression Gate Override Simulator</h5>
+                <p class="state">
+                  Reason code counts:
+                  missing_evidence={{ regressionGateOverrideSimulator.reasonCodeCounts.missing_evidence }},
+                  eta_drift={{ regressionGateOverrideSimulator.reasonCodeCounts.eta_drift }},
+                  dependency_open={{ regressionGateOverrideSimulator.reasonCodeCounts.dependency_open }},
+                  link_noncanonical={{ regressionGateOverrideSimulator.reasonCodeCounts.link_noncanonical }},
+                  artifact_gap={{ regressionGateOverrideSimulator.reasonCodeCounts.artifact_gap }}.
+                </p>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Issue</th>
+                        <th>Current Gate</th>
+                        <th>Override Gate</th>
+                        <th>Reason Codes</th>
+                        <th>What-if Outcome</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!regressionGateOverrideSimulator.scenarios.length">
+                        <td colspan="5">No override scenarios available.</td>
+                      </tr>
+                      <tr
+                        v-for="scenario in regressionGateOverrideSimulator.scenarios"
+                        :key="scenario.id"
+                        :class="{ 'queue-row-active': activeOverrideScenarioId === scenario.id }"
+                        @click="activeOverrideScenarioId = scenario.id"
+                      >
+                        <td>{{ scenario.issueIdentifier }}</td>
+                        <td>{{ scenario.currentGate }}</td>
+                        <td>{{ scenario.overrideGate }}</td>
+                        <td>{{ scenario.reasonCodes.length ? scenario.reasonCodes.join(', ') : 'none' }}</td>
+                        <td>{{ scenario.whatIfOutcome }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <h5>Canonical Internal Link Inspector</h5>
+                <label>
+                  Override Scenario Links (issue/comment/document; one per line)
+                  <textarea
+                    v-model="overrideScenarioLinksText"
+                    rows="4"
+                    placeholder="/issues/ONE-276#comment-12"
+                  />
+                </label>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Original</th>
+                        <th>Normalized</th>
+                        <th>Changed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!overrideScenarioLinkPreview.rows.length">
+                        <td colspan="3">Add links to preview canonical /ONE/... normalization.</td>
+                      </tr>
+                      <tr v-for="row in overrideScenarioLinkPreview.rows" :key="`override-link-${row.id}`">
+                        <td><code>{{ row.original }}</code></td>
+                        <td><code>{{ row.normalized }}</code></td>
+                        <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <label>
+                  Corrected Link Output (copy-ready)
+                  <textarea :value="overrideScenarioLinkPreview.correctedOutput" rows="3" readonly />
+                </label>
+              </div>
+            </div>
             <div
               ref="publicationWindowPanelRef"
               class="simulation-outcome-panel"

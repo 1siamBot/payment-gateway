@@ -399,6 +399,112 @@ export type PublicationWindowPlanBoard = {
   scoreBandCounts: Record<PublicationWindowScoreBand, number>;
 };
 
+export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
+export type DiagnosticsTrendDigestReasonCode =
+  | 'spike_in_breaking_changes'
+  | 'new_drift_code'
+  | 'checksum_instability'
+  | 'severity_escalation'
+  | 'missing_snapshot_window';
+export type DiagnosticsTrendDigestMaxSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+export type DiagnosticsTrendDigestReasonChip = {
+  code: DiagnosticsTrendDigestReasonCode;
+  label: string;
+};
+
+export type DiagnosticsTrendDigestDependencyLink = {
+  id: string;
+  issueIdentifier: string;
+  issueLink: string;
+  documentLink?: string;
+  commentLink?: string;
+  linksValid: boolean;
+};
+
+export type DiagnosticsTrendDigestRow = {
+  id: string;
+  sourceIssueIdentifier: string;
+  snapshotSha256: string;
+  generatedAt: string;
+  recommendedGate: DiagnosticsTrendDigestGate;
+  reasonChips: DiagnosticsTrendDigestReasonChip[];
+  windowSize: number;
+  stableSnapshotCount: number;
+  driftSpikeCount: number;
+  maxSeverity: DiagnosticsTrendDigestMaxSeverity;
+  regressionRiskScore: number;
+  dependencyLinks: DiagnosticsTrendDigestDependencyLink[];
+};
+
+export type DiagnosticsTrendDigestExplorer = {
+  contract: 'settlement-diagnostics-trend-digest-explorer.v1';
+  rows: DiagnosticsTrendDigestRow[];
+  activeRowId: string;
+  summaryCards: {
+    windowSize: number;
+    stableSnapshotCount: number;
+    driftSpikeCount: number;
+    maxSeverity: DiagnosticsTrendDigestMaxSeverity;
+    regressionRiskScore: number;
+  };
+  rationalePanel: {
+    recommendedGate: DiagnosticsTrendDigestGate;
+    reasonChips: DiagnosticsTrendDigestReasonChip[];
+  };
+  canonicalDependencyLinks: DiagnosticsTrendDigestDependencyLink[];
+};
+
+export type DiagnosticsBaselineCompareShortcut =
+  | 'focus_baseline_compare'
+  | 'next_delta'
+  | 'prev_delta'
+  | 'open_override_simulator'
+  | 'validate_active_scenario';
+
+export type DiagnosticsBaselineCompareRow = {
+  id: string;
+  deltaSeverityWeight: number;
+  scoreBandShiftWeight: number;
+  issueIdentifier: string;
+  bundleCode: string;
+  fieldPath: string;
+  baselineValue: string;
+  candidateValue: string;
+  changed: boolean;
+};
+
+export type DiagnosticsBaselineCompareWorkspace = {
+  contract: 'settlement-diagnostics-baseline-compare-workspace.v1';
+  rows: DiagnosticsBaselineCompareRow[];
+  activeDeltaId: string;
+};
+
+export type RegressionGateOverrideReasonCode =
+  | 'missing_evidence'
+  | 'eta_drift'
+  | 'dependency_open'
+  | 'link_noncanonical'
+  | 'artifact_gap';
+
+export type RegressionGateOverrideOutcome = 'pass' | 'warn' | 'block';
+
+export type RegressionGateOverrideScenario = {
+  id: string;
+  issueIdentifier: string;
+  currentGate: DiagnosticsTrendDigestGate;
+  overrideGate: DiagnosticsTrendDigestGate;
+  reasonCodes: RegressionGateOverrideReasonCode[];
+  whatIfOutcome: RegressionGateOverrideOutcome;
+};
+
+export type RegressionGateOverrideSimulator = {
+  contract: 'settlement-regression-gate-override-simulator.v1';
+  scenarios: RegressionGateOverrideScenario[];
+  activeScenarioId: string;
+  reasonCodeCounts: Record<RegressionGateOverrideReasonCode, number>;
+};
+
 export type EvidenceTimelineGapCode =
   | 'MISSING_BRANCH'
   | 'MISSING_FULL_SHA'
@@ -1014,6 +1120,28 @@ const DISPATCH_LANE_TYPE_ORDER: DispatchCockpitLaneType[] = [
   'dispatch_queue',
   'custom',
 ];
+const DIAGNOSTICS_TREND_REASON_CODE_ORDER: DiagnosticsTrendDigestReasonCode[] = [
+  'spike_in_breaking_changes',
+  'new_drift_code',
+  'checksum_instability',
+  'severity_escalation',
+  'missing_snapshot_window',
+];
+const REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER: RegressionGateOverrideReasonCode[] = [
+  'missing_evidence',
+  'eta_drift',
+  'dependency_open',
+  'link_noncanonical',
+  'artifact_gap',
+];
+const DIAGNOSTICS_TREND_REASON_LABEL: Record<DiagnosticsTrendDigestReasonCode, string> = {
+  spike_in_breaking_changes: 'Spike in breaking changes',
+  new_drift_code: 'New drift code',
+  checksum_instability: 'Checksum instability',
+  severity_escalation: 'Severity escalation',
+  missing_snapshot_window: 'Missing snapshot window',
+};
+const DIAGNOSTICS_TREND_MAX_SEVERITY_ORDER: DiagnosticsTrendDigestMaxSeverity[] = ['critical', 'high', 'medium', 'low'];
 const RELEASE_READINESS_EVIDENCE_FIELD_ORDER: ReleaseReadinessEvidenceField[] = [
   'branch',
   'fullSha',
@@ -3065,6 +3193,604 @@ export function resolvePublicationWindowPlanShortcut(input: {
     return 'open_dependency_gates';
   }
   return null;
+}
+
+function normalizeDiagnosticsTrendGate(input: unknown): DiagnosticsTrendDigestGate {
+  if (typeof input !== 'string') {
+    return 'pass';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'block' || normalized === 'blocked') {
+    return 'block';
+  }
+  if (normalized === 'warn' || normalized === 'warning') {
+    return 'warn';
+  }
+  return 'pass';
+}
+
+function normalizeDiagnosticsTrendReasonCode(input: unknown): DiagnosticsTrendDigestReasonCode | null {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (normalized === 'spike_in_breaking_changes') {
+    return 'spike_in_breaking_changes';
+  }
+  if (normalized === 'new_drift_code') {
+    return 'new_drift_code';
+  }
+  if (normalized === 'checksum_instability') {
+    return 'checksum_instability';
+  }
+  if (normalized === 'severity_escalation') {
+    return 'severity_escalation';
+  }
+  if (normalized === 'missing_snapshot_window') {
+    return 'missing_snapshot_window';
+  }
+  return null;
+}
+
+function normalizeDiagnosticsTrendReasonChips(input: unknown): DiagnosticsTrendDigestReasonChip[] {
+  const rawValues = Array.isArray(input)
+    ? input
+    : (typeof input === 'string' ? input.split(',') : []);
+  const normalized = rawValues
+    .map((value) => normalizeDiagnosticsTrendReasonCode(value))
+    .filter((code): code is DiagnosticsTrendDigestReasonCode => Boolean(code));
+  const unique = Array.from(new Set(normalized));
+  unique.sort(
+    (left, right) => DIAGNOSTICS_TREND_REASON_CODE_ORDER.indexOf(left) - DIAGNOSTICS_TREND_REASON_CODE_ORDER.indexOf(right),
+  );
+  return unique.map((code) => ({
+    code,
+    label: DIAGNOSTICS_TREND_REASON_LABEL[code],
+  }));
+}
+
+function normalizeDiagnosticsTrendMaxSeverity(input: unknown): DiagnosticsTrendDigestMaxSeverity {
+  if (typeof input !== 'string') {
+    return 'low';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+    return normalized;
+  }
+  return 'low';
+}
+
+function normalizeNonNegativeInteger(input: unknown): number {
+  const parsed = parseFiniteNumber(input);
+  if (parsed === null) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function normalizeBoundedRiskScore(input: unknown): number {
+  const parsed = parseFiniteNumber(input);
+  if (parsed === null) {
+    return 0;
+  }
+  const rounded = Math.round(parsed * 100) / 100;
+  return Math.max(0, Math.min(100, rounded));
+}
+
+function resolveIssueIdentifierFromCanonicalLink(input: string): string | null {
+  const canonical = canonicalizePaperclipIssueLink(input);
+  if (!canonical) {
+    return null;
+  }
+  const match = canonical.match(/^\/[A-Za-z0-9_-]+\/issues\/([A-Za-z0-9]+-\d+)(?:#.+)?$/);
+  if (!match) {
+    return null;
+  }
+  return match[1].toUpperCase();
+}
+
+function normalizeDiagnosticsTrendDependencyLink(
+  input: unknown,
+  fallbackIssueIdentifier: string,
+  index: number,
+): DiagnosticsTrendDigestDependencyLink | null {
+  const raw = input && typeof input === 'object'
+    ? input as Record<string, unknown>
+    : {};
+  const issueIdentifierFromField = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier
+      : '',
+  )?.toUpperCase();
+  const issueLinkRaw = normalizeOptional(
+    typeof raw.issueLink === 'string'
+      ? raw.issueLink
+      : typeof input === 'string'
+        ? input
+        : '',
+  );
+  const issueIdentifierFromLink = issueLinkRaw ? resolveIssueIdentifierFromCanonicalLink(issueLinkRaw) : null;
+  const issueIdentifier = issueIdentifierFromField ?? issueIdentifierFromLink ?? fallbackIssueIdentifier;
+  const issueLink = canonicalizePaperclipIssueLink(issueLinkRaw ?? `/${issueIdentifier.split('-')[0]}/issues/${issueIdentifier}`);
+  if (!issueLink) {
+    return null;
+  }
+
+  const documentLinkRaw = normalizeOptional(typeof raw.documentLink === 'string' ? raw.documentLink : '');
+  const commentLinkRaw = normalizeOptional(typeof raw.commentLink === 'string' ? raw.commentLink : '');
+  const documentLink = documentLinkRaw ? canonicalizePaperclipIssueLink(documentLinkRaw) : null;
+  const commentLink = commentLinkRaw ? canonicalizePaperclipIssueLink(commentLinkRaw) : null;
+  const linksValid = Boolean(issueLink && (!documentLinkRaw || documentLink) && (!commentLinkRaw || commentLink));
+
+  return {
+    id: `${issueIdentifier}|${index}`,
+    issueIdentifier,
+    issueLink,
+    documentLink: documentLink ?? undefined,
+    commentLink: commentLink ?? undefined,
+    linksValid,
+  };
+}
+
+function parseDiagnosticsTrendDigestRow(raw: unknown, index: number): DiagnosticsTrendDigestRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const sourceIssueIdentifier = normalizeOptional(
+    typeof row.sourceIssueIdentifier === 'string'
+      ? row.sourceIssueIdentifier
+      : typeof row.issueIdentifier === 'string'
+        ? row.issueIdentifier
+        : '',
+  )?.toUpperCase();
+  if (!sourceIssueIdentifier) {
+    return null;
+  }
+  const summary = row.summary && typeof row.summary === 'object'
+    ? row.summary as Record<string, unknown>
+    : {};
+  const snapshotSha256 = normalizeOptional(
+    typeof row.snapshotSha256 === 'string'
+      ? row.snapshotSha256
+      : typeof row.snapshotFingerprint === 'string'
+        ? row.snapshotFingerprint
+        : '',
+  )?.toLowerCase() ?? '0000000000000000000000000000000000000000000000000000000000000000';
+  const generatedAt = resolveDateString(
+    row.generatedAt ?? row.snapshotGeneratedAt ?? summary.generatedAt,
+    DIFF_FALLBACK_TIMESTAMP,
+  );
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${sourceIssueIdentifier}:${snapshotSha256}:${generatedAt}`,
+  ) ?? `${sourceIssueIdentifier}:${snapshotSha256}:${generatedAt}`;
+
+  const reasonChips = normalizeDiagnosticsTrendReasonChips(
+    row.rationaleReasons ?? row.reasonCodes ?? summary.rationaleReasons ?? summary.reasonCodes,
+  );
+  const rawDependencyLinks = Array.isArray(row.dependencyLinks)
+    ? row.dependencyLinks
+    : Array.isArray(row.canonicalDependencyLinks)
+      ? row.canonicalDependencyLinks
+      : Array.isArray(summary.dependencyLinks)
+        ? summary.dependencyLinks
+        : [];
+  const dependencyLinks = rawDependencyLinks
+    .map((value, dependencyIndex) => normalizeDiagnosticsTrendDependencyLink(
+      value,
+      sourceIssueIdentifier,
+      dependencyIndex,
+    ))
+    .filter((value): value is DiagnosticsTrendDigestDependencyLink => Boolean(value))
+    .sort((left, right) => (
+      left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.issueLink.localeCompare(right.issueLink)
+      || left.id.localeCompare(right.id)
+    ));
+
+  return {
+    id,
+    sourceIssueIdentifier,
+    snapshotSha256,
+    generatedAt,
+    recommendedGate: normalizeDiagnosticsTrendGate(row.recommendedGate ?? row.gate ?? summary.recommendedGate),
+    reasonChips,
+    windowSize: normalizeNonNegativeInteger(row.windowSize ?? summary.windowSize),
+    stableSnapshotCount: normalizeNonNegativeInteger(row.stableSnapshotCount ?? summary.stableSnapshotCount),
+    driftSpikeCount: normalizeNonNegativeInteger(row.driftSpikeCount ?? summary.driftSpikeCount),
+    maxSeverity: normalizeDiagnosticsTrendMaxSeverity(row.maxSeverity ?? summary.maxSeverity),
+    regressionRiskScore: normalizeBoundedRiskScore(row.regressionRiskScore ?? summary.regressionRiskScore),
+    dependencyLinks,
+  };
+}
+
+export function buildDiagnosticsTrendDigestExplorer(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): DiagnosticsTrendDigestExplorer {
+  const rows = input.rows
+    .map((row, index) => parseDiagnosticsTrendDigestRow(row, index))
+    .filter((row): row is DiagnosticsTrendDigestRow => Boolean(row))
+    .sort((left, right) => (
+      left.sourceIssueIdentifier.localeCompare(right.sourceIssueIdentifier)
+      || left.snapshotSha256.localeCompare(right.snapshotSha256)
+      || left.generatedAt.localeCompare(right.generatedAt)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIdSet = new Set(rows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  const activeRow = rows.find((row) => row.id === activeRowId);
+
+  const summaryCards = activeRow
+    ? {
+      windowSize: activeRow.windowSize,
+      stableSnapshotCount: activeRow.stableSnapshotCount,
+      driftSpikeCount: activeRow.driftSpikeCount,
+      maxSeverity: activeRow.maxSeverity,
+      regressionRiskScore: activeRow.regressionRiskScore,
+    }
+    : {
+      windowSize: 0,
+      stableSnapshotCount: 0,
+      driftSpikeCount: 0,
+      maxSeverity: DIAGNOSTICS_TREND_MAX_SEVERITY_ORDER[DIAGNOSTICS_TREND_MAX_SEVERITY_ORDER.length - 1],
+      regressionRiskScore: 0,
+    };
+
+  return {
+    contract: 'settlement-diagnostics-trend-digest-explorer.v1',
+    rows,
+    activeRowId,
+    summaryCards,
+    rationalePanel: {
+      recommendedGate: activeRow?.recommendedGate ?? 'pass',
+      reasonChips: activeRow ? [...activeRow.reasonChips] : [],
+    },
+    canonicalDependencyLinks: activeRow ? [...activeRow.dependencyLinks] : [],
+  };
+}
+
+function parseDiagnosticsCompareNumber(input: unknown, fallback = 0): number {
+  const parsed = parseFiniteNumber(input);
+  if (parsed === null) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function normalizeDiagnosticsCompareValue(input: unknown): string {
+  if (typeof input === 'string') {
+    return input.trim();
+  }
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    return String(input);
+  }
+  if (typeof input === 'boolean') {
+    return input ? 'true' : 'false';
+  }
+  if (input === null || input === undefined) {
+    return '';
+  }
+  return String(input);
+}
+
+type DiagnosticsCompareDigestEntry = {
+  issueIdentifier: string;
+  bundleCode: string;
+  fieldPath: string;
+  value: string;
+  deltaSeverityWeight: number;
+  scoreBandShiftWeight: number;
+};
+
+function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDigestEntry[] {
+  if (!raw || typeof raw !== 'object') {
+    return [];
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.sourceIssueIdentifier === 'string'
+        ? row.sourceIssueIdentifier
+        : '',
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return [];
+  }
+  const bundleCode = normalizeOptional(
+    typeof row.bundleCode === 'string'
+      ? row.bundleCode
+      : typeof row.bundle === 'string'
+        ? row.bundle
+        : 'core',
+  ) ?? 'core';
+  const deltaSeverityWeight = parseDiagnosticsCompareNumber(
+    row.deltaSeverityWeight ?? row.severityWeight ?? row.severity ?? row.priority,
+    99,
+  );
+  const scoreBandShiftWeight = parseDiagnosticsCompareNumber(
+    row.scoreBandShiftWeight ?? row.bandShiftWeight ?? row.scoreBandShift ?? row.scoreBandDelta,
+    99,
+  );
+
+  const directFieldPath = normalizeOptional(
+    typeof row.fieldPath === 'string'
+      ? row.fieldPath
+      : '',
+  );
+  const directValue = normalizeDiagnosticsCompareValue(
+    row.value ?? row.metricValue ?? row.regressionRiskScore ?? row.recommendedGate ?? row.maxSeverity,
+  );
+  if (directFieldPath) {
+    return [{
+      issueIdentifier,
+      bundleCode,
+      fieldPath: directFieldPath,
+      value: directValue,
+      deltaSeverityWeight,
+      scoreBandShiftWeight,
+    }];
+  }
+
+  const entries: DiagnosticsCompareDigestEntry[] = [];
+  if (row.regressionRiskScore !== undefined) {
+    entries.push({
+      issueIdentifier,
+      bundleCode,
+      fieldPath: 'regressionRiskScore',
+      value: normalizeDiagnosticsCompareValue(row.regressionRiskScore),
+      deltaSeverityWeight,
+      scoreBandShiftWeight,
+    });
+  }
+  if (row.recommendedGate !== undefined) {
+    entries.push({
+      issueIdentifier,
+      bundleCode,
+      fieldPath: 'recommendedGate',
+      value: normalizeDiagnosticsCompareValue(row.recommendedGate),
+      deltaSeverityWeight,
+      scoreBandShiftWeight,
+    });
+  }
+  if (row.maxSeverity !== undefined) {
+    entries.push({
+      issueIdentifier,
+      bundleCode,
+      fieldPath: 'maxSeverity',
+      value: normalizeDiagnosticsCompareValue(row.maxSeverity),
+      deltaSeverityWeight,
+      scoreBandShiftWeight,
+    });
+  }
+  return entries;
+}
+
+export function buildDiagnosticsBaselineCompareWorkspace(input: {
+  baselineDigest: unknown[];
+  candidateDigest: unknown[];
+  activeDeltaId: string;
+}): DiagnosticsBaselineCompareWorkspace {
+  const baselineByKey = new Map<string, DiagnosticsCompareDigestEntry>();
+  for (const entry of input.baselineDigest.flatMap((row) => parseDiagnosticsCompareDigestEntry(row))) {
+    baselineByKey.set(`${entry.issueIdentifier}|${entry.bundleCode}|${entry.fieldPath}`, entry);
+  }
+  const candidateByKey = new Map<string, DiagnosticsCompareDigestEntry>();
+  for (const entry of input.candidateDigest.flatMap((row) => parseDiagnosticsCompareDigestEntry(row))) {
+    candidateByKey.set(`${entry.issueIdentifier}|${entry.bundleCode}|${entry.fieldPath}`, entry);
+  }
+
+  const keySet = new Set<string>([
+    ...baselineByKey.keys(),
+    ...candidateByKey.keys(),
+  ]);
+  const rows = [...keySet]
+    .map((key): DiagnosticsBaselineCompareRow => {
+      const baseline = baselineByKey.get(key);
+      const candidate = candidateByKey.get(key);
+      const issueIdentifier = candidate?.issueIdentifier ?? baseline?.issueIdentifier ?? 'UNKNOWN-0';
+      const bundleCode = candidate?.bundleCode ?? baseline?.bundleCode ?? 'core';
+      const fieldPath = candidate?.fieldPath ?? baseline?.fieldPath ?? 'unknown';
+      const baselineValue = baseline?.value ?? '';
+      const candidateValue = candidate?.value ?? '';
+      return {
+        id: `${issueIdentifier}|${bundleCode}|${fieldPath}`,
+        deltaSeverityWeight: Math.min(
+          baseline?.deltaSeverityWeight ?? Number.MAX_SAFE_INTEGER,
+          candidate?.deltaSeverityWeight ?? Number.MAX_SAFE_INTEGER,
+        ),
+        scoreBandShiftWeight: Math.min(
+          baseline?.scoreBandShiftWeight ?? Number.MAX_SAFE_INTEGER,
+          candidate?.scoreBandShiftWeight ?? Number.MAX_SAFE_INTEGER,
+        ),
+        issueIdentifier,
+        bundleCode,
+        fieldPath,
+        baselineValue,
+        candidateValue,
+        changed: baselineValue !== candidateValue,
+      };
+    })
+    .sort((left, right) => (
+      left.deltaSeverityWeight - right.deltaSeverityWeight
+      || left.scoreBandShiftWeight - right.scoreBandShiftWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
+      || left.fieldPath.localeCompare(right.fieldPath)
+      || left.id.localeCompare(right.id)
+    ));
+
+  const rowIdSet = new Set(rows.map((row) => row.id));
+  const activeDeltaId = rowIdSet.has(input.activeDeltaId)
+    ? input.activeDeltaId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-diagnostics-baseline-compare-workspace.v1',
+    rows,
+    activeDeltaId,
+  };
+}
+
+export function moveDiagnosticsBaselineDeltaSelection(input: {
+  rows: DiagnosticsBaselineCompareRow[];
+  activeDeltaId: string;
+  direction: 'next_delta' | 'prev_delta';
+}): string {
+  if (!input.rows.length) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeDeltaId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_delta') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveDiagnosticsBaselineCompareShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): DiagnosticsBaselineCompareShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'd') {
+    return 'focus_baseline_compare';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_delta';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_delta';
+  }
+  if (normalizedKey === 'o' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_override_simulator';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_scenario';
+  }
+  return null;
+}
+
+function normalizeRegressionGateOverrideReasonCode(input: unknown): RegressionGateOverrideReasonCode | null {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  const normalized = input.trim().toLowerCase().replace(/-/g, '_');
+  if ((REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER as string[]).includes(normalized)) {
+    return normalized as RegressionGateOverrideReasonCode;
+  }
+  if (normalized === 'noncanonical_link') {
+    return 'link_noncanonical';
+  }
+  return null;
+}
+
+function resolveRegressionGateOverrideOutcome(input: {
+  overrideGate: DiagnosticsTrendDigestGate;
+  reasonCodes: RegressionGateOverrideReasonCode[];
+}): RegressionGateOverrideOutcome {
+  if (input.reasonCodes.includes('missing_evidence')
+    || input.reasonCodes.includes('dependency_open')
+    || input.reasonCodes.includes('artifact_gap')) {
+    return 'block';
+  }
+  if (input.reasonCodes.includes('eta_drift') || input.reasonCodes.includes('link_noncanonical')) {
+    return input.overrideGate === 'pass' ? 'warn' : input.overrideGate;
+  }
+  return input.overrideGate;
+}
+
+function parseRegressionGateOverrideScenario(raw: unknown, index: number): RegressionGateOverrideScenario | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.sourceIssueIdentifier === 'string'
+        ? row.sourceIssueIdentifier
+        : '',
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const currentGate = normalizeDiagnosticsTrendGate(row.currentGate ?? row.recommendedGate ?? 'pass');
+  const overrideGate = normalizeDiagnosticsTrendGate(row.overrideGate ?? currentGate);
+  const reasonCodes = (Array.isArray(row.reasonCodes) ? row.reasonCodes : [])
+    .map((reason) => normalizeRegressionGateOverrideReasonCode(reason))
+    .filter((reason): reason is RegressionGateOverrideReasonCode => Boolean(reason))
+    .sort((left, right) => (
+      REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER.indexOf(left)
+      - REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER.indexOf(right)
+    ));
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}|${String(index + 1).padStart(3, '0')}`,
+  ) ?? `${issueIdentifier}|${String(index + 1).padStart(3, '0')}`;
+  return {
+    id,
+    issueIdentifier,
+    currentGate,
+    overrideGate,
+    reasonCodes,
+    whatIfOutcome: resolveRegressionGateOverrideOutcome({ overrideGate, reasonCodes }),
+  };
+}
+
+export function buildRegressionGateOverrideSimulator(input: {
+  rows: unknown[];
+  activeScenarioId: string;
+}): RegressionGateOverrideSimulator {
+  const outcomeRank: Record<RegressionGateOverrideOutcome, number> = {
+    pass: 1,
+    warn: 2,
+    block: 3,
+  };
+  const reasonCodeCounts: Record<RegressionGateOverrideReasonCode, number> = {
+    missing_evidence: 0,
+    eta_drift: 0,
+    dependency_open: 0,
+    link_noncanonical: 0,
+    artifact_gap: 0,
+  };
+  const scenarios = input.rows
+    .map((row, index) => parseRegressionGateOverrideScenario(row, index))
+    .filter((row): row is RegressionGateOverrideScenario => Boolean(row))
+    .sort((left, right) => (
+      outcomeRank[right.whatIfOutcome] - outcomeRank[left.whatIfOutcome]
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.id.localeCompare(right.id)
+    ));
+  for (const scenario of scenarios) {
+    for (const reasonCode of scenario.reasonCodes) {
+      reasonCodeCounts[reasonCode] += 1;
+    }
+  }
+  const idSet = new Set(scenarios.map((scenario) => scenario.id));
+  const activeScenarioId = idSet.has(input.activeScenarioId)
+    ? input.activeScenarioId
+    : (scenarios[0]?.id ?? '');
+  return {
+    contract: 'settlement-regression-gate-override-simulator.v1',
+    scenarios,
+    activeScenarioId,
+    reasonCodeCounts,
+  };
 }
 
 export function buildChecklistAutofixHints(): ChecklistAutofixHint[] {
