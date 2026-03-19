@@ -280,6 +280,18 @@ type ExceptionActionIdempotencyEnvelope = {
   response?: ExceptionDetail;
 };
 
+type SettlementExceptionCommand = 'acknowledge' | 'assignOwner' | 'markResolved' | 'ignore';
+
+type SettlementExceptionCommandInput = {
+  command: SettlementExceptionCommand;
+  reason: string;
+  note?: string;
+  owner?: string;
+  idempotencyKey?: string;
+  expectedVersion: number;
+  expectedUpdatedAt?: string;
+};
+
 const EXCEPTION_SEVERITY_WEIGHT: Record<ExceptionSeverity, number> = {
   critical: 4,
   high: 3,
@@ -291,6 +303,7 @@ type ExceptionActionConflictReason =
   | 'stale_version'
   | 'stale_updated_at'
   | 'terminal_status'
+  | 'invalid_transition'
   | 'idempotency_key_reused'
   | 'idempotency_in_progress';
 
@@ -996,12 +1009,34 @@ export class SettlementsService {
     input: UpdateSettlementExceptionDto,
     actor: string,
   ): Promise<ExceptionDetail> {
+    return this.commandSettlementException(
+      exceptionId,
+      {
+        command: input.action === 'resolve' ? 'markResolved' : 'ignore',
+        reason: input.reason,
+        note: input.note,
+        idempotencyKey: input.idempotencyKey,
+        expectedVersion: input.expectedVersion,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      },
+      actor,
+    );
+  }
+
+  async commandSettlementException(
+    exceptionId: string,
+    input: SettlementExceptionCommandInput,
+    actor: string,
+  ): Promise<ExceptionDetail> {
     const reason = input.reason.trim();
     if (!reason) {
       throw new BadRequestException('reason is required');
     }
     const note = input.note?.trim() || null;
+    const owner = input.owner?.trim() || null;
+    const effectiveNote = this.buildExceptionCommandNote(input.command, note, owner);
     const idempotencyKey = input.idempotencyKey?.trim() || null;
+    const expectedUpdatedAt = input.expectedUpdatedAt?.trim() || null;
 
     const existing = await this.prisma.settlementException.findUnique({ where: { id: exceptionId } });
 
@@ -1010,11 +1045,11 @@ export class SettlementsService {
     }
 
     const requestFingerprint = this.exceptionActionRequestFingerprint(exceptionId, {
-      action: input.action,
+      command: input.command,
       reason,
-      note,
+      note: effectiveNote,
       expectedVersion: input.expectedVersion,
-      expectedUpdatedAt: input.expectedUpdatedAt?.trim() || null,
+      expectedUpdatedAt,
     });
 
     let claimedIdempotency = false;
@@ -1031,31 +1066,27 @@ export class SettlementsService {
       claimedIdempotency = true;
     }
 
-    const toStatus = input.action === 'resolve'
-      ? SettlementExceptionStatus.RESOLVED
-      : SettlementExceptionStatus.IGNORED;
-
     await this.logExceptionActionEvent('attempted', existing, actor, {
-      action: input.action,
+      command: input.command,
       expectedVersion: input.expectedVersion,
-      expectedUpdatedAt: input.expectedUpdatedAt?.trim() || null,
+      expectedUpdatedAt,
       idempotencyKeyPresent: Boolean(idempotencyKey),
     });
 
     try {
-      if (input.expectedUpdatedAt && existing.updatedAt.toISOString() !== input.expectedUpdatedAt) {
+      if (expectedUpdatedAt && existing.updatedAt.toISOString() !== expectedUpdatedAt) {
         await this.logExceptionActionEvent('conflict', existing, actor, {
           reason: 'stale_updated_at',
-          action: input.action,
+          command: input.command,
           expectedVersion: input.expectedVersion,
-          expectedUpdatedAt: input.expectedUpdatedAt,
+          expectedUpdatedAt,
         });
         throw this.buildActionConflict(
           existing,
           'stale_updated_at',
           'Version conflict; refresh and retry with current version',
           input.expectedVersion,
-          input.expectedUpdatedAt,
+          expectedUpdatedAt,
           true,
         );
       }
@@ -1066,14 +1097,31 @@ export class SettlementsService {
       ) {
         await this.logExceptionActionEvent('invalid', existing, actor, {
           reason: 'terminal_status',
-          action: input.action,
+          command: input.command,
         });
         throw this.buildActionConflict(
           existing,
           'terminal_status',
           'Settlement exception is already in terminal status',
           input.expectedVersion,
-          input.expectedUpdatedAt?.trim() || null,
+          expectedUpdatedAt,
+          false,
+        );
+      }
+
+      const transition = this.resolveExceptionCommandTransition(existing.status, input.command);
+      if (!transition.allowed) {
+        await this.logExceptionActionEvent('invalid', existing, actor, {
+          reason: 'invalid_transition',
+          command: input.command,
+          currentStatus: existing.status,
+        });
+        throw this.buildActionConflict(
+          existing,
+          'invalid_transition',
+          transition.message,
+          input.expectedVersion,
+          expectedUpdatedAt,
           false,
         );
       }
@@ -1084,11 +1132,11 @@ export class SettlementsService {
           version: input.expectedVersion,
         },
         data: {
-          status: toStatus,
+          status: transition.toStatus,
           latestOperatorReason: reason,
-          latestOperatorNote: note,
-          resolutionActor: actor,
-          resolutionAt: new Date(),
+          latestOperatorNote: effectiveNote,
+          resolutionActor: transition.terminal ? actor : null,
+          resolutionAt: transition.terminal ? new Date() : null,
           version: {
             increment: 1,
           },
@@ -1100,7 +1148,7 @@ export class SettlementsService {
         if (latest) {
           await this.logExceptionActionEvent('conflict', latest, actor, {
             reason: 'stale_version',
-            action: input.action,
+            command: input.command,
             expectedVersion: input.expectedVersion,
           });
           throw this.buildActionConflict(
@@ -1108,7 +1156,7 @@ export class SettlementsService {
             'stale_version',
             'Version conflict; refresh and retry with current version',
             input.expectedVersion,
-            input.expectedUpdatedAt?.trim() || null,
+            expectedUpdatedAt,
             true,
           );
         }
@@ -1120,9 +1168,9 @@ export class SettlementsService {
         data: {
           settlementExceptionId: exceptionId,
           fromStatus: existing.status,
-          toStatus,
+          toStatus: transition.toStatus,
           reason,
-          note,
+          note: effectiveNote,
           actor,
         },
       });
@@ -1134,7 +1182,7 @@ export class SettlementsService {
         version: response.version,
         updatedAt: new Date(response.updatedAt),
       }, actor, {
-        action: input.action,
+        command: input.command,
         toStatus: response.status,
       });
 
@@ -1274,6 +1322,63 @@ export class SettlementsService {
     }
   }
 
+  private buildExceptionCommandNote(
+    command: SettlementExceptionCommand,
+    note: string | null,
+    owner: string | null,
+  ): string | null {
+    if (command !== 'assignOwner') {
+      return note;
+    }
+
+    if (!owner) {
+      throw new BadRequestException('owner is required for assignOwner');
+    }
+
+    return note ? `owner=${owner}; ${note}` : `owner=${owner}`;
+  }
+
+  private resolveExceptionCommandTransition(
+    currentStatus: SettlementExceptionStatus,
+    command: SettlementExceptionCommand,
+  ): { allowed: true; toStatus: SettlementExceptionStatus; terminal: boolean } | { allowed: false; message: string } {
+    if (command === 'acknowledge') {
+      if (currentStatus !== SettlementExceptionStatus.OPEN) {
+        return {
+          allowed: false,
+          message: `Command acknowledge is only allowed for status ${SettlementExceptionStatus.OPEN}`,
+        };
+      }
+      return {
+        allowed: true,
+        toStatus: SettlementExceptionStatus.INVESTIGATING,
+        terminal: false,
+      };
+    }
+
+    if (command === 'assignOwner') {
+      return {
+        allowed: true,
+        toStatus: SettlementExceptionStatus.INVESTIGATING,
+        terminal: false,
+      };
+    }
+
+    if (command === 'markResolved') {
+      return {
+        allowed: true,
+        toStatus: SettlementExceptionStatus.RESOLVED,
+        terminal: true,
+      };
+    }
+
+    return {
+      allowed: true,
+      toStatus: SettlementExceptionStatus.IGNORED,
+      terminal: true,
+    };
+  }
+
   private exceptionActionIdempotencyScope(exceptionId: string): string {
     return `settlement_exception_action:${exceptionId}`;
   }
@@ -1281,7 +1386,7 @@ export class SettlementsService {
   private exceptionActionRequestFingerprint(
     exceptionId: string,
     input: {
-      action: 'resolve' | 'ignore';
+      command: SettlementExceptionCommand;
       reason: string;
       note: string | null;
       expectedVersion: number;
@@ -1290,7 +1395,7 @@ export class SettlementsService {
   ): string {
     return JSON.stringify({
       exceptionId,
-      action: input.action,
+      command: input.command,
       reason: input.reason,
       note: input.note,
       expectedVersion: input.expectedVersion,

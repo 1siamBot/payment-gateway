@@ -705,6 +705,159 @@ describe('SettlementsService', () => {
     await expect(service.getSettlementException('se-missing')).rejects.toThrow('Settlement exception not found');
   });
 
+  it('applies acknowledge command with deterministic investigating transition', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+
+    const updated = await service.commandSettlementException(detected.exceptions[0].id, {
+      command: 'acknowledge',
+      reason: 'triage started',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    expect(updated.status).toBe(SettlementExceptionStatus.INVESTIGATING);
+    expect(updated.version).toBe(detected.exceptions[0].version + 1);
+    expect(updated.latestOperatorReason).toBe('triage started');
+  });
+
+  it('applies assignOwner command and persists owner marker in audit note', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+
+    const updated = await service.commandSettlementException(detected.exceptions[0].id, {
+      command: 'assignOwner',
+      owner: 'ops-bot',
+      reason: 'handoff to queue owner',
+      note: 'priority=p1',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    expect(updated.status).toBe(SettlementExceptionStatus.INVESTIGATING);
+    expect(updated.latestOperatorNote).toBe('owner=ops-bot; priority=p1');
+    expect(updated.audits.at(-1)).toEqual(expect.objectContaining({
+      reason: 'handoff to queue owner',
+      note: 'owner=ops-bot; priority=p1',
+    }));
+  });
+
+  it('applies markResolved command and moves row to terminal status', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+    const acknowledged = await service.commandSettlementException(detected.exceptions[0].id, {
+      command: 'acknowledge',
+      reason: 'triage started',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    const resolved = await service.commandSettlementException(acknowledged.id, {
+      command: 'markResolved',
+      reason: 'provider report reconciled',
+      expectedVersion: acknowledged.version,
+    }, 'ops');
+
+    expect(resolved.status).toBe(SettlementExceptionStatus.RESOLVED);
+    expect(resolved.resolutionActor).toBe('ops');
+  });
+
+  it('rejects invalid command transition deterministically', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_a',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 100,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
+    }, 'ops');
+
+    const acknowledged = await service.commandSettlementException(detected.exceptions[0].id, {
+      command: 'acknowledge',
+      reason: 'triage started',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    await expect(service.commandSettlementException(acknowledged.id, {
+      command: 'acknowledge',
+      reason: 'repeat acknowledge',
+      expectedVersion: acknowledged.version,
+    }, 'ops')).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'SETTLEMENT_EXCEPTION_ACTION_CONFLICT',
+        reason: 'invalid_transition',
+        retryable: false,
+      }),
+      status: 409,
+    });
+  });
+
+  it('returns not-found for unknown exception command target', async () => {
+    const prismaMock = createPrismaMock();
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    await expect(service.commandSettlementException('se-missing', {
+      command: 'markResolved',
+      reason: 'done',
+      expectedVersion: 1,
+    }, 'ops')).rejects.toThrow('Settlement exception not found');
+  });
+
   it('enforces transition reason and writes immutable audit trail', async () => {
     const prismaMock = createPrismaMock([
       {
@@ -756,7 +909,7 @@ describe('SettlementsService', () => {
     }, 'ops')).rejects.toThrow(ConflictException);
   });
 
-  it('rejects stale version during concurrent-style updates', async () => {
+  it('rejects stale version during concurrent-style command updates', async () => {
     const prismaMock = createPrismaMock([
       {
         id: 'tx-a',
@@ -782,8 +935,8 @@ describe('SettlementsService', () => {
       records: [{ merchantId: 'merchant_a', providerName: 'mock-a', providerTotal: 90 }],
     }, 'ops');
 
-    await expect(service.updateSettlementException(initial.exceptions[0].id, {
-      action: 'resolve',
+    await expect(service.commandSettlementException(initial.exceptions[0].id, {
+      command: 'markResolved',
       reason: 'done',
       expectedVersion: initial.exceptions[0].version,
     }, 'ops')).rejects.toMatchObject({
