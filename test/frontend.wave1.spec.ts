@@ -112,6 +112,9 @@ import {
   buildPublicationBlockerDependencyGraphBoard,
   buildPublicationBlockerEvidenceDigest,
   buildPublicationBlockerCanonicalAutofixPreview,
+  buildPublicationBlockerTimelineReplayPanel,
+  buildPublicationBlockerReadinessDeltaInspector,
+  buildPublicationBlockerTimelineCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -138,6 +141,7 @@ import {
   moveReleaseGateVerdictSelection,
   movePublicationHandoffBundleSelection,
   movePublicationBlockerDependencySelection,
+  movePublicationBlockerTimelineSnapshot,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -155,6 +159,7 @@ import {
   resolveReleaseGateVerdictShortcut,
   resolvePublicationHandoffBundleShortcut,
   resolvePublicationBlockerDependencyShortcut,
+  resolvePublicationBlockerTimelineReplayShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -4846,5 +4851,230 @@ describe('frontend wave1 helpers', () => {
       activeNodeId: 'node-1',
       direction: 'next_blocker',
     })).toBe('node-2');
+  });
+
+  it('builds publication blocker timeline replay panel with deterministic ordering key tuple', () => {
+    const first = buildPublicationBlockerTimelineReplayPanel({
+      snapshots: [
+        {
+          snapshotId: 'snapshot-2',
+          snapshotTs: '2026-03-19T02:00:00.000Z',
+          blockers: [
+            {
+              id: 's2-b',
+              issueIdentifier: 'ONE-310',
+              blockerWeight: 2,
+              dependencyDepthWeight: 1,
+              actionWeight: 1,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-310/replay.md',
+            },
+            {
+              id: 's2-a',
+              issueIdentifier: 'ONE-304',
+              blockerWeight: 1,
+              dependencyDepthWeight: 1,
+              actionWeight: 2,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-304/replay.md',
+            },
+          ],
+        },
+        {
+          snapshotId: 'snapshot-1',
+          snapshotTs: '2026-03-18T02:00:00.000Z',
+          blockers: [
+            {
+              id: 's1-a',
+              issueIdentifier: 'ONE-309',
+              blockerWeight: 2,
+              dependencyDepthWeight: 2,
+              actionWeight: 1,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-309/replay.md',
+            },
+          ],
+        },
+      ],
+      activeSnapshotId: '',
+    });
+    const second = buildPublicationBlockerTimelineReplayPanel({
+      snapshots: [
+        {
+          snapshotId: 'snapshot-1',
+          snapshotTs: '2026-03-18T02:00:00.000Z',
+          blockers: [
+            {
+              id: 's1-a',
+              issueIdentifier: 'ONE-309',
+              blockerWeight: 2,
+              dependencyDepthWeight: 2,
+              actionWeight: 1,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-309/replay.md',
+            },
+          ],
+        },
+        {
+          snapshotId: 'snapshot-2',
+          snapshotTs: '2026-03-19T02:00:00.000Z',
+          blockers: [
+            {
+              id: 's2-a',
+              issueIdentifier: 'ONE-304',
+              blockerWeight: 1,
+              dependencyDepthWeight: 1,
+              actionWeight: 2,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-304/replay.md',
+            },
+            {
+              id: 's2-b',
+              issueIdentifier: 'ONE-310',
+              blockerWeight: 2,
+              dependencyDepthWeight: 1,
+              actionWeight: 1,
+              blockerTypeWeight: 1,
+              evidencePath: 'artifacts/one-310/replay.md',
+            },
+          ],
+        },
+      ],
+      activeSnapshotId: '',
+    });
+
+    expect(first.contract).toBe('settlement-publication-blocker-timeline-replay-panel.v1');
+    expect(first.rows.map((row) => row.id)).toEqual([
+      'snapshot-1:s1-a',
+      'snapshot-2:s2-a',
+      'snapshot-2:s2-b',
+    ]);
+    expect(first.rows[1].orderingKey).toEqual([
+      '2026-03-19T02:00:00.000Z',
+      1,
+      1,
+      'ONE-304',
+      2,
+    ]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits stable readiness delta machine fields from successive replay snapshots', () => {
+    const panel = buildPublicationBlockerTimelineReplayPanel({
+      snapshots: [
+        {
+          snapshotId: 'snapshot-a',
+          snapshotTs: '2026-03-18T02:00:00.000Z',
+          blockers: [
+            {
+              id: 'a-310',
+              issueIdentifier: 'ONE-310',
+              blockerWeight: 2,
+              dependencyDepthWeight: 2,
+              blockerTypeWeight: 1,
+              requiredArtifacts: ['artifactPath'],
+              upstreamDependencies: ['ONE-309', 'ONE-308'],
+              canonicalLinks: ['/issues/ONE-310'],
+              nextOwner: 'frontend engineer',
+            },
+          ],
+        },
+        {
+          snapshotId: 'snapshot-b',
+          snapshotTs: '2026-03-19T02:00:00.000Z',
+          blockers: [
+            {
+              id: 'b-310',
+              issueIdentifier: 'ONE-310',
+              blockerWeight: 2,
+              dependencyDepthWeight: 1,
+              blockerTypeWeight: 1,
+              branch: 'feature/one-310',
+              fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              prLink: 'https://github.com/1siamBot/payment-gateway/pull/310',
+              testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+              artifactPath: 'artifacts/one-310/test.log',
+              requiredArtifacts: ['contractNote'],
+              upstreamDependencies: ['ONE-309'],
+              canonicalLinks: ['/issues/ONE-310'],
+              nextOwner: 'qa',
+            },
+          ],
+        },
+      ],
+      activeSnapshotId: 'snapshot-b',
+    });
+    const first = buildPublicationBlockerReadinessDeltaInspector({
+      panel,
+      activeSnapshotId: 'snapshot-b',
+    });
+    const second = buildPublicationBlockerReadinessDeltaInspector({
+      panel,
+      activeSnapshotId: 'snapshot-b',
+    });
+
+    expect(first.contract).toBe('settlement-publication-blocker-readiness-delta-inspector.v1');
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]).toEqual({
+      id: 'snapshot-b:ONE-310',
+      issueIdentifier: 'ONE-310',
+      snapshotId: 'snapshot-b',
+      previousSnapshotId: 'snapshot-a',
+      deltaFingerprint: expect.stringMatching(/^delta-[a-f0-9]{8}$/),
+      previousState: 'blocked',
+      currentState: 'blocked',
+      ownerTransition: 'frontend engineer -> qa',
+      newMissingArtifacts: ['contractNote'],
+      resolvedDependencies: ['ONE-308'],
+      canonicalLinkViolations: ['/issues/ONE-310'],
+      readyForQA: false,
+    });
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('builds publication blocker timeline canonical autofix preview with copy-ready diff notes and replay shortcuts', () => {
+    const preview = buildPublicationBlockerTimelineCanonicalAutofixPreview({
+      markdown: [
+        '- replay source: /issues/ONE-310',
+        '- previous snapshot: /ONE/issues/ONE-309#document-plan',
+        '- owner note: https://paperclip.dev/issues/ONE-308#comment-2',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-publication-blocker-timeline-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-310',
+      '/ONE/issues/ONE-309#document-plan',
+      '/ONE/issues/ONE-308#comment-2',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyReadyMarkdownDiff).toContain('`/issues/ONE-310` -> `/ONE/issues/ONE-310`');
+    expect(resolvePublicationBlockerTimelineReplayShortcut({ key: 't', altKey: true })).toBe('focus_timeline_panel');
+    expect(resolvePublicationBlockerTimelineReplayShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_snapshot');
+    expect(resolvePublicationBlockerTimelineReplayShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_snapshot');
+    expect(resolvePublicationBlockerTimelineReplayShortcut({ key: 'r', ctrlKey: true, shiftKey: true }))
+      .toBe('run_replay_validation');
+    expect(resolvePublicationBlockerTimelineReplayShortcut({ key: 'd', ctrlKey: true, shiftKey: true }))
+      .toBe('open_delta_inspector');
+    expect(movePublicationBlockerTimelineSnapshot({
+      snapshots: buildPublicationBlockerTimelineReplayPanel({
+        snapshots: [
+          {
+            snapshotId: 's1',
+            snapshotTs: '2026-03-18T02:00:00.000Z',
+            blockers: [{ issueIdentifier: 'ONE-304' }],
+          },
+          {
+            snapshotId: 's2',
+            snapshotTs: '2026-03-19T02:00:00.000Z',
+            blockers: [{ issueIdentifier: 'ONE-310' }],
+          },
+        ],
+        activeSnapshotId: '',
+      }).snapshotOrder,
+      activeSnapshotId: 's1',
+      direction: 'next_snapshot',
+    })).toBe('s2');
   });
 });

@@ -755,6 +755,84 @@ export type PublicationBlockerCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type BlockerTimelineReplayShortcut =
+  | 'focus_timeline_panel'
+  | 'next_snapshot'
+  | 'prev_snapshot'
+  | 'run_replay_validation'
+  | 'open_delta_inspector';
+
+export type PublicationBlockerTimelineReplayRow = {
+  id: string;
+  snapshotId: string;
+  snapshotTs: string;
+  snapshotLabel: string;
+  issueIdentifier: string;
+  blockerWeight: number;
+  dependencyDepthWeight: number;
+  actionWeight: number;
+  actionCode: string;
+  title: string;
+  orderingKey: [string, number, number, string, number];
+  machineFields: {
+    blockerFingerprint: string;
+    upstreamDependencies: string[];
+    requiredArtifacts: string[];
+    canonicalLinkViolations: string[];
+    nextOwner: string;
+    readyForQA: boolean;
+  };
+};
+
+export type PublicationBlockerTimelineReplayPanel = {
+  contract: 'settlement-publication-blocker-timeline-replay-panel.v1';
+  rows: PublicationBlockerTimelineReplayRow[];
+  snapshotOrder: Array<{
+    snapshotId: string;
+    snapshotTs: string;
+    snapshotLabel: string;
+    readyForQACount: number;
+    blockedCount: number;
+  }>;
+  activeSnapshotId: string;
+};
+
+export type PublicationBlockerReadinessState = 'missing' | 'blocked' | 'ready';
+
+export type PublicationBlockerReadinessDeltaRow = {
+  id: string;
+  issueIdentifier: string;
+  snapshotId: string;
+  previousSnapshotId: string | null;
+  deltaFingerprint: string;
+  previousState: PublicationBlockerReadinessState;
+  currentState: PublicationBlockerReadinessState;
+  ownerTransition: string;
+  newMissingArtifacts: string[];
+  resolvedDependencies: string[];
+  canonicalLinkViolations: string[];
+  readyForQA: boolean;
+};
+
+export type PublicationBlockerReadinessDeltaInspector = {
+  contract: 'settlement-publication-blocker-readiness-delta-inspector.v1';
+  rows: PublicationBlockerReadinessDeltaRow[];
+  activeSnapshotId: string;
+  previousSnapshotId: string | null;
+  readyForQACount: number;
+  blockedCount: number;
+};
+
+export type PublicationBlockerTimelineCanonicalAutofixPreview = {
+  contract: 'settlement-publication-blocker-timeline-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+  copyReadyMarkdownDiff: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -5483,6 +5561,369 @@ export function buildPublicationBlockerCanonicalAutofixPreview(input: {
     changedCount,
     invalidCount,
     copyText: patchedMarkdown,
+  };
+}
+
+function normalizeBlockerTimelineActionWeight(input: unknown): number {
+  return normalizePublicationBlockerWeight(input, 5);
+}
+
+function normalizeBlockerTimelineSnapshotLabel(raw: Record<string, unknown>, snapshotTs: string): string {
+  const explicitLabel = normalizeOptional(
+    typeof raw.snapshotLabel === 'string'
+      ? raw.snapshotLabel
+      : typeof raw.label === 'string'
+        ? raw.label
+        : '',
+  );
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+  return `Snapshot (${snapshotTs.slice(0, 10)})`;
+}
+
+function parsePublicationBlockerTimelineReplayRow(raw: unknown, index: number): PublicationBlockerTimelineReplayRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const payload = raw as Record<string, unknown>;
+  const node = parsePublicationBlockerDependencyNode(payload, index);
+  if (!node) {
+    return null;
+  }
+  const snapshotTs = resolveDateString(
+    payload.snapshotTs ?? payload.snapshotTimestamp ?? payload.generatedAt,
+    DIFF_FALLBACK_TIMESTAMP,
+  );
+  const snapshotId = normalizeOptional(
+    typeof payload.snapshotId === 'string'
+      ? payload.snapshotId
+      : typeof payload.snapshotKey === 'string'
+        ? payload.snapshotKey
+        : '',
+  ) ?? `snapshot-${snapshotTs.slice(0, 19)}-${hashFNV1a(`${node.issueIdentifier}|${node.id}`)}`;
+  const snapshotLabel = normalizeBlockerTimelineSnapshotLabel(payload, snapshotTs);
+  const actionWeight = normalizeBlockerTimelineActionWeight(
+    payload.actionWeight ?? payload.actionPriorityWeight ?? payload.actionOrderWeight,
+  );
+  const actionCode = normalizeOptional(
+    typeof payload.actionCode === 'string'
+      ? payload.actionCode
+      : typeof payload.action === 'string'
+        ? payload.action
+        : '',
+  ) ?? 'observe';
+
+  return {
+    id: `${snapshotId}:${node.id}`,
+    snapshotId,
+    snapshotTs,
+    snapshotLabel,
+    issueIdentifier: node.issueIdentifier,
+    blockerWeight: node.blockerWeight,
+    dependencyDepthWeight: node.dependencyDepthWeight,
+    actionWeight,
+    actionCode,
+    title: node.title,
+    orderingKey: [
+      snapshotTs,
+      node.blockerWeight,
+      node.dependencyDepthWeight,
+      node.issueIdentifier,
+      actionWeight,
+    ],
+    machineFields: {
+      blockerFingerprint: node.machineFields.blockerFingerprint,
+      upstreamDependencies: [...node.machineFields.upstreamDependencies],
+      requiredArtifacts: [...node.machineFields.requiredArtifacts],
+      canonicalLinkViolations: [...node.machineFields.canonicalLinkViolations],
+      nextOwner: node.machineFields.nextOwner,
+      readyForQA: node.machineFields.readyForQA,
+    },
+  };
+}
+
+function flattenPublicationBlockerTimelineReplayRows(input: unknown[]): unknown[] {
+  const rows: unknown[] = [];
+  input.forEach((snapshot, snapshotIndex) => {
+    if (!snapshot || typeof snapshot !== 'object') {
+      return;
+    }
+    const snapshotRecord = snapshot as Record<string, unknown>;
+    const snapshotTs = resolveDateString(
+      snapshotRecord.snapshotTs ?? snapshotRecord.snapshotTimestamp ?? snapshotRecord.generatedAt,
+      DIFF_FALLBACK_TIMESTAMP,
+    );
+    const snapshotId = normalizeOptional(
+      typeof snapshotRecord.snapshotId === 'string'
+        ? snapshotRecord.snapshotId
+        : typeof snapshotRecord.snapshotKey === 'string'
+          ? snapshotRecord.snapshotKey
+          : '',
+    ) ?? `snapshot-${snapshotTs.slice(0, 19)}-${snapshotIndex + 1}`;
+    const snapshotLabel = normalizeBlockerTimelineSnapshotLabel(snapshotRecord, snapshotTs);
+    const rawBlockers = Array.isArray(snapshotRecord.blockers)
+      ? snapshotRecord.blockers
+      : Array.isArray(snapshotRecord.rows)
+        ? snapshotRecord.rows
+        : [snapshotRecord];
+    rawBlockers.forEach((blocker, blockerIndex) => {
+      if (!blocker || typeof blocker !== 'object') {
+        return;
+      }
+      const blockerRecord = blocker as Record<string, unknown>;
+      rows.push({
+        ...blockerRecord,
+        snapshotTs,
+        snapshotId,
+        snapshotLabel,
+        actionWeight: blockerRecord.actionWeight
+          ?? snapshotRecord.actionWeight
+          ?? blockerRecord.actionPriorityWeight
+          ?? snapshotRecord.actionPriorityWeight
+          ?? blockerIndex + 1,
+      });
+    });
+  });
+  return rows;
+}
+
+function buildPublicationBlockerTimelineReplaySnapshotOrder(
+  rows: PublicationBlockerTimelineReplayRow[],
+): PublicationBlockerTimelineReplayPanel['snapshotOrder'] {
+  const grouped = new Map<string, PublicationBlockerTimelineReplayPanel['snapshotOrder'][number]>();
+  for (const row of rows) {
+    const current = grouped.get(row.snapshotId) ?? {
+      snapshotId: row.snapshotId,
+      snapshotTs: row.snapshotTs,
+      snapshotLabel: row.snapshotLabel,
+      readyForQACount: 0,
+      blockedCount: 0,
+    };
+    if (row.machineFields.readyForQA) {
+      current.readyForQACount += 1;
+    } else {
+      current.blockedCount += 1;
+    }
+    grouped.set(row.snapshotId, current);
+  }
+  return Array.from(grouped.values()).sort((left, right) => (
+    left.snapshotTs.localeCompare(right.snapshotTs)
+    || left.snapshotId.localeCompare(right.snapshotId)
+  ));
+}
+
+export function buildPublicationBlockerTimelineReplayPanel(input: {
+  snapshots: unknown[];
+  activeSnapshotId: string;
+}): PublicationBlockerTimelineReplayPanel {
+  const rows = flattenPublicationBlockerTimelineReplayRows(input.snapshots)
+    .map((row, index) => parsePublicationBlockerTimelineReplayRow(row, index))
+    .filter((row): row is PublicationBlockerTimelineReplayRow => Boolean(row))
+    .sort((left, right) => (
+      left.snapshotTs.localeCompare(right.snapshotTs)
+      || left.blockerWeight - right.blockerWeight
+      || left.dependencyDepthWeight - right.dependencyDepthWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.actionWeight - right.actionWeight
+      || left.actionCode.localeCompare(right.actionCode)
+      || left.id.localeCompare(right.id)
+    ));
+  const snapshotOrder = buildPublicationBlockerTimelineReplaySnapshotOrder(rows);
+  const snapshotSet = new Set(snapshotOrder.map((snapshot) => snapshot.snapshotId));
+  const activeSnapshotId = snapshotSet.has(input.activeSnapshotId)
+    ? input.activeSnapshotId
+    : (snapshotOrder[0]?.snapshotId ?? '');
+  return {
+    contract: 'settlement-publication-blocker-timeline-replay-panel.v1',
+    rows,
+    snapshotOrder,
+    activeSnapshotId,
+  };
+}
+
+function classifyPublicationBlockerReadinessState(row: PublicationBlockerTimelineReplayRow | null): PublicationBlockerReadinessState {
+  if (!row) {
+    return 'missing';
+  }
+  return row.machineFields.readyForQA ? 'ready' : 'blocked';
+}
+
+function resolvePublicationBlockerReadinessDeltaRows(
+  activeRows: PublicationBlockerTimelineReplayRow[],
+  previousRows: PublicationBlockerTimelineReplayRow[],
+  activeSnapshotId: string,
+  previousSnapshotId: string | null,
+): PublicationBlockerReadinessDeltaRow[] {
+  const previousByIssue = new Map(previousRows.map((row) => [row.issueIdentifier, row] as const));
+  return activeRows
+    .map((row) => {
+      const previous = previousByIssue.get(row.issueIdentifier) ?? null;
+      const previousState = classifyPublicationBlockerReadinessState(previous);
+      const currentState = classifyPublicationBlockerReadinessState(row);
+      const previousOwner = previous?.machineFields.nextOwner ?? 'unassigned';
+      const currentOwner = row.machineFields.nextOwner;
+      const newMissingArtifacts = row.machineFields.requiredArtifacts
+        .filter((field) => !(previous?.machineFields.requiredArtifacts ?? []).includes(field))
+        .sort((left, right) => left.localeCompare(right));
+      const resolvedDependencies = (previous?.machineFields.upstreamDependencies ?? [])
+        .filter((dependency) => !row.machineFields.upstreamDependencies.includes(dependency))
+        .sort((left, right) => left.localeCompare(right));
+      const canonicalLinkViolations = [...row.machineFields.canonicalLinkViolations]
+        .sort((left, right) => left.localeCompare(right));
+      const deltaFingerprintSource = serializeDeterministicUnknown({
+        issueIdentifier: row.issueIdentifier,
+        activeSnapshotId,
+        previousSnapshotId,
+        previousState,
+        currentState,
+        ownerTransition: `${previousOwner}->${currentOwner}`,
+        newMissingArtifacts,
+        resolvedDependencies,
+        canonicalLinkViolations,
+        readyForQA: row.machineFields.readyForQA,
+      });
+      return {
+        id: `${activeSnapshotId}:${row.issueIdentifier}`,
+        issueIdentifier: row.issueIdentifier,
+        snapshotId: activeSnapshotId,
+        previousSnapshotId,
+        deltaFingerprint: `delta-${hashFNV1a(deltaFingerprintSource)}`,
+        previousState,
+        currentState,
+        ownerTransition: `${previousOwner} -> ${currentOwner}`,
+        newMissingArtifacts,
+        resolvedDependencies,
+        canonicalLinkViolations,
+        readyForQA: row.machineFields.readyForQA,
+      };
+    })
+    .sort((left, right) => (
+      left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.deltaFingerprint.localeCompare(right.deltaFingerprint)
+      || left.id.localeCompare(right.id)
+    ));
+}
+
+export function buildPublicationBlockerReadinessDeltaInspector(input: {
+  panel: PublicationBlockerTimelineReplayPanel;
+  activeSnapshotId: string;
+}): PublicationBlockerReadinessDeltaInspector {
+  const snapshotSet = new Set(input.panel.snapshotOrder.map((snapshot) => snapshot.snapshotId));
+  const activeSnapshotId = snapshotSet.has(input.activeSnapshotId)
+    ? input.activeSnapshotId
+    : (input.panel.snapshotOrder[0]?.snapshotId ?? '');
+  const activeSnapshotIndex = input.panel.snapshotOrder.findIndex((snapshot) => snapshot.snapshotId === activeSnapshotId);
+  const previousSnapshotId = activeSnapshotIndex > 0
+    ? input.panel.snapshotOrder[activeSnapshotIndex - 1].snapshotId
+    : null;
+  const activeRows = input.panel.rows.filter((row) => row.snapshotId === activeSnapshotId);
+  const previousRows = previousSnapshotId
+    ? input.panel.rows.filter((row) => row.snapshotId === previousSnapshotId)
+    : [];
+  const rows = resolvePublicationBlockerReadinessDeltaRows(
+    activeRows,
+    previousRows,
+    activeSnapshotId,
+    previousSnapshotId,
+  );
+  return {
+    contract: 'settlement-publication-blocker-readiness-delta-inspector.v1',
+    rows,
+    activeSnapshotId,
+    previousSnapshotId,
+    readyForQACount: rows.filter((row) => row.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.readyForQA).length,
+  };
+}
+
+export function movePublicationBlockerTimelineSnapshot(input: {
+  snapshots: PublicationBlockerTimelineReplayPanel['snapshotOrder'];
+  activeSnapshotId: string;
+  direction: 'next_snapshot' | 'prev_snapshot';
+}): string {
+  if (input.snapshots.length === 0) {
+    return '';
+  }
+  const currentIndex = input.snapshots.findIndex((snapshot) => snapshot.snapshotId === input.activeSnapshotId);
+  if (currentIndex < 0) {
+    return input.snapshots[0].snapshotId;
+  }
+  if (input.direction === 'next_snapshot') {
+    return input.snapshots[Math.min(currentIndex + 1, input.snapshots.length - 1)].snapshotId;
+  }
+  return input.snapshots[Math.max(currentIndex - 1, 0)].snapshotId;
+}
+
+export function resolvePublicationBlockerTimelineReplayShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): BlockerTimelineReplayShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 't') {
+    return 'focus_timeline_panel';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_snapshot';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_snapshot';
+  }
+  if (normalizedKey === 'r' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_replay_validation';
+  }
+  if (normalizedKey === 'd' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_delta_inspector';
+  }
+  return null;
+}
+
+export function buildPublicationBlockerTimelineCanonicalAutofixPreview(input: {
+  markdown: string;
+}): PublicationBlockerTimelineCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `publication-blocker-timeline-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  const changedRows = rows.filter((row) => row.changed);
+  const copyReadyMarkdownDiff = changedRows.length
+    ? [
+      '### Canonical Link Diff Notes',
+      '',
+      ...changedRows.map((row) => `- \`${row.original}\` -> \`${row.normalized}\``),
+    ].join('\n')
+    : '### Canonical Link Diff Notes\n\n- No canonical rewrites required.';
+  return {
+    contract: 'settlement-publication-blocker-timeline-canonical-autofix-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+    copyReadyMarkdownDiff,
   };
 }
 
