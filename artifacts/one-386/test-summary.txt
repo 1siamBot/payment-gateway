@@ -1,0 +1,9 @@
+Command: npm test -- test/frontend.chargeback-monitor.spec.ts
+Result: PASS
+Test Suites: 1 passed, 1 total
+Tests: 5 passed, 5 total
+Time: 1.129 s
+
+Command: npm run frontend:build
+Result: PASS
+Build includes route chunk: settlement-chargeback-monitor

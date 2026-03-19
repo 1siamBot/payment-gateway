@@ -953,6 +953,39 @@ button.danger {
   color: #92400e;
 }
 
+.risk-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.42rem;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.risk-critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.risk-high {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.risk-medium {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.risk-low {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.empty-row {
+  text-align: center;
+  color: var(--muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -974,6 +1007,15 @@ td small {
 }
 
 @media (max-width: 860px) {
+  .top-nav-wrap {
+    padding: 0.7rem 0.8rem 0;
+  }
+
+  .top-nav a {
+    width: 100%;
+    text-align: center;
+  }
+
   .page {
     padding: 0.8rem;
   }
