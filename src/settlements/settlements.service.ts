@@ -41,6 +41,7 @@ import {
 } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
+import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -55,6 +56,10 @@ import {
   lintSettlementEvidencePackets,
   SettlementEvidencePacketLintContract,
 } from './evidence-packet-lint';
+import {
+  buildSettlementPublicationWindowDiagnostics,
+  SettlementPublicationWindowDiagnostics,
+} from './publication-window-diagnostics';
 import {
   buildSettlementPublicationWindowPlan,
   SettlementPublicationWindowPlan,
@@ -250,6 +255,7 @@ type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContra
 type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary;
 type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
+type SettlementPublicationWindowDiagnosticsContractResponse = SettlementPublicationWindowDiagnostics;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -624,6 +630,12 @@ export class SettlementsService {
       }
       throw error;
     }
+  }
+
+  buildSettlementExceptionPublicationWindowDiagnostics(
+    input: BuildSettlementPublicationWindowDiagnosticsDto,
+  ): SettlementPublicationWindowDiagnosticsContractResponse {
+    return buildSettlementPublicationWindowDiagnostics(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(
