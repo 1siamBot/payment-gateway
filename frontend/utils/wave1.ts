@@ -763,6 +763,78 @@ export type RemediationPlaybookCategory =
   | 'dependency-gap'
   | 'blocker-drift';
 
+export type AnomalyTimelineShortcut =
+  | 'focus_timeline_board'
+  | 'next_anomaly'
+  | 'prev_anomaly'
+  | 'open_playbook_composer'
+  | 'validate_export_packet';
+
+export type DeterministicAnomalyTimelineEvent = {
+  id: string;
+  issueIdentifier: string;
+  bundleCode: string;
+  fieldPath: string;
+  severityWeight: number;
+  driftClassWeight: number;
+  occurredAt: string;
+  summary: string;
+};
+
+export type DeterministicAnomalyTimelineGroup = {
+  id: string;
+  issueIdentifier: string;
+  bundleCode: string;
+  events: DeterministicAnomalyTimelineEvent[];
+};
+
+export type DeterministicAnomalyTimelineWorkspace = {
+  contract: 'settlement-anomaly-timeline-workspace.v1';
+  groups: DeterministicAnomalyTimelineGroup[];
+  activeEventId: string;
+};
+
+export type RemediationPlaybookRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+export type RemediationPlaybookComposerAction = {
+  actionCode: string;
+  reasonCode: string;
+  riskLevel: RemediationPlaybookRiskLevel;
+  requiredEvidence: string[];
+  rollbackHint: string;
+  issueIdentifier: string;
+  bundleCode: string;
+  fieldPath: string;
+};
+
+export type RemediationPlaybookComposerPanel = {
+  contract: 'settlement-remediation-playbook-composer.v1';
+  actions: RemediationPlaybookComposerAction[];
+};
+
+export type CanonicalExportLinkType = 'issue' | 'comment' | 'document' | 'unknown';
+
+export type CanonicalExportLinkVerificationRow = {
+  id: string;
+  original: string;
+  normalized: string;
+  changed: boolean;
+  valid: boolean;
+  type: CanonicalExportLinkType;
+};
+
+export type CanonicalExportLinkVerification = {
+  contract: 'settlement-export-link-verifier.v1';
+  rows: CanonicalExportLinkVerificationRow[];
+  correctedOutput: string;
+  changedCount: number;
+  invalidCount: number;
+  hasIssueReference: boolean;
+  hasCommentReference: boolean;
+  hasDocumentReference: boolean;
+  readyForExport: boolean;
+};
+
 export type AnomalyTriageShortcut =
   | 'focus_anomaly_board'
   | 'next_anomaly'
@@ -5038,6 +5110,294 @@ function parseAnomalyTriageRow(row: unknown): AnomalyTriageRow | null {
     severityWeight,
     stalenessMinutes,
     summary,
+  };
+}
+
+function parseDeterministicTimelineEvent(row: unknown): DeterministicAnomalyTimelineEvent | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const raw = row as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier.toUpperCase()
+      : String(raw.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const bundleCode = normalizeOptional(
+    typeof raw.bundleCode === 'string'
+      ? raw.bundleCode.toLowerCase()
+      : String(raw.bundleCode ?? '').toLowerCase(),
+  ) ?? 'default';
+  const fieldPath = normalizeOptional(
+    typeof raw.fieldPath === 'string'
+      ? raw.fieldPath
+      : String(raw.fieldPath ?? ''),
+  ) ?? 'unknown.field';
+  const severityWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.severityWeight) ?? 0));
+  const driftClassWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.driftClassWeight) ?? 0));
+  const occurredAt = normalizeOptional(
+    typeof raw.occurredAt === 'string'
+      ? raw.occurredAt
+      : String(raw.occurredAt ?? ''),
+  ) ?? '1970-01-01T00:00:00.000Z';
+  const summary = normalizeOptional(
+    typeof raw.summary === 'string'
+      ? raw.summary
+      : String(raw.summary ?? ''),
+  ) ?? `${issueIdentifier} anomaly detected for ${fieldPath}.`;
+  const id = normalizeOptional(
+    typeof raw.id === 'string'
+      ? raw.id
+      : `${issueIdentifier}|${bundleCode}|${fieldPath}|${occurredAt}|${severityWeight}|${driftClassWeight}`,
+  ) ?? `${issueIdentifier}|${bundleCode}|${fieldPath}|${occurredAt}|${severityWeight}|${driftClassWeight}`;
+  return {
+    id,
+    issueIdentifier,
+    bundleCode,
+    fieldPath,
+    severityWeight,
+    driftClassWeight,
+    occurredAt,
+    summary,
+  };
+}
+
+function parseOccurredAtMillis(value: string): number {
+  const parsed = Date.parse(value);
+  if (Number.isFinite(parsed)) {
+    return parsed;
+  }
+  return 0;
+}
+
+function classifyReferenceType(link: string): CanonicalExportLinkType {
+  const hash = link.split('#')[1] ?? '';
+  if (!hash) {
+    return 'issue';
+  }
+  if (/^comment-\d+$/i.test(hash)) {
+    return 'comment';
+  }
+  if (/^document-[a-z0-9_-]+$/i.test(hash)) {
+    return 'document';
+  }
+  return 'unknown';
+}
+
+function parseRemediationComposerAction(
+  action: unknown,
+  index: number,
+): RemediationPlaybookComposerAction | null {
+  if (!action || typeof action !== 'object') {
+    return null;
+  }
+  const raw = action as Record<string, unknown>;
+  const actionCode = normalizeOptional(
+    typeof raw.actionCode === 'string' ? raw.actionCode.toLowerCase() : String(raw.actionCode ?? '').toLowerCase(),
+  );
+  const reasonCode = normalizeOptional(
+    typeof raw.reasonCode === 'string' ? raw.reasonCode.toLowerCase() : String(raw.reasonCode ?? '').toLowerCase(),
+  );
+  const issueIdentifier = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier.toUpperCase()
+      : String(raw.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!actionCode || !reasonCode || !issueIdentifier) {
+    return null;
+  }
+  const severityWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.severityWeight) ?? 0));
+  const riskLevel = severityWeight >= 90
+    ? 'critical'
+    : severityWeight >= 70
+      ? 'high'
+      : severityWeight >= 40
+        ? 'medium'
+        : 'low';
+  const requiredEvidence = Array.isArray(raw.requiredEvidence)
+    ? raw.requiredEvidence
+      .map((item) => normalizeOptional(typeof item === 'string' ? item : String(item ?? '')))
+      .filter((item): item is string => Boolean(item))
+      .sort((left, right) => left.localeCompare(right))
+    : [];
+  const rollbackHint = normalizeOptional(
+    typeof raw.rollbackHint === 'string' ? raw.rollbackHint : String(raw.rollbackHint ?? ''),
+  ) ?? `Rollback ${actionCode} and revert to previous stable fixture for ${issueIdentifier}.`;
+  const bundleCode = normalizeOptional(
+    typeof raw.bundleCode === 'string' ? raw.bundleCode.toLowerCase() : String(raw.bundleCode ?? '').toLowerCase(),
+  ) ?? `bundle-${index}`;
+  const fieldPath = normalizeOptional(
+    typeof raw.fieldPath === 'string' ? raw.fieldPath : String(raw.fieldPath ?? ''),
+  ) ?? 'unknown.field';
+  return {
+    actionCode,
+    reasonCode,
+    riskLevel,
+    requiredEvidence,
+    rollbackHint,
+    issueIdentifier,
+    bundleCode,
+    fieldPath,
+  };
+}
+
+function riskLevelWeight(level: RemediationPlaybookRiskLevel): number {
+  if (level === 'critical') {
+    return 4;
+  }
+  if (level === 'high') {
+    return 3;
+  }
+  if (level === 'medium') {
+    return 2;
+  }
+  return 1;
+}
+
+export function buildDeterministicAnomalyTimelineWorkspace(input: {
+  events: unknown[];
+  activeEventId: string;
+}): DeterministicAnomalyTimelineWorkspace {
+  const events = input.events
+    .map((row) => parseDeterministicTimelineEvent(row))
+    .filter((row): row is DeterministicAnomalyTimelineEvent => Boolean(row))
+    .sort((left, right) => (
+      right.severityWeight - left.severityWeight
+      || right.driftClassWeight - left.driftClassWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
+      || parseOccurredAtMillis(left.occurredAt) - parseOccurredAtMillis(right.occurredAt)
+      || left.fieldPath.localeCompare(right.fieldPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const grouped = new Map<string, DeterministicAnomalyTimelineGroup>();
+  for (const event of events) {
+    const key = `${event.issueIdentifier}|${event.bundleCode}`;
+    const current = grouped.get(key);
+    if (current) {
+      current.events.push(event);
+      continue;
+    }
+    grouped.set(key, {
+      id: key,
+      issueIdentifier: event.issueIdentifier,
+      bundleCode: event.bundleCode,
+      events: [event],
+    });
+  }
+  const eventIdSet = new Set(events.map((event) => event.id));
+  const activeEventId = eventIdSet.has(input.activeEventId)
+    ? input.activeEventId
+    : (events[0]?.id ?? '');
+  return {
+    contract: 'settlement-anomaly-timeline-workspace.v1',
+    groups: [...grouped.values()],
+    activeEventId,
+  };
+}
+
+export function moveDeterministicAnomalyTimelineSelection(input: {
+  groups: DeterministicAnomalyTimelineGroup[];
+  activeEventId: string;
+  direction: 'next' | 'prev';
+}): string {
+  const events = input.groups.flatMap((group) => group.events);
+  if (events.length === 0) {
+    return '';
+  }
+  const index = events.findIndex((event) => event.id === input.activeEventId);
+  if (index < 0) {
+    return events[0].id;
+  }
+  if (input.direction === 'next') {
+    return events[Math.min(index + 1, events.length - 1)].id;
+  }
+  return events[Math.max(index - 1, 0)].id;
+}
+
+export function resolveAnomalyTimelineShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): AnomalyTimelineShortcut | null {
+  const normalized = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalized === 't') {
+    return 'focus_timeline_board';
+  }
+  if (input.altKey && input.shiftKey && normalized === 'n') {
+    return 'next_anomaly';
+  }
+  if (input.altKey && input.shiftKey && normalized === 'p') {
+    return 'prev_anomaly';
+  }
+  if (normalized === 'r' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_playbook_composer';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_export_packet';
+  }
+  return null;
+}
+
+export function buildRemediationPlaybookComposerPanel(input: {
+  actions: unknown[];
+}): RemediationPlaybookComposerPanel {
+  const actions = input.actions
+    .map((action, index) => parseRemediationComposerAction(action, index))
+    .filter((action): action is RemediationPlaybookComposerAction => Boolean(action))
+    .sort((left, right) => (
+      riskLevelWeight(right.riskLevel) - riskLevelWeight(left.riskLevel)
+      || left.actionCode.localeCompare(right.actionCode)
+      || left.reasonCode.localeCompare(right.reasonCode)
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
+      || left.fieldPath.localeCompare(right.fieldPath)
+    ));
+  return {
+    contract: 'settlement-remediation-playbook-composer.v1',
+    actions,
+  };
+}
+
+export function verifyCanonicalExportLinks(input: {
+  linksText: string;
+}): CanonicalExportLinkVerification {
+  const rows = normalizeMultilineEntries(input.linksText)
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      const valid = Boolean(canonicalizePaperclipIssueLink(original));
+      return {
+        id: `export-link-${index}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+        valid,
+        type: valid ? classifyReferenceType(normalized) : 'unknown',
+      } satisfies CanonicalExportLinkVerificationRow;
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const hasIssueReference = rows.some((row) => row.valid && row.type === 'issue');
+  const hasCommentReference = rows.some((row) => row.valid && row.type === 'comment');
+  const hasDocumentReference = rows.some((row) => row.valid && row.type === 'document');
+  return {
+    contract: 'settlement-export-link-verifier.v1',
+    rows,
+    correctedOutput: rows.map((row) => row.normalized).join('\n'),
+    changedCount: rows.filter((row) => row.changed).length,
+    invalidCount: rows.filter((row) => !row.valid).length,
+    hasIssueReference,
+    hasCommentReference,
+    hasDocumentReference,
+    readyForExport: rows.length > 0
+      && rows.every((row) => row.valid)
+      && hasIssueReference
+      && hasCommentReference
+      && hasDocumentReference,
   };
 }
 

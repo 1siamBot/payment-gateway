@@ -84,6 +84,11 @@ import {
   buildChecklistAutofixHints,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildDeterministicAnomalyTimelineWorkspace,
+  moveDeterministicAnomalyTimelineSelection,
+  resolveAnomalyTimelineShortcut,
+  buildRemediationPlaybookComposerPanel,
+  verifyCanonicalExportLinks,
   buildManifestDiffViewer,
   buildAnomalyTriageBoard,
   buildRemediationRunbookTimelineBoard,
@@ -2068,6 +2073,124 @@ describe('frontend wave1 helpers', () => {
       '/ONE/issues/ONE-241',
       '/ONE/issues/ONE-257#document-plan',
     ].join('\n'));
+  });
+
+  it('builds deterministic anomaly timeline workspace groups in tuple order', () => {
+    const workspace = buildDeterministicAnomalyTimelineWorkspace({
+      events: [
+        {
+          id: 'evt-c',
+          issueIdentifier: 'ONE-280',
+          bundleCode: 'bundle-z',
+          fieldPath: 'packet.links[2]',
+          severityWeight: 90,
+          driftClassWeight: 20,
+          occurredAt: '2026-03-19T09:03:00.000Z',
+        },
+        {
+          id: 'evt-a',
+          issueIdentifier: 'ONE-279',
+          bundleCode: 'bundle-a',
+          fieldPath: 'packet.branch',
+          severityWeight: 100,
+          driftClassWeight: 40,
+          occurredAt: '2026-03-19T09:01:00.000Z',
+        },
+        {
+          id: 'evt-b',
+          issueIdentifier: 'ONE-279',
+          bundleCode: 'bundle-a',
+          fieldPath: 'packet.fullSha',
+          severityWeight: 100,
+          driftClassWeight: 20,
+          occurredAt: '2026-03-19T09:02:00.000Z',
+        },
+      ],
+      activeEventId: '',
+    });
+
+    expect(workspace.contract).toBe('settlement-anomaly-timeline-workspace.v1');
+    expect(workspace.groups.map((group) => `${group.issueIdentifier}:${group.bundleCode}`)).toEqual([
+      'ONE-279:bundle-a',
+      'ONE-280:bundle-z',
+    ]);
+    expect(workspace.groups[0].events.map((event) => event.id)).toEqual(['evt-a', 'evt-b']);
+    expect(workspace.activeEventId).toBe('evt-a');
+    expect(moveDeterministicAnomalyTimelineSelection({
+      groups: workspace.groups,
+      activeEventId: 'evt-a',
+      direction: 'next',
+    })).toBe('evt-b');
+  });
+
+  it('builds remediation playbook composer output deterministically for semantically identical inputs', () => {
+    const baseActions = [
+      {
+        actionCode: 'request_dependency_replay',
+        reasonCode: 'dependency_open',
+        severityWeight: 60,
+        requiredEvidence: ['artifacts/one-284/timeline-export.json', 'artifacts/one-284/playbook.md'],
+        rollbackHint: 'Rollback to previous validated dependency snapshot.',
+        issueIdentifier: 'ONE-279',
+        bundleCode: 'bundle-a',
+        fieldPath: 'dependencyIssueLinks',
+      },
+      {
+        actionCode: 'repair_canonical_links',
+        reasonCode: 'link_noncanonical',
+        severityWeight: 92,
+        requiredEvidence: ['artifacts/one-284/link-verifier.md'],
+        rollbackHint: 'Restore link set from last accepted handoff packet.',
+        issueIdentifier: 'ONE-283',
+        bundleCode: 'bundle-z',
+        fieldPath: 'packet.links',
+      },
+    ];
+    const first = buildRemediationPlaybookComposerPanel({
+      actions: baseActions,
+    });
+    const second = buildRemediationPlaybookComposerPanel({
+      actions: [...baseActions].reverse(),
+    });
+    expect(first.contract).toBe('settlement-remediation-playbook-composer.v1');
+    expect(first.actions).toEqual(second.actions);
+    expect(first.actions.map((action) => action.actionCode)).toEqual([
+      'repair_canonical_links',
+      'request_dependency_replay',
+    ]);
+    expect(first.actions[0]).toMatchObject({
+      reasonCode: 'link_noncanonical',
+      riskLevel: 'critical',
+      requiredEvidence: ['artifacts/one-284/link-verifier.md'],
+    });
+  });
+
+  it('verifies canonical issue/comment/document links with autofix preview before export', () => {
+    const verification = verifyCanonicalExportLinks({
+      linksText: [
+        '/issues/ONE-279',
+        'https://paperclip.dev/issues/ONE-283#comment-11',
+        '/ONE/issues/ONE-241#document-plan',
+      ].join('\n'),
+    });
+
+    expect(verification.contract).toBe('settlement-export-link-verifier.v1');
+    expect(verification.invalidCount).toBe(0);
+    expect(verification.changedCount).toBe(2);
+    expect(verification.readyForExport).toBe(true);
+    expect(verification.correctedOutput).toBe([
+      '/ONE/issues/ONE-279',
+      '/ONE/issues/ONE-241#document-plan',
+      '/ONE/issues/ONE-283#comment-11',
+    ].join('\n'));
+  });
+
+  it('resolves anomaly timeline keyboard workflow for timeline navigation and playbook export', () => {
+    expect(resolveAnomalyTimelineShortcut({ key: 't', altKey: true })).toBe('focus_timeline_board');
+    expect(resolveAnomalyTimelineShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_anomaly');
+    expect(resolveAnomalyTimelineShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_anomaly');
+    expect(resolveAnomalyTimelineShortcut({ key: 'r', shiftKey: true, ctrlKey: true })).toBe('open_playbook_composer');
+    expect(resolveAnomalyTimelineShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true })).toBe('validate_export_packet');
   });
 
   it('builds anomaly triage board rows in deterministic order by severityWeight, stalenessMinutes, issueIdentifier, fieldPath', () => {
