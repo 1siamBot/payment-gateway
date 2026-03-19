@@ -28,6 +28,9 @@ import {
   buildSettlementExplainabilityPresetProfile,
 } from './bulk-settlement-preview';
 import {
+  BuildSettlementEvidenceLineageDto,
+} from './dto/build-settlement-evidence-lineage.dto';
+import {
   BuildSettlementBulkActionPreviewDto,
 } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
@@ -39,6 +42,7 @@ import {
   SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
 } from './exception-qa-fixtures';
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
+import { buildSettlementEvidenceLineage, SettlementEvidenceLineageContract } from './evidence-lineage';
 import {
   buildSettlementPublicationReadinessTrend,
   SettlementPublicationReadinessTrend,
@@ -210,6 +214,7 @@ type SettlementBulkActionPreviewContractResponse = {
 type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimulation;
 type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainabilityPresetProfile;
 type SettlementPacketAuditSummaryContractResponse = SettlementPacketAuditSummary;
+type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 
 @Injectable()
@@ -499,6 +504,25 @@ export class SettlementsService {
   ): SettlementPacketAuditSummaryContractResponse {
     try {
       return buildSettlementPacketAuditSummary(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
+  }
+
+  buildSettlementExceptionEvidenceLineage(
+    input: BuildSettlementEvidenceLineageDto,
+  ): SettlementEvidenceLineageContractResponse {
+    try {
+      return buildSettlementEvidenceLineage(input);
     } catch (error) {
       if (
         typeof error === 'object'

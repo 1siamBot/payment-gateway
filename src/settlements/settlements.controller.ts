@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk-action-preview.dto';
+import { BuildSettlementEvidenceLineageDto } from './dto/build-settlement-evidence-lineage.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
@@ -72,6 +73,11 @@ export class SettlementsController {
   @Post('exceptions/packet-audit-summary')
   packetAuditSummary(@Body() body: BuildSettlementPacketAuditSummaryDto) {
     return this.settlements.buildSettlementExceptionPacketAuditSummary(body);
+  }
+
+  @Post('exceptions/evidence-lineage')
+  evidenceLineage(@Body() body: BuildSettlementEvidenceLineageDto) {
+    return this.settlements.buildSettlementExceptionEvidenceLineage(body);
   }
 
   @Post('exceptions/publication-readiness-trend')
