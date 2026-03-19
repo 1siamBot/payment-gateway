@@ -1,0 +1,84 @@
+{
+  "contract": "settlement-bulk-action-simulation.v1",
+  "selectedCount": 2,
+  "outcomeBuckets": {
+    "success_projection": ["se-safe"],
+    "conflict_projection": ["se-stale"],
+    "rollback_recommended": ["se-review"]
+  },
+  "outcomeCounts": {
+    "success_projection": 1,
+    "conflict_projection": 1,
+    "rollback_recommended": 1
+  },
+  "results": [
+    {
+      "exceptionId": "se-review",
+      "outcome": "rollback_recommended",
+      "reasonCodes": ["MIXED_STATUS_SELECTION"],
+      "stepHints": ["Split selections by status and execute each bucket independently."]
+    },
+    {
+      "exceptionId": "se-safe",
+      "outcome": "success_projection",
+      "reasonCodes": [],
+      "stepHints": []
+    },
+    {
+      "exceptionId": "se-stale",
+      "outcome": "conflict_projection",
+      "reasonCodes": ["STALE_VERSION_RISK"],
+      "stepHints": ["Refresh selection data and remove stale or missing exception ids."]
+    }
+  ],
+  "rollbackPlan": {
+    "contract": "settlement-bulk-rollback-plan.v1",
+    "recommended": false,
+    "reasonCodes": ["STALE_VERSION_RISK", "MIXED_STATUS_SELECTION"],
+    "reasonCodeMap": [
+      {
+        "code": "MALFORMED_ROW",
+        "severity": "critical",
+        "description": "Input contains malformed or invalid rows that may corrupt bulk-action outcomes.",
+        "stepHint": "Clean malformed input rows and rerun the simulation before execution."
+      },
+      {
+        "code": "STALE_VERSION_RISK",
+        "severity": "warning",
+        "description": "Selected rows are missing from validated input and may represent stale state.",
+        "stepHint": "Refresh selection data and remove stale or missing exception ids."
+      },
+      {
+        "code": "MIXED_STATUS_SELECTION",
+        "severity": "warning",
+        "description": "Selected rows include multiple workflow statuses and may require operator review.",
+        "stepHint": "Split selections by status and execute each bucket independently."
+      },
+      {
+        "code": "HIGH_DELTA_ANOMALY",
+        "severity": "critical",
+        "description": "Selection includes high/critical delta magnitudes that increase rollback risk.",
+        "stepHint": "Stage high-delta rows into a guarded batch with explicit rollback owner."
+      }
+    ],
+    "stepHints": [
+      "Refresh selection data and remove stale or missing exception ids.",
+      "Split selections by status and execute each bucket independently."
+    ]
+  },
+  "metadata": {
+    "requestedCount": 3,
+    "validCount": 2,
+    "malformedCount": 1,
+    "warningCount": 1,
+    "warningByCode": {
+      "BSP-001_INVALID_ROW_SHAPE": 0,
+      "BSP-002_INVALID_EXCEPTION_ID": 0,
+      "BSP-003_DUPLICATE_EXCEPTION_ID": 0,
+      "BSP-004_INVALID_STATUS": 0,
+      "BSP-005_INVALID_DELTA_AMOUNT": 0,
+      "BSP-006_INVALID_RISK_BUCKET": 0,
+      "BSP-007_SELECTED_ID_NOT_FOUND": 1
+    }
+  }
+}

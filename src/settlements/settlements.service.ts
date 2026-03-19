@@ -13,6 +13,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BULK_SETTLEMENT_PREVIEW_WARNING_HINTS,
+  BulkSettlementActionSimulation,
   BulkSettlementRollbackReasonCode,
   BulkSettlementRollbackReasonSeverity,
   BulkSettlementTriageSnapshot,
@@ -20,6 +21,7 @@ import {
   BulkSettlementPreviewRiskBucket,
   BulkSettlementPreviewWarningCode,
   buildBulkSettlementActionPreviewExport,
+  buildBulkSettlementActionSimulation,
   buildBulkSettlementRollbackRecommendation,
   buildBulkSettlementTriageSnapshot,
 } from './bulk-settlement-preview';
@@ -194,6 +196,8 @@ type SettlementBulkActionPreviewContractResponse = {
     }>;
   };
 };
+
+type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimulation;
 
 @Injectable()
 export class SettlementsService {
@@ -463,6 +467,12 @@ export class SettlementsService {
     input: BuildSettlementBulkActionPreviewDto,
   ): BulkSettlementTriageSnapshot {
     return buildBulkSettlementTriageSnapshot(input);
+  }
+
+  buildSettlementExceptionBulkActionSimulation(
+    input: BuildSettlementBulkActionPreviewDto,
+  ): SettlementBulkActionSimulationContractResponse {
+    return buildBulkSettlementActionSimulation(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {

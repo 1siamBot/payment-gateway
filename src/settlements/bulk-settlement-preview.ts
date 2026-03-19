@@ -143,6 +143,49 @@ export type BulkSettlementRollbackRecommendation = {
   }>;
 };
 
+export const BULK_SETTLEMENT_SIMULATION_OUTCOME_BUCKETS = [
+  'success_projection',
+  'conflict_projection',
+  'rollback_recommended',
+] as const;
+
+export type BulkSettlementSimulationOutcomeBucket =
+  (typeof BULK_SETTLEMENT_SIMULATION_OUTCOME_BUCKETS)[number];
+
+export type BulkSettlementRollbackPlan = {
+  contract: 'settlement-bulk-rollback-plan.v1';
+  recommended: boolean;
+  reasonCodes: BulkSettlementRollbackReasonCode[];
+  reasonCodeMap: Array<{
+    code: BulkSettlementRollbackReasonCode;
+    severity: BulkSettlementRollbackReasonSeverity;
+    description: string;
+    stepHint: string;
+  }>;
+  stepHints: string[];
+};
+
+export type BulkSettlementActionSimulation = {
+  contract: 'settlement-bulk-action-simulation.v1';
+  selectedCount: number;
+  outcomeBuckets: Record<BulkSettlementSimulationOutcomeBucket, string[]>;
+  outcomeCounts: Record<BulkSettlementSimulationOutcomeBucket, number>;
+  results: Array<{
+    exceptionId: string;
+    outcome: BulkSettlementSimulationOutcomeBucket;
+    reasonCodes: BulkSettlementRollbackReasonCode[];
+    stepHints: string[];
+  }>;
+  rollbackPlan: BulkSettlementRollbackPlan;
+  metadata: {
+    requestedCount: number;
+    validCount: number;
+    malformedCount: number;
+    warningCount: number;
+    warningByCode: Record<BulkSettlementPreviewWarningCode, number>;
+  };
+};
+
 export type BulkSettlementTriageSnapshot = {
   contract: 'settlement-bulk-triage-snapshot.v1';
   selectedCount: number;
@@ -262,6 +305,92 @@ export function buildBulkSettlementRollbackRecommendation(
       severity: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].severity,
       description: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].description,
     })),
+  };
+}
+
+export function buildBulkSettlementActionSimulation(
+  input: BulkSettlementPreviewInput,
+): BulkSettlementActionSimulation {
+  const built = buildPreviewArtifacts(input);
+  const recommendation = buildBulkSettlementRollbackRecommendation(input);
+  const selectedRowsById = new Map(built.selectedRows.map((row) => [row.exceptionId, row]));
+  const staleIds = new Set(
+    built.warnings
+      .filter((warning) => warning.code === 'BSP-007_SELECTED_ID_NOT_FOUND')
+      .map((warning) => warning.exceptionId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const hasMalformedRow = built.warnings.some((warning) => warning.code !== 'BSP-007_SELECTED_ID_NOT_FOUND');
+
+  const results = normalizeSelectedIds(input.selectedExceptionIds).map((exceptionId) => {
+    const row = selectedRowsById.get(exceptionId);
+    const reasonCodes = new Set<BulkSettlementRollbackReasonCode>();
+
+    if (!row || staleIds.has(exceptionId)) {
+      reasonCodes.add('STALE_VERSION_RISK');
+    } else {
+      if (row.riskBucket === 'high' || row.riskBucket === 'critical') {
+        reasonCodes.add('HIGH_DELTA_ANOMALY');
+      }
+      if (hasMalformedRow) {
+        reasonCodes.add('MALFORMED_ROW');
+      }
+      if (row.status !== SettlementExceptionStatus.OPEN) {
+        reasonCodes.add('MIXED_STATUS_SELECTION');
+      }
+    }
+
+    const orderedReasonCodes = BULK_SETTLEMENT_ROLLBACK_REASON_CODES.filter((code) => reasonCodes.has(code));
+    const outcome = classifySimulationOutcome(orderedReasonCodes);
+    const stepHints = orderedReasonCodes.map((code) => BULK_SETTLEMENT_ROLLBACK_STEP_HINTS[code]);
+
+    return {
+      exceptionId,
+      outcome,
+      reasonCodes: orderedReasonCodes,
+      stepHints,
+    };
+  });
+
+  const outcomeBuckets = createZeroSimulationOutcomeBuckets();
+  for (const result of results) {
+    outcomeBuckets[result.outcome].push(result.exceptionId);
+  }
+
+  const warningByCode = createZeroWarningCodeMap();
+  for (const warning of built.warnings) {
+    warningByCode[warning.code] += 1;
+  }
+
+  const rollbackPlanStepHints = recommendation.reasonCodes.map((code) => BULK_SETTLEMENT_ROLLBACK_STEP_HINTS[code]);
+
+  return {
+    contract: 'settlement-bulk-action-simulation.v1',
+    selectedCount: built.summary.selection.validCount,
+    outcomeBuckets,
+    outcomeCounts: {
+      success_projection: outcomeBuckets.success_projection.length,
+      conflict_projection: outcomeBuckets.conflict_projection.length,
+      rollback_recommended: outcomeBuckets.rollback_recommended.length,
+    },
+    results,
+    rollbackPlan: {
+      contract: 'settlement-bulk-rollback-plan.v1',
+      recommended: recommendation.classification === 'rollback_recommended',
+      reasonCodes: recommendation.reasonCodes,
+      reasonCodeMap: recommendation.reasonCodeMap.map((reason) => ({
+        ...reason,
+        stepHint: BULK_SETTLEMENT_ROLLBACK_STEP_HINTS[reason.code],
+      })),
+      stepHints: rollbackPlanStepHints,
+    },
+    metadata: {
+      requestedCount: built.summary.selection.requestedCount,
+      validCount: built.summary.selection.validCount,
+      malformedCount: built.summary.selection.malformedCount,
+      warningCount: built.warnings.length,
+      warningByCode,
+    },
   };
 }
 
@@ -539,11 +668,38 @@ function createZeroRollbackReasonMap(): Record<BulkSettlementRollbackReasonCode,
   };
 }
 
+function createZeroSimulationOutcomeBuckets(): Record<BulkSettlementSimulationOutcomeBucket, string[]> {
+  return {
+    success_projection: [],
+    conflict_projection: [],
+    rollback_recommended: [],
+  };
+}
+
 function createZeroSnapshotSeverityBuckets(): Record<BulkSettlementTriageSnapshotSeverityBucket, number> {
   return {
     warning: 0,
     critical: 0,
   };
+}
+
+const BULK_SETTLEMENT_ROLLBACK_STEP_HINTS: Record<BulkSettlementRollbackReasonCode, string> = {
+  MALFORMED_ROW: 'Clean malformed input rows and rerun the simulation before execution.',
+  STALE_VERSION_RISK: 'Refresh selection data and remove stale or missing exception ids.',
+  MIXED_STATUS_SELECTION: 'Split selections by status and execute each bucket independently.',
+  HIGH_DELTA_ANOMALY: 'Stage high-delta rows into a guarded batch with explicit rollback owner.',
+};
+
+function classifySimulationOutcome(
+  reasonCodes: BulkSettlementRollbackReasonCode[],
+): BulkSettlementSimulationOutcomeBucket {
+  if (!reasonCodes.length) {
+    return 'success_projection';
+  }
+  if (reasonCodes.includes('STALE_VERSION_RISK')) {
+    return 'conflict_projection';
+  }
+  return 'rollback_recommended';
 }
 
 function buildDeterministicGeneratedAt(input: {
