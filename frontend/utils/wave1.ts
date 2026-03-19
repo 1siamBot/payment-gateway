@@ -683,6 +683,66 @@ export type RemediationPlanCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type RemediationPlanDiffShortcut =
+  | 'focus_diff_inspector'
+  | 'next_diff_row'
+  | 'prev_diff_row'
+  | 'open_export_composer'
+  | 'run_deterministic_validation_pass';
+
+export type RemediationPlanDiffMachineFields = {
+  planFingerprintBefore: string;
+  planFingerprintAfter: string;
+  changedActions: string[];
+  newBlocks: string[];
+  resolvedBlocks: string[];
+  evidenceDelta: string[];
+  nextOwner: string;
+  readyForQA: boolean;
+};
+
+export type RemediationPlanDiffRow = {
+  id: string;
+  issueIdentifier: string;
+  sectionKey: string;
+  sectionWeight: number;
+  rowOrder: number;
+  title: string;
+  orderingKey: [number, string, number, string, string];
+  machineFields: RemediationPlanDiffMachineFields;
+  canonicalLinkViolations: string[];
+};
+
+export type RemediationPlanDiffInspector = {
+  contract: 'settlement-remediation-plan-diff-inspector.v1';
+  rows: RemediationPlanDiffRow[];
+  activeDiffRowId: string;
+  readyForQaCount: number;
+  blockedCount: number;
+};
+
+export type RemediationPlanEvidenceExportComposer = {
+  contract: 'settlement-remediation-plan-evidence-export-composer.v1';
+  items: Array<{
+    id: string;
+    issueIdentifier: string;
+    sectionKey: string;
+    orderingKey: [number, string, number, string, string];
+    machineFields: RemediationPlanDiffMachineFields;
+    canonicalLinkViolations: string[];
+  }>;
+  markdown: string;
+};
+
+export type RemediationPlanDiffCanonicalAutofixPreview = {
+  contract: 'settlement-remediation-plan-diff-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -5013,6 +5073,273 @@ export function buildRemediationPlanCanonicalAutofixPreview(input: {
   const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
   return {
     contract: 'settlement-remediation-plan-canonical-autofix-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+  };
+}
+
+function parseRemediationPlanDiffRow(row: unknown, index: number): RemediationPlanDiffRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizeRemediationPlanIdentifier(payload.issueIdentifier, index);
+  const id = normalizeOptional(typeof payload.id === 'string' ? payload.id : '') ?? `remediation-plan-diff-${index + 1}`;
+  const sectionKey = normalizeOptional(typeof payload.sectionKey === 'string' ? payload.sectionKey : '') ?? 'general';
+  const sectionWeight = normalizeRemediationPlanWeight(payload.sectionWeight, 5);
+  const rowOrder = Math.max(1, Math.floor(normalizeRemediationPlanWeight(
+    payload.rowOrder ?? payload.itemOrder,
+    index + 1,
+  )));
+  const title = normalizeOptional(typeof payload.title === 'string' ? payload.title : '')
+    ?? `${issueIdentifier} remediation diff row`;
+  const nextOwner = normalizeOptional(typeof payload.nextOwner === 'string' ? payload.nextOwner : '') ?? 'unassigned';
+  const planFingerprintBefore = normalizeOptional(
+    typeof payload.planFingerprintBefore === 'string' ? payload.planFingerprintBefore : '',
+  ) ?? `${issueIdentifier.toLowerCase()}-before-${rowOrder}`;
+  const planFingerprintAfter = normalizeOptional(
+    typeof payload.planFingerprintAfter === 'string' ? payload.planFingerprintAfter : '',
+  ) ?? `${issueIdentifier.toLowerCase()}-after-${rowOrder}`;
+  const changedActions = Array.from(
+    new Set(
+      (Array.isArray(payload.changedActions) ? payload.changedActions : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const newBlocks = Array.from(
+    new Set(
+      (Array.isArray(payload.newBlocks) ? payload.newBlocks : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const resolvedBlocks = Array.from(
+    new Set(
+      (Array.isArray(payload.resolvedBlocks) ? payload.resolvedBlocks : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const evidenceDelta = Array.from(
+    new Set(
+      (Array.isArray(payload.evidenceDelta) ? payload.evidenceDelta : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+
+  const canonicalCandidates = [
+    ...(Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : []),
+    ...(Array.isArray(payload.dependencyLinks) ? payload.dependencyLinks : []),
+    payload.issueLink,
+    payload.documentLink,
+    payload.commentLink,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  const canonicalLinkViolations = canonicalCandidates
+    .map((link) => {
+      const normalized = canonicalizePaperclipIssueLink(link);
+      if (!normalized) {
+        return link;
+      }
+      return normalized === link ? '' : link;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    id,
+    issueIdentifier,
+    sectionKey,
+    sectionWeight,
+    rowOrder,
+    title,
+    orderingKey: [sectionWeight, sectionKey, rowOrder, issueIdentifier, planFingerprintAfter],
+    machineFields: {
+      planFingerprintBefore,
+      planFingerprintAfter,
+      changedActions,
+      newBlocks,
+      resolvedBlocks,
+      evidenceDelta,
+      nextOwner,
+      readyForQA: changedActions.length > 0
+        && newBlocks.length === 0
+        && evidenceDelta.length === 0
+        && nextOwner !== 'unassigned'
+        && canonicalLinkViolations.length === 0,
+    },
+    canonicalLinkViolations,
+  };
+}
+
+export function buildRemediationPlanDiffInspector(input: {
+  rows: unknown[];
+  activeDiffRowId: string;
+}): RemediationPlanDiffInspector {
+  const rows = input.rows
+    .map((row, index) => parseRemediationPlanDiffRow(row, index))
+    .filter((row): row is RemediationPlanDiffRow => Boolean(row))
+    .sort((left, right) => (
+      left.sectionWeight - right.sectionWeight
+      || left.sectionKey.localeCompare(right.sectionKey)
+      || left.rowOrder - right.rowOrder
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.machineFields.planFingerprintAfter.localeCompare(right.machineFields.planFingerprintAfter)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeDiffRowId = rowIds.has(input.activeDiffRowId)
+    ? input.activeDiffRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-plan-diff-inspector.v1',
+    rows,
+    activeDiffRowId,
+    readyForQaCount: rows.filter((row) => row.machineFields.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForQA).length,
+  };
+}
+
+export function moveRemediationPlanDiffSelection(input: {
+  rows: RemediationPlanDiffRow[];
+  activeDiffRowId: string;
+  direction: 'next_diff_row' | 'prev_diff_row';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeDiffRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_diff_row') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationPlanDiffShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationPlanDiffShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'd') {
+    return 'focus_diff_inspector';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_diff_row';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_diff_row';
+  }
+  if (normalizedKey === 'e' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_export_composer';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_validation_pass';
+  }
+  return null;
+}
+
+function buildRemediationPlanEvidenceExportMarkdown(rows: RemediationPlanDiffRow[]): string {
+  const lines = [
+    '# Remediation Plan Diff Evidence Export',
+    '',
+    '| Issue | planFingerprintBefore | planFingerprintAfter | changedActions[] | newBlocks[] | resolvedBlocks[] | evidenceDelta[] | nextOwner | readyForQA |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.machineFields.planFingerprintBefore,
+      '|',
+      row.machineFields.planFingerprintAfter,
+      '|',
+      row.machineFields.changedActions.join(', ') || 'none',
+      '|',
+      row.machineFields.newBlocks.join(', ') || 'none',
+      '|',
+      row.machineFields.resolvedBlocks.join(', ') || 'none',
+      '|',
+      row.machineFields.evidenceDelta.join(', ') || 'none',
+      '|',
+      row.machineFields.nextOwner,
+      '|',
+      row.machineFields.readyForQA ? 'yes' : 'no',
+      '|',
+    ].join(' '));
+  }
+  return lines.join('\n');
+}
+
+export function buildRemediationPlanEvidenceExportComposer(input: {
+  rows: RemediationPlanDiffRow[];
+}): RemediationPlanEvidenceExportComposer {
+  const items = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    sectionKey: row.sectionKey,
+    orderingKey: [...row.orderingKey] as [number, string, number, string, string],
+    machineFields: {
+      planFingerprintBefore: row.machineFields.planFingerprintBefore,
+      planFingerprintAfter: row.machineFields.planFingerprintAfter,
+      changedActions: [...row.machineFields.changedActions],
+      newBlocks: [...row.machineFields.newBlocks],
+      resolvedBlocks: [...row.machineFields.resolvedBlocks],
+      evidenceDelta: [...row.machineFields.evidenceDelta],
+      nextOwner: row.machineFields.nextOwner,
+      readyForQA: row.machineFields.readyForQA,
+    },
+    canonicalLinkViolations: [...row.canonicalLinkViolations],
+  }));
+  return {
+    contract: 'settlement-remediation-plan-evidence-export-composer.v1',
+    items,
+    markdown: buildRemediationPlanEvidenceExportMarkdown(input.rows),
+  };
+}
+
+export function buildRemediationPlanDiffCanonicalAutofixPreview(input: {
+  markdown: string;
+}): RemediationPlanDiffCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `remediation-plan-diff-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-remediation-plan-diff-canonical-autofix-preview.v1',
     rows,
     patchedMarkdown,
     changedCount,
