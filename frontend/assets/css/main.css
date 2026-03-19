@@ -259,6 +259,81 @@ button.danger {
   color: var(--critical);
 }
 
+.operations-layout {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1.3fr 1fr;
+}
+
+.detail-grid {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.6rem 0 1rem;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.58rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--line);
+  background: #eef2f7;
+  color: #1e293b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.status-pill.ok {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.status-pill.warn {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+
+.status-pill.danger {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.timeline-list li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 0.65rem;
+}
+
+.timeline-list li p {
+  margin: 0.3rem 0 0;
+}
+
+.timeline-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+@media (max-width: 960px) {
+  .operations-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .state-unknown {
   color: var(--muted);
 }

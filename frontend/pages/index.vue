@@ -4637,6 +4637,7 @@ onMounted(() => {
       <p>Onboarding, routing controls, live provider health, and reconciliation/dispute operations.</p>
       <div class="inline-actions">
         <NuxtLink class="button-link" to="/payment-flow">Open Multi-Flow Payment Workspace</NuxtLink>
+        <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
       </div>
       <div class="auth-grid">
         <label>

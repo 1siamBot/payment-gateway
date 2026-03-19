@@ -24,6 +24,12 @@ const links = [
     to: '/payment-flow/fixture-harness?scenario=success',
     cta: 'Open Fixture Harness',
   },
+  {
+    title: 'Payment Operations Dashboard',
+    description: 'History, detail, and deterministic timeline view with fallback fixture modes.',
+    to: '/payment-operations-dashboard',
+    cta: 'Open Dashboard',
+  },
 ];
 </script>
 
