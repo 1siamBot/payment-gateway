@@ -70,8 +70,15 @@ import {
   moveReviewQueueLedgerSelection,
   resolveReviewQueueLedgerShortcut,
   buildReviewQueueHandoffPacketDraftFromLedgerRow,
+  buildLineageReplayNavigator,
   validateReviewQueueHandoffPacketDraft,
+  validateQaEvidencePacketComposerDraft,
+  getDefaultQaEvidencePacketComposerDraft,
   resetReviewQueueHandoffPacketDraftSafe,
+  filterLineageReplayNavigatorRows,
+  moveLineageReplayNavigatorSelection,
+  resolveLineageReplayNavigatorShortcut,
+  resetQaEvidencePacketComposerDraftSafe,
   buildEvidenceDiffRail,
   moveEvidenceDiffRailSelection,
   resolveEvidenceDiffRailShortcut,
@@ -707,6 +714,143 @@ describe('frontend wave1 helpers', () => {
     expect(full.didFullReset).toBe(true);
     expect(full.activeFilter).toBe('all');
     expect(full.activeRowId).toBe('');
+  });
+
+  it('builds lineage replay navigator rows in deterministic tuple order with stable window metadata', () => {
+    const navigator = buildLineageReplayNavigator({
+      rows: [
+        {
+          id: 'node-3',
+          lineageDepth: 1,
+          sourceTypePriority: 2,
+          sourceIssueId: 'ONE-251',
+          artifactPath: 'artifacts/one-251/evidence.md',
+        },
+        {
+          id: 'node-2',
+          lineageDepth: 0,
+          sourceTypePriority: 2,
+          sourceIssueId: 'ONE-250',
+          artifactPath: '',
+        },
+        {
+          id: 'node-1',
+          lineageDepth: 0,
+          sourceTypePriority: 1,
+          sourceIssueId: 'ONE-253',
+          artifactPath: 'artifacts/one-253/lineage.json',
+        },
+      ],
+      cursorVersion: 'cursor-v9',
+      windowStart: '2026-03-19T00:15:00Z',
+      windowEnd: '2026-03-19T04:00:00Z',
+      activeRowId: '',
+      activeFilter: 'all',
+    });
+
+    expect(navigator.contract).toBe('settlement-lineage-replay-navigator.v1');
+    expect(navigator.rows.map((row) => row.id)).toEqual(['node-1', 'node-2', 'node-3']);
+    expect(navigator.cursorVersion).toBe('cursor-v9');
+    expect(navigator.windowStart).toBe('2026-03-19T00:15:00.000Z');
+    expect(navigator.windowEnd).toBe('2026-03-19T04:00:00.000Z');
+    expect(filterLineageReplayNavigatorRows(navigator.rows, 'with_artifact').map((row) => row.id))
+      .toEqual(['node-1', 'node-3']);
+    expect(filterLineageReplayNavigatorRows(navigator.rows, 'without_artifact').map((row) => row.id))
+      .toEqual(['node-2']);
+  });
+
+  it('supports lineage navigator keyboard workflow for focus, next, previous, and packet validate', () => {
+    expect(resolveLineageReplayNavigatorShortcut({ key: 'l', altKey: true })).toBe('focus_lineage_navigator');
+    expect(resolveLineageReplayNavigatorShortcut({ key: 'n', altKey: true })).toBe('next_row');
+    expect(resolveLineageReplayNavigatorShortcut({ key: 'p', altKey: true })).toBe('prev_row');
+    expect(resolveLineageReplayNavigatorShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_evidence_packet');
+
+    const navigator = buildLineageReplayNavigator({
+      rows: [
+        {
+          id: 'node-a',
+          lineageDepth: 0,
+          sourceTypePriority: 1,
+          sourceIssueId: 'ONE-253',
+          artifactPath: '',
+        },
+        {
+          id: 'node-b',
+          lineageDepth: 1,
+          sourceTypePriority: 1,
+          sourceIssueId: 'ONE-251',
+          artifactPath: 'artifacts/one-251/evidence.md',
+        },
+      ],
+      cursorVersion: 'cursor-v1',
+      windowStart: '2026-03-19T00:00:00Z',
+      windowEnd: '2026-03-19T01:00:00Z',
+      activeRowId: 'node-a',
+      activeFilter: 'all',
+    });
+
+    expect(moveLineageReplayNavigatorSelection({
+      rows: navigator.rows,
+      activeRowId: 'node-a',
+      direction: 'next',
+    })).toBe('node-b');
+    expect(moveLineageReplayNavigatorSelection({
+      rows: navigator.rows,
+      activeRowId: 'node-b',
+      direction: 'prev',
+    })).toBe('node-a');
+  });
+
+  it('validates QA evidence packet composer fields and preserves lineage state on safe draft reset', () => {
+    const incomplete = validateQaEvidencePacketComposerDraft(getDefaultQaEvidencePacketComposerDraft());
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'blockerOwner',
+      'eta',
+      'testCommandSummary',
+      'artifactPaths',
+      'dependencyIssueLinks',
+    ]);
+
+    const complete = validateQaEvidencePacketComposerDraft({
+      branch: 'frontend/one-254-lineage-packet',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      mode: 'no_pr',
+      prLink: '',
+      blockerOwner: 'GitHub Admin / DevOps',
+      eta: '2026-03-20T18:00:00.000Z',
+      testCommandSummary: 'npm run test -- frontend.wave1.spec.ts',
+      artifactPathsText: 'artifacts/one-254/test-summary.txt\nartifacts/one-254/lineage-sample.json',
+      dependencyIssueLinksText: '/ONE/issues/ONE-253\n/ONE/issues/ONE-250\n/ONE/issues/ONE-251\n/ONE/issues/ONE-241',
+    });
+    expect(complete.isComplete).toBe(true);
+    expect(complete.errors).toEqual([]);
+    expect(complete.missingFields).toEqual([]);
+
+    const safeReset = resetQaEvidencePacketComposerDraftSafe({
+      activeLineageFilter: 'with_artifact',
+      activeReplayRowId: 'node-b',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.activeLineageFilter).toBe('with_artifact');
+    expect(safeReset.activeReplayRowId).toBe('node-b');
+    expect(safeReset.message).toContain('preserved');
+
+    const fullReset = resetQaEvidencePacketComposerDraftSafe({
+      activeLineageFilter: 'with_artifact',
+      activeReplayRowId: 'node-b',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.activeLineageFilter).toBe('all');
+    expect(fullReset.activeReplayRowId).toBe('');
   });
 
   it('builds deterministic evidence diff rail ordering by sectionPriority/fieldKey/id', () => {

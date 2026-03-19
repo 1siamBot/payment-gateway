@@ -275,6 +275,53 @@ export type ReviewQueueHandoffPacketValidation = {
   dependentIssueLinks: string[];
 };
 
+export type LineageReplayNavigatorFilterKey = 'all' | 'with_artifact' | 'without_artifact';
+export type LineageReplayNavigatorShortcut =
+  | 'focus_lineage_navigator'
+  | 'next_row'
+  | 'prev_row'
+  | 'validate_evidence_packet';
+
+export type LineageReplayNavigatorRow = {
+  id: string;
+  lineageDepth: number;
+  sourceTypePriority: number;
+  sourceIssueId: string;
+  artifactPath: string;
+};
+
+export type LineageReplayNavigator = {
+  contract: 'settlement-lineage-replay-navigator.v1';
+  cursorVersion: string;
+  windowStart: string;
+  windowEnd: string;
+  rows: LineageReplayNavigatorRow[];
+  activeFilter: LineageReplayNavigatorFilterKey;
+  activeRowId: string;
+};
+
+export type QaEvidencePacketComposerMode = 'pr' | 'no_pr';
+
+export type QaEvidencePacketComposerDraft = {
+  branch: string;
+  fullSha: string;
+  mode: QaEvidencePacketComposerMode;
+  prLink: string;
+  blockerOwner: string;
+  eta: string;
+  testCommandSummary: string;
+  artifactPathsText: string;
+  dependencyIssueLinksText: string;
+};
+
+export type QaEvidencePacketComposerValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  artifactPaths: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type EvidenceDiffRailFilterKey = 'all' | 'changed' | 'unchanged';
 export type EvidenceDiffRailShortcut =
   | 'next_row'
@@ -2194,6 +2241,243 @@ export function resetReviewQueueHandoffPacketDraftSafe(input: {
     activeRowId: input.activeRowId,
     didFullReset: false,
     message: 'Handoff packet draft cleared. Queue filter and active selection preserved.',
+  };
+}
+
+const QA_EVIDENCE_SHA_PLACEHOLDER = '0000000000000000000000000000000000000000';
+const LINEAGE_REPLAY_FALLBACK_WINDOW_START = '2026-03-19T00:00:00.000Z';
+const LINEAGE_REPLAY_FALLBACK_WINDOW_END = '2026-03-19T23:59:59.000Z';
+
+function parseLineageReplayNavigatorRow(raw: unknown): LineageReplayNavigatorRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : String(row.id ?? ''));
+  const sourceIssueId = normalizeOptional(
+    typeof row.sourceIssueId === 'string'
+      ? row.sourceIssueId
+      : String(row.sourceIssueId ?? ''),
+  );
+  if (!id || !sourceIssueId) {
+    return null;
+  }
+  const lineageDepthRaw = parseFiniteNumber(row.lineageDepth);
+  const sourceTypePriorityRaw = parseFiniteNumber(row.sourceTypePriority);
+  if (lineageDepthRaw === null || sourceTypePriorityRaw === null) {
+    return null;
+  }
+  const lineageDepth = Math.max(0, Math.trunc(lineageDepthRaw));
+  const sourceTypePriority = Math.max(0, Math.trunc(sourceTypePriorityRaw));
+  const artifactPath = normalizeOptional(
+    typeof row.artifactPath === 'string'
+      ? row.artifactPath
+      : String(row.artifactPath ?? ''),
+  ) ?? '';
+  return {
+    id,
+    lineageDepth,
+    sourceTypePriority,
+    sourceIssueId,
+    artifactPath,
+  };
+}
+
+export function filterLineageReplayNavigatorRows(
+  rows: LineageReplayNavigatorRow[],
+  filter: LineageReplayNavigatorFilterKey,
+): LineageReplayNavigatorRow[] {
+  if (filter === 'all') {
+    return [...rows];
+  }
+  if (filter === 'with_artifact') {
+    return rows.filter((row) => row.artifactPath.length > 0);
+  }
+  return rows.filter((row) => row.artifactPath.length === 0);
+}
+
+export function buildLineageReplayNavigator(input: {
+  rows: unknown[];
+  cursorVersion: string;
+  windowStart: string;
+  windowEnd: string;
+  activeRowId: string;
+  activeFilter?: LineageReplayNavigatorFilterKey;
+}): LineageReplayNavigator {
+  const activeFilter = input.activeFilter ?? 'all';
+  const rows = input.rows
+    .map((row) => parseLineageReplayNavigatorRow(row))
+    .filter((row): row is LineageReplayNavigatorRow => Boolean(row))
+    .sort((left, right) => (
+      left.lineageDepth - right.lineageDepth
+      || left.sourceTypePriority - right.sourceTypePriority
+      || left.sourceIssueId.localeCompare(right.sourceIssueId)
+      || left.artifactPath.localeCompare(right.artifactPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const filteredRows = filterLineageReplayNavigatorRows(rows, activeFilter);
+  const rowIdSet = new Set(filteredRows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (filteredRows[0]?.id ?? '');
+  return {
+    contract: 'settlement-lineage-replay-navigator.v1',
+    cursorVersion: normalizeOptional(input.cursorVersion) ?? 'cursor-v1',
+    windowStart: resolveDateString(input.windowStart, LINEAGE_REPLAY_FALLBACK_WINDOW_START),
+    windowEnd: resolveDateString(input.windowEnd, LINEAGE_REPLAY_FALLBACK_WINDOW_END),
+    rows: filteredRows,
+    activeFilter,
+    activeRowId,
+  };
+}
+
+export function moveLineageReplayNavigatorSelection(input: {
+  rows: LineageReplayNavigatorRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveLineageReplayNavigatorShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): LineageReplayNavigatorShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'l') {
+    return 'focus_lineage_navigator';
+  }
+  if (input.altKey && normalizedKey === 'n') {
+    return 'next_row';
+  }
+  if (input.altKey && normalizedKey === 'p') {
+    return 'prev_row';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_evidence_packet';
+  }
+  return null;
+}
+
+export function getDefaultQaEvidencePacketComposerDraft(): QaEvidencePacketComposerDraft {
+  return {
+    branch: '',
+    fullSha: QA_EVIDENCE_SHA_PLACEHOLDER,
+    mode: 'no_pr',
+    prLink: '',
+    blockerOwner: '',
+    eta: '',
+    testCommandSummary: '',
+    artifactPathsText: '',
+    dependencyIssueLinksText: '',
+  };
+}
+
+export function validateQaEvidencePacketComposerDraft(
+  draft: QaEvidencePacketComposerDraft,
+): QaEvidencePacketComposerValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const prLink = draft.prLink.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const eta = draft.eta.trim();
+  const testCommandSummary = draft.testCommandSummary.trim();
+  const artifactPaths = normalizeMultilineEntries(draft.artifactPathsText);
+  const dependencyIssueLinks = normalizeDependencyIssueLinks(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === QA_EVIDENCE_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before completion.');
+  }
+
+  if (draft.mode === 'pr') {
+    if (!prLink) {
+      missingFields.push('prLink');
+    } else if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/i.test(prLink)) {
+      errors.push('PR link must be a GitHub pull request URL.');
+    }
+  } else {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!eta) {
+      missingFields.push('eta');
+    } else if (!Number.isFinite(new Date(eta).getTime())) {
+      errors.push('ETA must be a valid date-time string.');
+    }
+  }
+
+  if (!testCommandSummary) {
+    missingFields.push('testCommandSummary');
+  }
+  if (artifactPaths.length === 0) {
+    missingFields.push('artifactPaths');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!isValidIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    artifactPaths,
+    dependencyIssueLinks,
+  };
+}
+
+export function resetQaEvidencePacketComposerDraftSafe(input: {
+  activeLineageFilter: LineageReplayNavigatorFilterKey;
+  activeReplayRowId: string;
+  confirmFullReset: boolean;
+}): {
+  draft: QaEvidencePacketComposerDraft;
+  activeLineageFilter: LineageReplayNavigatorFilterKey;
+  activeReplayRowId: string;
+  didFullReset: boolean;
+  message: string;
+} {
+  if (input.confirmFullReset) {
+    return {
+      draft: getDefaultQaEvidencePacketComposerDraft(),
+      activeLineageFilter: 'all',
+      activeReplayRowId: '',
+      didFullReset: true,
+      message: 'Evidence packet draft cleared. Lineage filter and active replay row reset to default.',
+    };
+  }
+  return {
+    draft: getDefaultQaEvidencePacketComposerDraft(),
+    activeLineageFilter: input.activeLineageFilter,
+    activeReplayRowId: input.activeReplayRowId,
+    didFullReset: false,
+    message: 'Evidence packet draft cleared. Lineage filter and active replay row preserved.',
   };
 }
 
