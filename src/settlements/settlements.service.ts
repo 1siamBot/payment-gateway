@@ -221,15 +221,34 @@ type DailySettlementSummary = {
   merchants: MerchantReconciliationSummary[];
 };
 
+type ExceptionSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+type ExceptionActionState = {
+  acknowledge: {
+    enabled: boolean;
+    reason: string;
+  };
+  assignOwner: {
+    enabled: boolean;
+    reason: string;
+  };
+  markResolved: {
+    enabled: boolean;
+    reason: string;
+  };
+};
+
 type ExceptionListItem = {
   id: string;
   merchantId: string;
   providerName: string;
   windowDate: string;
+  severity: ExceptionSeverity;
   ledgerTotal: number;
   providerTotal: number;
   deltaAmount: number;
   status: SettlementExceptionStatus;
+  actionState: ExceptionActionState;
   openedReason: string;
   openedNote: string | null;
   latestOperatorReason: string | null;
@@ -259,6 +278,13 @@ type ExceptionActionIdempotencyEnvelope = {
   status: 'pending' | 'completed';
   fingerprint: string;
   response?: ExceptionDetail;
+};
+
+const EXCEPTION_SEVERITY_WEIGHT: Record<ExceptionSeverity, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
 };
 
 type ExceptionActionConflictReason =
@@ -623,11 +649,12 @@ export class SettlementsService {
         : {}),
     });
 
-    const hasNext = rows.length > take;
-    const page = hasNext ? rows.slice(0, take) : rows;
+    const ordered = this.sortExceptionRowsDeterministic(rows.map((item) => this.toExceptionListItem(item)));
+    const hasNext = ordered.length > take;
+    const page = hasNext ? ordered.slice(0, take) : ordered;
 
     return {
-      data: page.map((item) => this.toExceptionListItem(item)),
+      data: page,
       pageInfo: {
         take,
         hasNext,
@@ -1451,15 +1478,18 @@ export class SettlementsService {
     createdAt: Date;
     updatedAt: Date;
   }): ExceptionListItem {
+    const deltaAmount = this.decimalToNumber(exception.deltaAmount);
     return {
       id: exception.id,
       merchantId: exception.merchantId,
       providerName: exception.providerName,
       windowDate: exception.windowDate.toISOString().slice(0, 10),
+      severity: this.resolveExceptionSeverity(deltaAmount),
       ledgerTotal: this.decimalToNumber(exception.ledgerTotal),
       providerTotal: this.decimalToNumber(exception.providerTotal),
-      deltaAmount: this.decimalToNumber(exception.deltaAmount),
+      deltaAmount,
       status: exception.status,
+      actionState: this.resolveExceptionActionState(exception.status),
       openedReason: exception.openedReason,
       openedNote: exception.openedNote,
       latestOperatorReason: exception.latestOperatorReason,
@@ -1597,6 +1627,50 @@ export class SettlementsService {
 
   private normalizeAmount(amount: number): number {
     return Number(amount.toFixed(2));
+  }
+
+  private resolveExceptionSeverity(deltaAmount: number): ExceptionSeverity {
+    const magnitude = Math.abs(deltaAmount);
+    if (magnitude >= 1000) return 'critical';
+    if (magnitude >= 300) return 'high';
+    if (magnitude >= 100) return 'medium';
+    return 'low';
+  }
+
+  private resolveExceptionActionState(status: SettlementExceptionStatus): ExceptionActionState {
+    const enabled = status === SettlementExceptionStatus.OPEN || status === SettlementExceptionStatus.INVESTIGATING;
+    const reason = enabled ? 'available' : 'terminal_status';
+
+    return {
+      acknowledge: {
+        enabled,
+        reason,
+      },
+      assignOwner: {
+        enabled,
+        reason,
+      },
+      markResolved: {
+        enabled,
+        reason,
+      },
+    };
+  }
+
+  private sortExceptionRowsDeterministic(rows: ExceptionListItem[]): ExceptionListItem[] {
+    return [...rows].sort((left, right) => {
+      const bySeverity = EXCEPTION_SEVERITY_WEIGHT[right.severity] - EXCEPTION_SEVERITY_WEIGHT[left.severity];
+      if (bySeverity !== 0) {
+        return bySeverity;
+      }
+
+      const byCreatedAt = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      if (byCreatedAt !== 0) {
+        return byCreatedAt;
+      }
+
+      return left.id.localeCompare(right.id);
+    });
   }
 
   private decimalToNumber(value: Prisma.Decimal | number): number {
