@@ -399,6 +399,29 @@ button.danger {
   margin: 0.4rem 0 0.75rem;
 }
 
+.matrix-table-wrap,
+.queue-table-wrap {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  overflow: auto;
+  background: #ffffff;
+  margin: 0.4rem 0 0.75rem;
+}
+
+.matrix-table,
+.queue-table {
+  min-width: 920px;
+}
+
+.queue-table-wrap:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.queue-row-active {
+  background: #dbeafe;
+}
+
 .bulk-diff-table {
   min-width: 920px;
 }

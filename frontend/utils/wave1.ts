@@ -127,6 +127,10 @@ export type ExceptionSimulationOutcomeBucketKey =
   | 'success_projection'
   | 'conflict_projection'
   | 'rollback_recommended';
+export type ScenarioCompareGroupKey =
+  | ExceptionSimulationOutcomeBucketKey
+  | 'unknown_input';
+export type ScenarioCompareMatrixFilterKey = 'all' | ScenarioCompareGroupKey;
 export type ExceptionRollbackPlanReasonCode =
   | 'MALFORMED_ROW'
   | 'STALE_VERSION_RISK'
@@ -174,6 +178,57 @@ export type ExceptionSimulationOutcomePanel = {
   };
 };
 
+export type ScenarioCompareMatrixColumnKey =
+  | 'mismatch_count'
+  | 'current_amount'
+  | 'incoming_amount'
+  | 'version_gap';
+
+export type ScenarioCompareMatrixRow = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  group: ScenarioCompareGroupKey;
+  reasonTags: ExceptionRollbackPlanReasonCode[];
+  recommendedActionHint: string;
+  columnValues: Record<ScenarioCompareMatrixColumnKey, string | number>;
+};
+
+export type ScenarioCompareMatrixGroup = {
+  key: ScenarioCompareGroupKey;
+  label: string;
+  description: string;
+  rowCount: number;
+  rows: ScenarioCompareMatrixRow[];
+};
+
+export type ScenarioCompareMatrix = {
+  contract: 'settlement-scenario-compare-matrix.v1';
+  selectedCount: number;
+  validCount: number;
+  malformedCount: number;
+  columns: ScenarioCompareMatrixColumnKey[];
+  groups: ScenarioCompareMatrixGroup[];
+  rows: ScenarioCompareMatrixRow[];
+};
+
+export type OperatorDecisionQueueItem = {
+  id: string;
+  rowId: string;
+  merchantId: string;
+  provider: string;
+  group: ScenarioCompareGroupKey;
+  reasonTags: ExceptionRollbackPlanReasonCode[];
+  recommendedActionHint: string;
+};
+
+export type OperatorDecisionQueue = {
+  contract: 'settlement-operator-decision-queue.v1';
+  stagedCount: number;
+  missingRowCount: number;
+  items: OperatorDecisionQueueItem[];
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -196,6 +251,18 @@ const SIMULATION_BUCKET_ORDER: ExceptionSimulationOutcomeBucketKey[] = [
   'success_projection',
   'conflict_projection',
   'rollback_recommended',
+];
+const SCENARIO_GROUP_ORDER: ScenarioCompareGroupKey[] = [
+  'success_projection',
+  'conflict_projection',
+  'rollback_recommended',
+  'unknown_input',
+];
+const SCENARIO_MATRIX_COLUMN_ORDER: ScenarioCompareMatrixColumnKey[] = [
+  'mismatch_count',
+  'current_amount',
+  'incoming_amount',
+  'version_gap',
 ];
 const ROLLBACK_REASON_CODE_ORDER: ExceptionRollbackPlanReasonCode[] = [
   'MALFORMED_ROW',
@@ -518,6 +585,230 @@ function resolveSimulationBucket(reasonCodes: ExceptionRollbackPlanReasonCode[])
     return 'conflict_projection';
   }
   return 'success_projection';
+}
+
+function resolveScenarioGroup(
+  reasonCodes: ExceptionRollbackPlanReasonCode[],
+): ScenarioCompareGroupKey {
+  if (reasonCodes.includes('HIGH_DELTA_ANOMALY')) {
+    return 'rollback_recommended';
+  }
+  if (reasonCodes.length > 0) {
+    return 'conflict_projection';
+  }
+  return 'success_projection';
+}
+
+function resolveScenarioGroupMetadata(group: ScenarioCompareGroupKey): {
+  label: string;
+  description: string;
+  recommendedActionHint: string;
+} {
+  if (group === 'success_projection') {
+    return {
+      label: 'success_projection',
+      description: 'Low-risk rows with deterministic forward action.',
+      recommendedActionHint: 'Proceed with queue submit after one final operator check.',
+    };
+  }
+  if (group === 'conflict_projection') {
+    return {
+      label: 'conflict_projection',
+      description: 'Rows with stale-version or status-shift conflicts.',
+      recommendedActionHint: 'Split by reason tag and re-run compare before submit.',
+    };
+  }
+  if (group === 'rollback_recommended') {
+    return {
+      label: 'rollback_recommended',
+      description: 'Rows requiring rollback-first handling due to high risk.',
+      recommendedActionHint: 'Run rollback plan first, then re-stage clean rows.',
+    };
+  }
+  return {
+    label: 'unknown_input',
+    description: 'Rows with malformed payload or missing deterministic keys.',
+    recommendedActionHint: 'Repair fixture input, then re-run compare.',
+  };
+}
+
+export function buildScenarioCompareMatrix(selectedRows: unknown[]): ScenarioCompareMatrix {
+  const normalizedRows = selectedRows
+    .map((row) => parseExceptionBulkPreviewRow(row))
+    .filter((row): row is ExceptionBulkPreviewRow => Boolean(row))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const rows: ScenarioCompareMatrixRow[] = normalizedRows.map((row) => {
+    const reasonTags = resolveSimulationReasonCodes(row);
+    const group = resolveScenarioGroup(reasonTags);
+    const meta = resolveScenarioGroupMetadata(group);
+    return {
+      id: row.id,
+      merchantId: row.merchantId,
+      provider: row.provider,
+      group,
+      reasonTags,
+      recommendedActionHint: meta.recommendedActionHint,
+      columnValues: {
+        mismatch_count: row.mismatchCount,
+        current_amount: row.amount,
+        incoming_amount: row.incomingAmount,
+        version_gap: row.incomingVersion - row.version,
+      },
+    };
+  });
+
+  const malformedCount = selectedRows.length - normalizedRows.length;
+  for (let index = 0; index < malformedCount; index += 1) {
+    const unknownId = `unknown-${String(index + 1).padStart(4, '0')}`;
+    const meta = resolveScenarioGroupMetadata('unknown_input');
+    rows.push({
+      id: unknownId,
+      merchantId: '-',
+      provider: '-',
+      group: 'unknown_input',
+      reasonTags: ['MALFORMED_ROW'],
+      recommendedActionHint: meta.recommendedActionHint,
+      columnValues: {
+        mismatch_count: 'n/a',
+        current_amount: 'n/a',
+        incoming_amount: 'n/a',
+        version_gap: 'n/a',
+      },
+    });
+  }
+
+  const groups = SCENARIO_GROUP_ORDER.map((groupKey) => {
+    const groupMeta = resolveScenarioGroupMetadata(groupKey);
+    const groupRows = rows
+      .filter((row) => row.group === groupKey)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return {
+      key: groupKey,
+      label: groupMeta.label,
+      description: groupMeta.description,
+      rowCount: groupRows.length,
+      rows: groupRows,
+    };
+  });
+
+  return {
+    contract: 'settlement-scenario-compare-matrix.v1',
+    selectedCount: selectedRows.length,
+    validCount: normalizedRows.length,
+    malformedCount,
+    columns: [...SCENARIO_MATRIX_COLUMN_ORDER],
+    groups,
+    rows: groups.flatMap((group) => group.rows),
+  };
+}
+
+export function filterScenarioCompareMatrixRows(
+  rows: ScenarioCompareMatrixRow[],
+  filter: ScenarioCompareMatrixFilterKey,
+): ScenarioCompareMatrixRow[] {
+  if (filter === 'all') {
+    return rows;
+  }
+  return rows.filter((row) => row.group === filter);
+}
+
+export function buildOperatorDecisionQueue(input: {
+  matrixRows: ScenarioCompareMatrixRow[];
+  stagedRowIds: string[];
+}): OperatorDecisionQueue {
+  const orderedUniqueRowIds = Array.from(new Set(input.stagedRowIds));
+  const matrixRowById = new Map(input.matrixRows.map((row) => [row.id, row]));
+  const items: OperatorDecisionQueueItem[] = [];
+  let missingRowCount = 0;
+
+  for (const rowId of orderedUniqueRowIds) {
+    const row = matrixRowById.get(rowId);
+    if (!row) {
+      missingRowCount += 1;
+      continue;
+    }
+    items.push({
+      id: `queue-${row.id}`,
+      rowId: row.id,
+      merchantId: row.merchantId,
+      provider: row.provider,
+      group: row.group,
+      reasonTags: [...row.reasonTags],
+      recommendedActionHint: row.recommendedActionHint,
+    });
+  }
+
+  const groupRank = new Map(SCENARIO_GROUP_ORDER.map((key, index) => [key, index]));
+  items.sort((a, b) => {
+    const groupOrder = (groupRank.get(a.group) ?? Number.MAX_SAFE_INTEGER)
+      - (groupRank.get(b.group) ?? Number.MAX_SAFE_INTEGER);
+    if (groupOrder !== 0) {
+      return groupOrder;
+    }
+    return a.rowId.localeCompare(b.rowId);
+  });
+
+  return {
+    contract: 'settlement-operator-decision-queue.v1',
+    stagedCount: orderedUniqueRowIds.length,
+    missingRowCount,
+    items,
+  };
+}
+
+export function moveOperatorDecisionQueueFocus(input: {
+  items: OperatorDecisionQueueItem[];
+  activeItemId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.items.length === 0) {
+    return '';
+  }
+  const currentIndex = input.items.findIndex((item) => item.id === input.activeItemId);
+  if (currentIndex < 0) {
+    return input.items[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.items[Math.min(currentIndex + 1, input.items.length - 1)].id;
+  }
+  return input.items[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveOperatorDecisionQueueShortcut(key: string): 'next' | 'prev' | 'unstage' | null {
+  const normalized = key.toLowerCase();
+  if (normalized === 'arrowdown' || normalized === 'j') {
+    return 'next';
+  }
+  if (normalized === 'arrowup' || normalized === 'k') {
+    return 'prev';
+  }
+  if (normalized === 'backspace' || normalized === 'delete') {
+    return 'unstage';
+  }
+  return null;
+}
+
+export function resetOperatorDecisionQueueDraftSafe(input: {
+  activeMatrixFilter: ScenarioCompareMatrixFilterKey;
+  confirmFilterReset: boolean;
+}): {
+  stagedRowIds: string[];
+  activeMatrixFilter: ScenarioCompareMatrixFilterKey;
+  message: string;
+} {
+  if (input.confirmFilterReset) {
+    return {
+      stagedRowIds: [],
+      activeMatrixFilter: 'all',
+      message: 'Queue draft and matrix filter reset to default.',
+    };
+  }
+  return {
+    stagedRowIds: [],
+    activeMatrixFilter: input.activeMatrixFilter,
+    message: 'Queue draft cleared. Matrix filter preserved until explicit reset confirm.',
+  };
 }
 
 export function buildExceptionSimulationOutcomePanel(selectedRows: unknown[]): ExceptionSimulationOutcomePanel {

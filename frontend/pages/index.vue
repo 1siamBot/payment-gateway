@@ -5,6 +5,8 @@ import {
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   applyRefundStatus,
+  buildScenarioCompareMatrix,
+  buildOperatorDecisionQueue,
   buildDeterministicExplainabilityFilterChips,
   buildExplainabilityComposerDraftFromSlot,
   buildExceptionBulkDiffInspector,
@@ -22,6 +24,7 @@ import {
   EXCEPTION_SAVED_VIEW_QUERY_KEY,
   EXCEPTION_SAVED_VIEW_STORAGE_KEY,
   filterSettlementMerchants,
+  filterScenarioCompareMatrixRows,
   filterExceptionSimulationOutcomeRows,
   listExceptionQueryPresets,
   parseExceptionQueryState,
@@ -42,10 +45,14 @@ import {
   serializeExceptionQueryState,
   filterExceptionDiffInspectorRows,
   moveExceptionDiffInspectorFocus,
+  moveOperatorDecisionQueueFocus,
+  resolveOperatorDecisionQueueShortcut,
+  resetOperatorDecisionQueueDraftSafe,
   validateExceptionActionInput,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
+import type { ScenarioCompareMatrixFilterKey } from '../utils/wave1';
 import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
@@ -359,6 +366,30 @@ const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) =>
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
 const bulkDiffInspector = computed(() => buildExceptionBulkDiffInspector(selectedExceptionRows.value));
 const bulkSimulationOutcome = computed(() => buildExceptionSimulationOutcomePanel(selectedExceptionRows.value));
+const scenarioCompareMatrix = computed(() => buildScenarioCompareMatrix(selectedExceptionRows.value));
+const activeScenarioMatrixFilter = ref<ScenarioCompareMatrixFilterKey>('all');
+const filteredScenarioMatrixRows = computed(() => filterScenarioCompareMatrixRows(
+  scenarioCompareMatrix.value.rows,
+  activeScenarioMatrixFilter.value,
+));
+const scenarioMatrixFilterOptions = computed(() => ([
+  { key: 'all' as ScenarioCompareMatrixFilterKey, label: 'all', count: scenarioCompareMatrix.value.rows.length },
+  ...scenarioCompareMatrix.value.groups.map((group) => ({
+    key: group.key as ScenarioCompareMatrixFilterKey,
+    label: group.label,
+    count: group.rowCount,
+  })),
+]));
+const decisionQueueState = reactive({
+  message: '',
+  error: '',
+});
+const queueDraftRowIds = ref<string[]>([]);
+const activeDecisionQueueItemId = ref('');
+const operatorDecisionQueue = computed(() => buildOperatorDecisionQueue({
+  matrixRows: scenarioCompareMatrix.value.rows,
+  stagedRowIds: queueDraftRowIds.value,
+}));
 const activeConflictDrilldown = ref<ExceptionConflictDrilldownKey>('all');
 const activeRollbackPlanReason = ref<ExceptionSimulationReasonDrilldownKey>('all');
 const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; label: string }> = [
@@ -1123,6 +1154,11 @@ function resetBulkPreviewConfirmState() {
   bulkPreviewConfirmState.error = '';
 }
 
+function resetDecisionQueueState() {
+  decisionQueueState.message = '';
+  decisionQueueState.error = '';
+}
+
 watch(filteredBulkDiffRows, (rows) => {
   if (!rows.length) {
     activeBulkDiffRowId.value = '';
@@ -1132,6 +1168,21 @@ watch(filteredBulkDiffRows, (rows) => {
     activeBulkDiffRowId.value = rows[0].id;
   }
 }, { immediate: true });
+
+watch(selectedExceptionIds, (selectedIds) => {
+  const selectedSet = new Set(selectedIds);
+  queueDraftRowIds.value = queueDraftRowIds.value.filter((rowId) => selectedSet.has(rowId));
+}, { deep: true });
+
+watch(operatorDecisionQueue, (queue) => {
+  if (!queue.items.length) {
+    activeDecisionQueueItemId.value = '';
+    return;
+  }
+  if (!queue.items.some((item) => item.id === activeDecisionQueueItemId.value)) {
+    activeDecisionQueueItemId.value = queue.items[0].id;
+  }
+}, { deep: true, immediate: true });
 
 watch(() => bulkDiffInspector.value.reasonCounts, () => {
   const applied = applyExplainabilityPresetSlot({
@@ -1154,6 +1205,81 @@ function setActiveBulkDiffRow(rowId: string) {
 
 function setActiveRollbackPlanReason(reasonCode: ExceptionSimulationReasonDrilldownKey) {
   activeRollbackPlanReason.value = reasonCode;
+}
+
+function setActiveScenarioMatrixFilter(filter: ScenarioCompareMatrixFilterKey) {
+  activeScenarioMatrixFilter.value = filter;
+}
+
+function stageSelectedRowsIntoDecisionQueue() {
+  resetDecisionQueueState();
+  if (!selectedExceptionIds.value.length) {
+    decisionQueueState.error = 'Select rows first, then stage them into the operator queue.';
+    return;
+  }
+  queueDraftRowIds.value = Array.from(new Set([
+    ...queueDraftRowIds.value,
+    ...selectedExceptionIds.value,
+  ]));
+  decisionQueueState.message = `Staged ${operatorDecisionQueue.value.items.length} row(s) in the operator decision queue.`;
+}
+
+function unstageDecisionQueueItem(itemId: string) {
+  resetDecisionQueueState();
+  const item = operatorDecisionQueue.value.items.find((queueItem) => queueItem.id === itemId);
+  if (!item) {
+    return;
+  }
+  queueDraftRowIds.value = queueDraftRowIds.value.filter((rowId) => rowId !== item.rowId);
+  decisionQueueState.message = `Unstaged ${item.rowId} from operator decision queue.`;
+}
+
+function resetDecisionQueueDraftSafe() {
+  resetDecisionQueueState();
+  const safe = resetOperatorDecisionQueueDraftSafe({
+    activeMatrixFilter: activeScenarioMatrixFilter.value,
+    confirmFilterReset: false,
+  });
+  queueDraftRowIds.value = safe.stagedRowIds;
+  activeScenarioMatrixFilter.value = safe.activeMatrixFilter;
+  decisionQueueState.message = safe.message;
+}
+
+function resetDecisionQueueDraftWithFilterConfirm() {
+  resetDecisionQueueState();
+  if (import.meta.client && !window.confirm('Reset queue draft and matrix filter to all?')) {
+    return;
+  }
+  const confirmed = resetOperatorDecisionQueueDraftSafe({
+    activeMatrixFilter: activeScenarioMatrixFilter.value,
+    confirmFilterReset: true,
+  });
+  queueDraftRowIds.value = confirmed.stagedRowIds;
+  activeScenarioMatrixFilter.value = confirmed.activeMatrixFilter;
+  decisionQueueState.message = confirmed.message;
+}
+
+function onDecisionQueueKeydown(event: KeyboardEvent) {
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
+    return;
+  }
+  const shortcut = resolveOperatorDecisionQueueShortcut(event.key);
+  if (!shortcut) {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'next' || shortcut === 'prev') {
+    activeDecisionQueueItemId.value = moveOperatorDecisionQueueFocus({
+      items: operatorDecisionQueue.value.items,
+      activeItemId: activeDecisionQueueItemId.value,
+      direction: shortcut === 'next' ? 'next' : 'prev',
+    });
+    return;
+  }
+  if (shortcut === 'unstage' && activeDecisionQueueItemId.value) {
+    unstageDecisionQueueItem(activeDecisionQueueItemId.value);
+  }
 }
 
 function resolveExplainabilityReasonCounts() {
@@ -1375,8 +1501,16 @@ function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
   resetBulkInspectorViewState();
+  const safeQueueReset = resetOperatorDecisionQueueDraftSafe({
+    activeMatrixFilter: activeScenarioMatrixFilter.value,
+    confirmFilterReset: false,
+  });
+  queueDraftRowIds.value = safeQueueReset.stagedRowIds;
+  activeScenarioMatrixFilter.value = safeQueueReset.activeMatrixFilter;
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
+  decisionQueueState.error = '';
+  decisionQueueState.message = safeQueueReset.message;
   bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
 }
 
@@ -1413,6 +1547,9 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   resetState(exceptionDetailState);
   resetBulkPreviewConfirmState();
   resetBulkPreviewDrawer();
+  resetDecisionQueueState();
+  queueDraftRowIds.value = [];
+  activeScenarioMatrixFilter.value = 'all';
 
   if (mode === 'loading') {
     exceptionState.loading = true;
@@ -2561,6 +2698,113 @@ onMounted(() => {
                 </li>
               </ul>
               <p v-else class="state">No rows match this rollback reason drilldown.</p>
+            </div>
+
+            <div class="simulation-outcome-panel">
+              <h4>Scenario Compare Matrix</h4>
+              <p class="state">
+                Deterministic row groups:
+                <code>success_projection</code>, <code>conflict_projection</code>, <code>rollback_recommended</code>, <code>unknown_input</code>.
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in scenarioMatrixFilterOptions"
+                  :key="`matrix-filter-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeScenarioMatrixFilter === option.key }"
+                  @click="setActiveScenarioMatrixFilter(option.key)"
+                >
+                  {{ option.label }} ({{ option.count }})
+                </button>
+              </div>
+              <div class="matrix-table-wrap">
+                <table class="matrix-table">
+                  <thead>
+                    <tr>
+                      <th>Row</th>
+                      <th>Group</th>
+                      <th>Reason Tags</th>
+                      <th>mismatch_count</th>
+                      <th>current_amount</th>
+                      <th>incoming_amount</th>
+                      <th>version_gap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!filteredScenarioMatrixRows.length">
+                      <td colspan="7">No rows in this matrix group filter.</td>
+                    </tr>
+                    <tr
+                      v-for="row in filteredScenarioMatrixRows"
+                      :key="`matrix-row-${row.id}`"
+                    >
+                      <td>
+                        <strong>{{ row.id }}</strong>
+                        <small>{{ row.merchantId }} / {{ row.provider }}</small>
+                      </td>
+                      <td>{{ row.group }}</td>
+                      <td>{{ row.reasonTags.length ? row.reasonTags.join(', ') : 'none' }}</td>
+                      <td>{{ row.columnValues.mismatch_count }}</td>
+                      <td>{{ row.columnValues.current_amount }}</td>
+                      <td>{{ row.columnValues.incoming_amount }}</td>
+                      <td>{{ row.columnValues.version_gap }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="simulation-outcome-panel">
+              <h4>Operator Decision Queue</h4>
+              <p class="state" :class="{ error: decisionQueueState.error }">
+                {{ decisionQueueState.error || decisionQueueState.message || 'Stage selected matrix rows, then triage with keyboard (↑/↓ or j/k, Backspace/Delete to unstage).' }}
+              </p>
+              <div class="inline-actions">
+                <button type="button" @click="stageSelectedRowsIntoDecisionQueue">Stage Selected Rows</button>
+                <button type="button" class="link" @click="resetDecisionQueueDraftSafe">Safe Reset Queue Draft</button>
+                <button type="button" class="link" @click="resetDecisionQueueDraftWithFilterConfirm">Reset Queue + Matrix Filter</button>
+              </div>
+              <p class="state" v-if="operatorDecisionQueue.missingRowCount > 0">
+                {{ operatorDecisionQueue.missingRowCount }} staged row(s) were dropped because they are not in current matrix scope.
+              </p>
+              <div class="queue-table-wrap" tabindex="0" @keydown="onDecisionQueueKeydown">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Queue Row</th>
+                      <th>Group</th>
+                      <th>Reason Tags</th>
+                      <th>Hint</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!operatorDecisionQueue.items.length">
+                      <td colspan="5">Queue is empty. Select exceptions, then stage rows.</td>
+                    </tr>
+                    <tr
+                      v-for="item in operatorDecisionQueue.items"
+                      :key="item.id"
+                      :class="{ 'queue-row-active': activeDecisionQueueItemId === item.id }"
+                      @click="activeDecisionQueueItemId = item.id"
+                    >
+                      <td>
+                        <strong>{{ item.rowId }}</strong>
+                        <small>{{ item.merchantId }} / {{ item.provider }}</small>
+                      </td>
+                      <td>{{ item.group }}</td>
+                      <td>{{ item.reasonTags.length ? item.reasonTags.join(', ') : 'none' }}</td>
+                      <td>{{ item.recommendedActionHint }}</td>
+                      <td>
+                        <button type="button" class="link" @click="unstageDecisionQueueItem(item.id)">
+                          Unstage
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
           <div>

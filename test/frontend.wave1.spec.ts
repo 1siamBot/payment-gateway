@@ -27,16 +27,22 @@ import {
   canRefundStatus,
   filterSettlementMerchants,
   filterExceptionSimulationOutcomeRows,
+  filterScenarioCompareMatrixRows,
   parseExceptionQueryState,
   normalizeExceptionStatus,
   normalizeOptional,
   moveExceptionDiffInspectorFocus,
+  moveOperatorDecisionQueueFocus,
   prependExceptionAudit,
+  resetOperatorDecisionQueueDraftSafe,
   resolveActiveExceptionPreset,
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
+  resolveOperatorDecisionQueueShortcut,
   serializeExceptionQueryState,
   filterExceptionDiffInspectorRows,
+  buildOperatorDecisionQueue,
+  buildScenarioCompareMatrix,
   buildExceptionSimulationOutcomePanel,
   validateExceptionActionInput,
 } from '../frontend/utils/wave1';
@@ -461,6 +467,110 @@ describe('frontend wave1 helpers', () => {
     expect(malformed.fallback.active).toBe(true);
     expect(malformed.fallback.title).toBe('Malformed simulation payload');
     expect(malformed.buckets.find((bucket) => bucket.key === 'rollback_recommended')?.count).toBeGreaterThan(0);
+  });
+
+  it('builds deterministic scenario compare matrix ordering for identical fixture input', () => {
+    const fixtureRows = [
+      {
+        id: 'exc-z',
+        merchantId: 'm-z',
+        provider: 'mock-b',
+        status: 'open',
+        version: 2,
+        currentAmount: 120,
+        incomingAmount: 300,
+        incomingStatus: 'open',
+        incomingVersion: 1,
+        mismatchCount: 2,
+      },
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 2,
+        currentAmount: 120,
+        incomingAmount: 130,
+        incomingStatus: 'open',
+        incomingVersion: 2,
+        mismatchCount: 1,
+      },
+      { id: '', merchantId: 'm-bad', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+    ];
+
+    const first = buildScenarioCompareMatrix(fixtureRows);
+    const second = buildScenarioCompareMatrix(fixtureRows);
+    expect(first).toEqual(second);
+    expect(first.groups.map((group) => group.key)).toEqual([
+      'success_projection',
+      'conflict_projection',
+      'rollback_recommended',
+      'unknown_input',
+    ]);
+    expect(first.rows.map((row) => row.id)).toEqual(['exc-a', 'exc-z', 'unknown-0001']);
+    expect(filterScenarioCompareMatrixRows(first.rows, 'rollback_recommended').map((row) => row.id)).toEqual(['exc-z']);
+  });
+
+  it('keeps operator decision queue ordering stable and supports keyboard focus movement', () => {
+    const matrix = buildScenarioCompareMatrix([
+      {
+        id: 'exc-2',
+        merchantId: 'm-2',
+        provider: 'mock-b',
+        status: 'open',
+        version: 3,
+        currentAmount: 100,
+        incomingAmount: 260,
+        incomingStatus: 'open',
+        incomingVersion: 2,
+        mismatchCount: 2,
+      },
+      {
+        id: 'exc-1',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        status: 'open',
+        version: 2,
+        currentAmount: 110,
+        incomingAmount: 120,
+        incomingStatus: 'open',
+        incomingVersion: 2,
+        mismatchCount: 1,
+      },
+    ]);
+
+    const queue = buildOperatorDecisionQueue({
+      matrixRows: matrix.rows,
+      stagedRowIds: ['exc-2', 'exc-1', 'exc-2'],
+    });
+    expect(queue.items.map((item) => item.rowId)).toEqual(['exc-1', 'exc-2']);
+
+    const nextFocused = moveOperatorDecisionQueueFocus({
+      items: queue.items,
+      activeItemId: queue.items[0].id,
+      direction: 'next',
+    });
+    expect(nextFocused).toBe(queue.items[1].id);
+    expect(resolveOperatorDecisionQueueShortcut('ArrowDown')).toBe('next');
+    expect(resolveOperatorDecisionQueueShortcut('Backspace')).toBe('unstage');
+  });
+
+  it('resets queue draft safely while preserving matrix filter until explicit confirmation', () => {
+    const safe = resetOperatorDecisionQueueDraftSafe({
+      activeMatrixFilter: 'conflict_projection',
+      confirmFilterReset: false,
+    });
+    expect(safe.stagedRowIds).toEqual([]);
+    expect(safe.activeMatrixFilter).toBe('conflict_projection');
+    expect(safe.message).toContain('preserved');
+
+    const confirmed = resetOperatorDecisionQueueDraftSafe({
+      activeMatrixFilter: 'conflict_projection',
+      confirmFilterReset: true,
+    });
+    expect(confirmed.stagedRowIds).toEqual([]);
+    expect(confirmed.activeMatrixFilter).toBe('all');
+    expect(confirmed.message).toContain('reset to default');
   });
 
   it('builds deterministic bulk confirmation summary for render state', () => {
