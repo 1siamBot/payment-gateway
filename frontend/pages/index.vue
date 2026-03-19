@@ -65,6 +65,7 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolveEvidencePacketLintShortcut,
+  resolveManifestDiffShortcut,
   resolveAnomalyTriageShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveEvidenceTimelineHeatmapShortcut,
@@ -79,6 +80,7 @@ import {
   validateEvidenceGapChecklistDraft,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildManifestDiffViewer,
   buildAnomalyTriageBoard,
   buildRemediationRunbookTimelineBoard,
   buildEvidenceTimelineHeatmap,
@@ -87,6 +89,7 @@ import {
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
   moveEvidencePacketLintSelection,
+  moveManifestDiffSelection,
   moveEvidenceTimelineHeatmapSelection,
   moveRemediationRunbookTimelineSelection,
   getDefaultEvidencePacketLintChecklistDraft,
@@ -108,6 +111,10 @@ import {
   validateDispatchEvidenceDraft,
   getDefaultRemediationRunbookHandoffPackDraft,
   applyRemediationRunbookHandoffPackPrMode,
+  getDefaultBlockedLaneHandoffDrillDraft,
+  applyBlockedLaneHandoffDrillPrMode,
+  validateBlockedLaneHandoffDrillDraft,
+  resetBlockedLaneHandoffDrillDraft,
   validateRemediationRunbookHandoffPackDraft,
   resetRemediationRunbookHandoffPackDraft,
   validateRemediationPlaybookDraft,
@@ -636,6 +643,19 @@ const remediationRunbookHandoffDraft = ref(getDefaultRemediationRunbookHandoffPa
   stepId: '',
   issueIdentifier: '',
 }));
+const manifestDiffState = reactive({
+  message: '',
+  error: '',
+});
+const manifestDiffPanelRef = ref<HTMLElement | null>(null);
+const manifestDiffBranchInputRef = ref<HTMLInputElement | null>(null);
+const activeManifestDiffRowId = ref('');
+const manifestHandoffDrillOpen = ref(false);
+const manifestHandoffMissingFields = ref<Set<string>>(new Set());
+const manifestHandoffDrillDraft = ref(getDefaultBlockedLaneHandoffDrillDraft({
+  laneId: '',
+  issueIdentifier: '',
+}));
 const activeAnomalyTriageRowId = ref('');
 const remediationPlaybookDraftBank = ref<Array<ReturnType<typeof getDefaultRemediationPlaybookDraft>>>([]);
 const remediationPlaybookDraft = ref(getDefaultRemediationPlaybookDraft({
@@ -785,6 +805,60 @@ const activeRemediationRunbookStep = computed(() => remediationRunbookTimelineBo
   .find((row) => row.id === activeRemediationRunbookStepId.value) ?? null);
 const remediationRunbookCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
   linksText: remediationRunbookHandoffDraft.value.dependencyIssueLinksText,
+}));
+const manifestDiffSourceRows = computed(() => reviewQueueLedger.value.rows.flatMap((row, index) => {
+  const severityWeight = row.priority === 'critical'
+    ? 10
+    : row.priority === 'high'
+      ? 20
+      : row.priority === 'medium'
+        ? 30
+        : 40;
+  const issueIdentifier = row.id.toUpperCase();
+  return [
+    {
+      id: `manifest-${row.id}-branch`,
+      severityWeight,
+      deltaClassWeight: 10,
+      issueIdentifier,
+      fieldPath: 'packet.branch',
+      deltaClass: 'missing',
+      baselineValue: 'feature/main-stabilize',
+      currentValue: '',
+      summary: `${issueIdentifier} is missing branch metadata in active manifest.`,
+    },
+    {
+      id: `manifest-${row.id}-artifact`,
+      severityWeight,
+      deltaClassWeight: 20,
+      issueIdentifier,
+      fieldPath: 'packet.artifactPath',
+      deltaClass: 'modified',
+      baselineValue: `artifacts/${row.id.toLowerCase()}/baseline-pack.md`,
+      currentValue: `artifacts/${row.id.toLowerCase()}/active-pack.md`,
+      summary: `${issueIdentifier} artifact path differs from baseline manifest packet.`,
+    },
+    {
+      id: `manifest-${row.id}-owner`,
+      severityWeight,
+      deltaClassWeight: index % 2 === 0 ? 30 : 40,
+      issueIdentifier,
+      fieldPath: 'packet.blockerOwner',
+      deltaClass: index % 2 === 0 ? 'unexpected' : 'modified',
+      baselineValue: 'GitHub Admin / DevOps',
+      currentValue: index % 2 === 0 ? 'Frontend Engineer' : 'GitHub Admin / DevOps',
+      summary: `${issueIdentifier} blocker ownership metadata requires handoff confirmation.`,
+    },
+  ];
+}));
+const manifestDiffViewer = computed(() => buildManifestDiffViewer({
+  rows: manifestDiffSourceRows.value,
+  activeRowId: activeManifestDiffRowId.value,
+}));
+const activeManifestDiffRow = computed(() => manifestDiffViewer.value.rows
+  .find((row) => row.id === activeManifestDiffRowId.value) ?? null);
+const manifestHandoffCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: manifestHandoffDrillDraft.value.dependencyIssueLinksText,
 }));
 const anomalyTriageSourceRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => {
   const category = remediationCategoryCycle[index % remediationCategoryCycle.length];
@@ -1347,12 +1421,14 @@ onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
   window.addEventListener('keydown', onDispatchCockpitKeydown);
+  window.addEventListener('keydown', onManifestDiffKeydown);
   window.addEventListener('keydown', onAnomalyTriageKeydown);
 });
 onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
   window.removeEventListener('keydown', onDispatchCockpitKeydown);
+  window.removeEventListener('keydown', onManifestDiffKeydown);
   window.removeEventListener('keydown', onAnomalyTriageKeydown);
 });
 
@@ -1720,6 +1796,12 @@ function resetRemediationRunbookState() {
   remediationRunbookHandoffMissingFields.value = new Set();
 }
 
+function resetManifestDiffState() {
+  manifestDiffState.message = '';
+  manifestDiffState.error = '';
+  manifestHandoffMissingFields.value = new Set();
+}
+
 function resetReleaseReadinessState() {
   releaseReadinessState.message = '';
   releaseReadinessState.error = '';
@@ -1879,6 +1961,20 @@ watch(remediationRunbookTimelineBoard, (board) => {
   }
   if (!board.rows.some((row) => row.id === activeRemediationRunbookStepId.value)) {
     setActiveRemediationRunbookStep(board.activeRowId);
+  }
+}, { deep: true, immediate: true });
+
+watch(manifestDiffViewer, (viewer) => {
+  if (!viewer.rows.length) {
+    activeManifestDiffRowId.value = '';
+    manifestHandoffDrillDraft.value = getDefaultBlockedLaneHandoffDrillDraft({
+      laneId: '',
+      issueIdentifier: '',
+    });
+    return;
+  }
+  if (!viewer.rows.some((row) => row.id === activeManifestDiffRowId.value)) {
+    setActiveManifestDiffRow(viewer.activeRowId);
   }
 }, { deep: true, immediate: true });
 
@@ -2133,6 +2229,108 @@ function clearRemediationRunbookHandoffPackWithConfirm() {
 
 function isRemediationRunbookHandoffFieldMissing(fieldKey: string): boolean {
   return remediationRunbookHandoffMissingFields.value.has(fieldKey);
+}
+
+function setActiveManifestDiffRow(rowId: string) {
+  resetManifestDiffState();
+  activeManifestDiffRowId.value = rowId;
+  const row = manifestDiffViewer.value.rows.find((candidate) => candidate.id === rowId) ?? null;
+  if (!row) {
+    manifestHandoffDrillDraft.value = getDefaultBlockedLaneHandoffDrillDraft({
+      laneId: '',
+      issueIdentifier: '',
+    });
+    return;
+  }
+  const existing = manifestHandoffDrillDraft.value;
+  if (existing.laneId === row.id) {
+    return;
+  }
+  manifestHandoffDrillDraft.value = getDefaultBlockedLaneHandoffDrillDraft({
+    laneId: row.id,
+    issueIdentifier: row.issueIdentifier,
+  });
+}
+
+function focusManifestDiffViewer() {
+  manifestDiffPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  manifestDiffPanelRef.value?.focus();
+}
+
+function openManifestHandoffDrill() {
+  resetManifestDiffState();
+  if (!activeManifestDiffRow.value && manifestDiffViewer.value.rows.length) {
+    setActiveManifestDiffRow(manifestDiffViewer.value.rows[0].id);
+  }
+  manifestHandoffDrillOpen.value = true;
+  nextTick(() => {
+    manifestDiffBranchInputRef.value?.focus();
+  });
+}
+
+function updateManifestHandoffPrMode(mode: 'pr_link' | 'no_pr_yet') {
+  manifestHandoffDrillDraft.value = applyBlockedLaneHandoffDrillPrMode({
+    draft: manifestHandoffDrillDraft.value,
+    prMode: mode,
+  });
+}
+
+function validateManifestHandoffDrill() {
+  resetManifestDiffState();
+  const row = activeManifestDiffRow.value;
+  if (!row) {
+    manifestDiffState.error = 'Select a manifest finding before validating handoff drill.';
+    return;
+  }
+  const validation = validateBlockedLaneHandoffDrillDraft({
+    ...manifestHandoffDrillDraft.value,
+    laneId: row.id,
+    issueIdentifier: row.issueIdentifier,
+    updatedAt: new Date().toISOString(),
+  });
+  manifestHandoffMissingFields.value = new Set(validation.missingFields);
+  if (validation.isComplete) {
+    manifestDiffState.message = `Handoff drill packet validated. Canonical links: ${validation.dependencyIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  manifestDiffState.error = errorParts.join(' | ') || 'Manifest handoff drill packet is incomplete.';
+}
+
+function clearManifestHandoffDrill(confirmFullReset: boolean) {
+  resetManifestDiffState();
+  const row = activeManifestDiffRow.value;
+  if (!row) {
+    manifestDiffState.error = 'Select a manifest finding before clearing handoff drill.';
+    return;
+  }
+  const next = resetBlockedLaneHandoffDrillDraft({
+    laneId: row.id,
+    issueIdentifier: row.issueIdentifier,
+    confirmFullReset,
+  });
+  manifestHandoffDrillDraft.value = next.draft;
+  manifestDiffState.message = next.message;
+  if (next.didFullReset) {
+    manifestHandoffDrillOpen.value = false;
+  }
+}
+
+function clearManifestHandoffDrillWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears the active blocked-lane handoff drill. Continue?')) {
+    return;
+  }
+  clearManifestHandoffDrill(true);
+}
+
+function isManifestHandoffFieldMissing(fieldKey: string): boolean {
+  return manifestHandoffMissingFields.value.has(fieldKey);
 }
 
 function isRemediationPlaybookFieldMissing(fieldKey: string): boolean {
@@ -2931,6 +3129,46 @@ function onRemediationRunbookKeydown(event: KeyboardEvent) {
     return;
   }
   validateRemediationRunbookHandoffPack();
+}
+
+function onManifestDiffKeydown(event: KeyboardEvent) {
+  const shortcut = resolveManifestDiffShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_handoff_drill'
+    && shortcut !== 'validate_active_packet') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_manifest_diff') {
+    focusManifestDiffViewer();
+    return;
+  }
+  if (shortcut === 'next_finding' || shortcut === 'prev_finding') {
+    const nextId = moveManifestDiffSelection({
+      rows: manifestDiffViewer.value.rows,
+      activeRowId: activeManifestDiffRowId.value,
+      direction: shortcut === 'next_finding' ? 'next' : 'prev',
+    });
+    if (nextId) {
+      setActiveManifestDiffRow(nextId);
+    }
+    return;
+  }
+  if (shortcut === 'open_handoff_drill') {
+    openManifestHandoffDrill();
+    return;
+  }
+  validateManifestHandoffDrill();
 }
 
 function onAnomalyTriageKeydown(event: KeyboardEvent) {
@@ -5170,6 +5408,132 @@ onMounted(() => {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+            <div
+              ref="manifestDiffPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onManifestDiffKeydown"
+            >
+              <h4>Manifest Diff Viewer</h4>
+              <p class="state" :class="{ error: manifestDiffState.error }">
+                {{ manifestDiffState.error
+                  || manifestDiffState.message
+                  || 'Deterministic order: severityWeight, deltaClassWeight, issueIdentifier, fieldPath. Keyboard: Alt+M focus, Alt+Shift+J next finding, Alt+Shift+K previous finding, Ctrl+Shift+D open handoff drill, Ctrl+Shift+Enter validate packet.' }}
+              </p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Delta Weight</th>
+                      <th>Issue</th>
+                      <th>Field Path</th>
+                      <th>Delta Class</th>
+                      <th>Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!manifestDiffViewer.rows.length">
+                      <td colspan="6">No manifest diff findings in the current deterministic fixture set.</td>
+                    </tr>
+                    <tr
+                      v-for="row in manifestDiffViewer.rows"
+                      :key="row.id"
+                      :class="{ 'queue-row-active': activeManifestDiffRowId === row.id }"
+                      @click="setActiveManifestDiffRow(row.id)"
+                    >
+                      <td>{{ row.severityWeight }}</td>
+                      <td>{{ row.deltaClassWeight }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td><code>{{ row.fieldPath }}</code></td>
+                      <td>{{ row.deltaClass }}</td>
+                      <td>{{ row.summary }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="openManifestHandoffDrill">Open Blocked-Lane Handoff Drill</button>
+                <button type="button" class="link" @click="validateManifestHandoffDrill">Validate Active Packet</button>
+                <button type="button" class="link" @click="clearManifestHandoffDrill(false)">Clear Draft Only</button>
+                <button type="button" class="link" @click="clearManifestHandoffDrillWithConfirm">Full Reset</button>
+              </div>
+              <div v-if="manifestHandoffDrillOpen">
+                <h5>Blocked-Lane Handoff Drill Console</h5>
+                <div class="triage-grid">
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('branch') }">
+                    Branch
+                    <input
+                      ref="manifestDiffBranchInputRef"
+                      v-model="manifestHandoffDrillDraft.branch"
+                      placeholder="feature/one-268-manifest-diff-viewer"
+                    />
+                  </label>
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('fullSha') }">
+                    Full SHA
+                    <input v-model="manifestHandoffDrillDraft.fullSha" placeholder="40-char commit SHA" />
+                  </label>
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('prMode') }">
+                    PR Mode
+                    <select
+                      :value="manifestHandoffDrillDraft.prMode"
+                      @change="updateManifestHandoffPrMode(($event.target as HTMLSelectElement).value as 'pr_link' | 'no_pr_yet')"
+                    >
+                      <option value="pr_link">pr_link</option>
+                      <option value="no_pr_yet">no_pr_yet</option>
+                    </select>
+                  </label>
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('testCommand') }">
+                    Test Command
+                    <input v-model="manifestHandoffDrillDraft.testCommand" placeholder="npm run test -- test/frontend.wave1.spec.ts" />
+                  </label>
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('artifactPath') }">
+                    Artifact Path
+                    <input v-model="manifestHandoffDrillDraft.artifactPath" placeholder="artifacts/one-268/manifest-handoff-pack.md" />
+                  </label>
+                </div>
+                <label :class="{ 'field-missing': isManifestHandoffFieldMissing('dependencyIssueLinks') }">
+                  Dependency Issue Links (one per line)
+                  <textarea v-model="manifestHandoffDrillDraft.dependencyIssueLinksText" rows="3" placeholder="/issues/ONE-267"></textarea>
+                </label>
+                <div class="triage-grid" v-if="manifestHandoffDrillDraft.prMode === 'no_pr_yet'">
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('blockerOwner') }">
+                    Blocker Owner
+                    <input v-model="manifestHandoffDrillDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                  </label>
+                  <label :class="{ 'field-missing': isManifestHandoffFieldMissing('blockerEta') }">
+                    Blocker ETA
+                    <input v-model="manifestHandoffDrillDraft.blockerEta" placeholder="2026-03-22T08:00:00.000Z" />
+                  </label>
+                </div>
+                <h5>Canonical Link Autofix Preview</h5>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Original</th>
+                        <th>Normalized</th>
+                        <th>Changed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!manifestHandoffCanonicalPreview.rows.length">
+                        <td colspan="3">Add dependency links to preview canonical normalized output.</td>
+                      </tr>
+                      <tr v-for="row in manifestHandoffCanonicalPreview.rows" :key="`manifest-autofix-${row.id}`">
+                        <td><code>{{ row.original }}</code></td>
+                        <td><code>{{ row.normalized }}</code></td>
+                        <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <label>
+                  Corrected Link Output (copy-ready)
+                  <textarea :value="manifestHandoffCanonicalPreview.correctedOutput" rows="3" readonly />
+                </label>
               </div>
             </div>
             <div

@@ -84,6 +84,7 @@ import {
   buildChecklistAutofixHints,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildManifestDiffViewer,
   buildAnomalyTriageBoard,
   buildRemediationRunbookTimelineBoard,
   buildBlockerAwareDispatchCockpit,
@@ -94,12 +95,14 @@ import {
   filterEvidencePacketLintFindings,
   moveEvidenceTimelineHeatmapSelection,
   moveEvidencePacketLintSelection,
+  moveManifestDiffSelection,
   moveReplayDiffInspectorSelection,
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
   moveRemediationRunbookTimelineSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
+  resolveManifestDiffShortcut,
   resolveAnomalyTriageShortcut,
   resolveRemediationRunbookShortcut,
   resolveReplayDiffInspectorShortcut,
@@ -112,6 +115,10 @@ import {
   applyDispatchEvidenceDraftPrMode,
   getDefaultRemediationRunbookHandoffPackDraft,
   applyRemediationRunbookHandoffPackPrMode,
+  getDefaultBlockedLaneHandoffDrillDraft,
+  applyBlockedLaneHandoffDrillPrMode,
+  validateBlockedLaneHandoffDrillDraft,
+  resetBlockedLaneHandoffDrillDraft,
   validateRemediationRunbookHandoffPackDraft,
   resetRemediationRunbookHandoffPackDraft,
   validateEvidencePacketLintChecklistDraft,
@@ -1647,6 +1654,153 @@ describe('frontend wave1 helpers', () => {
     });
     expect(fullReset.didFullReset).toBe(true);
     expect(fullReset.message).toContain('fully reset');
+  });
+
+  it('builds manifest diff viewer rows in deterministic order by severityWeight, deltaClassWeight, issueIdentifier, fieldPath', () => {
+    const viewer = buildManifestDiffViewer({
+      rows: [
+        {
+          id: 'manifest-c',
+          severityWeight: 30,
+          deltaClassWeight: 30,
+          issueIdentifier: 'ONE-270',
+          fieldPath: 'packet.blockerOwner',
+          deltaClass: 'unexpected',
+        },
+        {
+          id: 'manifest-b',
+          severityWeight: 20,
+          deltaClassWeight: 20,
+          issueIdentifier: 'ONE-269',
+          fieldPath: 'packet.branch',
+          deltaClass: 'modified',
+        },
+        {
+          id: 'manifest-a',
+          severityWeight: 20,
+          deltaClassWeight: 10,
+          issueIdentifier: 'ONE-268',
+          fieldPath: 'packet.artifactPath',
+          deltaClass: 'missing',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(viewer.contract).toBe('settlement-manifest-diff-viewer.v1');
+    expect(viewer.rows.map((row) => row.id)).toEqual(['manifest-a', 'manifest-b', 'manifest-c']);
+    expect(viewer.activeRowId).toBe('manifest-a');
+  });
+
+  it('supports manifest diff keyboard workflow and deterministic next/prev selection', () => {
+    expect(resolveManifestDiffShortcut({ key: 'm', altKey: true })).toBe('focus_manifest_diff');
+    expect(resolveManifestDiffShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_finding');
+    expect(resolveManifestDiffShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_finding');
+    expect(resolveManifestDiffShortcut({ key: 'd', shiftKey: true, ctrlKey: true })).toBe('open_handoff_drill');
+    expect(resolveManifestDiffShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true })).toBe('validate_active_packet');
+
+    const viewer = buildManifestDiffViewer({
+      rows: [
+        {
+          id: 'manifest-a',
+          severityWeight: 10,
+          deltaClassWeight: 10,
+          issueIdentifier: 'ONE-268',
+          fieldPath: 'packet.branch',
+          deltaClass: 'missing',
+        },
+        {
+          id: 'manifest-b',
+          severityWeight: 20,
+          deltaClassWeight: 10,
+          issueIdentifier: 'ONE-269',
+          fieldPath: 'packet.fullSha',
+          deltaClass: 'modified',
+        },
+      ],
+      activeRowId: 'manifest-a',
+    });
+
+    expect(moveManifestDiffSelection({
+      rows: viewer.rows,
+      activeRowId: 'manifest-a',
+      direction: 'next',
+    })).toBe('manifest-b');
+    expect(moveManifestDiffSelection({
+      rows: viewer.rows,
+      activeRowId: 'manifest-b',
+      direction: 'prev',
+    })).toBe('manifest-a');
+  });
+
+  it('validates blocked-lane handoff drill draft and supports safe/full reset behavior with canonical link normalization', () => {
+    const incomplete = validateBlockedLaneHandoffDrillDraft(getDefaultBlockedLaneHandoffDrillDraft({
+      laneId: 'manifest-a',
+      issueIdentifier: 'ONE-268',
+    }));
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'testCommand',
+      'artifactPath',
+      'dependencyIssueLinks',
+      'blockerOwner',
+      'blockerEta',
+    ]);
+
+    const completeDraft = {
+      laneId: 'manifest-a',
+      issueIdentifier: 'ONE-268',
+      branch: 'feature/one-268-manifest-diff-viewer',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet' as const,
+      testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-268/manifest-handoff-pack.md',
+      dependencyIssueLinksText: '/issues/ONE-267\n/ONE/issues/ONE-266#comment-12\nhttps://paperclip.dev/issues/ONE-241#document-plan',
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-22T08:00:00.000Z',
+      updatedAt: '2026-03-19T07:40:00.000Z',
+    };
+    const complete = validateBlockedLaneHandoffDrillDraft(completeDraft);
+    expect(complete.isComplete).toBe(true);
+    expect(complete.dependencyIssueLinks).toEqual([
+      '/ONE/issues/ONE-241#document-plan',
+      '/ONE/issues/ONE-266#comment-12',
+      '/ONE/issues/ONE-267',
+    ]);
+
+    const switchedMode = applyBlockedLaneHandoffDrillPrMode({
+      draft: completeDraft,
+      prMode: 'pr_link',
+    });
+    expect(switchedMode.blockerOwner).toBe('');
+    expect(switchedMode.blockerEta).toBe('');
+
+    const safeReset = resetBlockedLaneHandoffDrillDraft({
+      laneId: 'manifest-a',
+      issueIdentifier: 'ONE-268',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.message).toContain('selection preserved');
+
+    const fullReset = resetBlockedLaneHandoffDrillDraft({
+      laneId: 'manifest-a',
+      issueIdentifier: 'ONE-268',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.message).toContain('fully reset');
+
+    const preview = buildCanonicalLinkAutofixPreview({
+      linksText: completeDraft.dependencyIssueLinksText,
+    });
+    expect(preview.correctedOutput).toBe([
+      '/ONE/issues/ONE-267',
+      '/ONE/issues/ONE-266#comment-12',
+      '/ONE/issues/ONE-241#document-plan',
+    ].join('\n'));
   });
 
   it('validates remediation playbook drafts and supports safe/full reset behavior', () => {

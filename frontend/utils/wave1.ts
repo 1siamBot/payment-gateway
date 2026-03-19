@@ -440,6 +440,55 @@ export type CanonicalLinkAutofixPreview = {
   changedCount: number;
 };
 
+export type ManifestDiffShortcut =
+  | 'focus_manifest_diff'
+  | 'next_finding'
+  | 'prev_finding'
+  | 'open_handoff_drill'
+  | 'validate_active_packet';
+export type ManifestDiffDeltaClass = 'missing' | 'modified' | 'unexpected';
+
+export type ManifestDiffViewerRow = {
+  id: string;
+  severityWeight: number;
+  deltaClassWeight: number;
+  issueIdentifier: string;
+  fieldPath: string;
+  deltaClass: ManifestDiffDeltaClass;
+  baselineValue: string;
+  currentValue: string;
+  summary: string;
+};
+
+export type ManifestDiffViewer = {
+  contract: 'settlement-manifest-diff-viewer.v1';
+  rows: ManifestDiffViewerRow[];
+  activeRowId: string;
+};
+
+export type BlockedLaneHandoffDrillPrMode = 'pr_link' | 'no_pr_yet';
+
+export type BlockedLaneHandoffDrillDraft = {
+  laneId: string;
+  issueIdentifier: string;
+  branch: string;
+  fullSha: string;
+  prMode: BlockedLaneHandoffDrillPrMode;
+  testCommand: string;
+  artifactPath: string;
+  dependencyIssueLinksText: string;
+  blockerOwner: string;
+  blockerEta: string;
+  updatedAt: string;
+};
+
+export type BlockedLaneHandoffDrillValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type RemediationPlaybookCategory =
   | 'missing'
   | 'stale'
@@ -2989,6 +3038,266 @@ export function resolveEvidencePacketLintShortcut(input: {
     return 'validate_packet';
   }
   return null;
+}
+
+function normalizeManifestDiffDeltaClass(input: unknown): ManifestDiffDeltaClass {
+  if (typeof input !== 'string') {
+    return 'modified';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'missing' || normalized === 'modified' || normalized === 'unexpected') {
+    return normalized;
+  }
+  return 'modified';
+}
+
+function parseManifestDiffViewerRow(row: unknown): ManifestDiffViewerRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const raw = row as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier.toUpperCase()
+      : String(raw.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const fieldPath = normalizeOptional(
+    typeof raw.fieldPath === 'string'
+      ? raw.fieldPath
+      : String(raw.fieldPath ?? ''),
+  ) ?? 'unknown.field';
+  const deltaClass = normalizeManifestDiffDeltaClass(raw.deltaClass);
+  const severityWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.severityWeight ?? raw.severity ?? raw.priority) ?? 0));
+  const deltaClassWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.deltaClassWeight ?? raw.deltaWeight) ?? 0));
+  const baselineValue = normalizeOptional(
+    typeof raw.baselineValue === 'string'
+      ? raw.baselineValue
+      : String(raw.baselineValue ?? ''),
+  ) ?? '';
+  const currentValue = normalizeOptional(
+    typeof raw.currentValue === 'string'
+      ? raw.currentValue
+      : String(raw.currentValue ?? ''),
+  ) ?? '';
+  const summary = normalizeOptional(
+    typeof raw.summary === 'string'
+      ? raw.summary
+      : String(raw.summary ?? ''),
+  ) ?? `${issueIdentifier} ${fieldPath} changed (${deltaClass}).`;
+  const id = normalizeOptional(
+    typeof raw.id === 'string'
+      ? raw.id
+      : `${severityWeight}|${deltaClassWeight}|${issueIdentifier}|${fieldPath}|${deltaClass}`,
+  ) ?? `${severityWeight}|${deltaClassWeight}|${issueIdentifier}|${fieldPath}|${deltaClass}`;
+  return {
+    id,
+    severityWeight,
+    deltaClassWeight,
+    issueIdentifier,
+    fieldPath,
+    deltaClass,
+    baselineValue,
+    currentValue,
+    summary,
+  };
+}
+
+export function buildManifestDiffViewer(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): ManifestDiffViewer {
+  const rows = input.rows
+    .map((row) => parseManifestDiffViewerRow(row))
+    .filter((row): row is ManifestDiffViewerRow => Boolean(row))
+    .sort((left, right) => (
+      left.severityWeight - right.severityWeight
+      || left.deltaClassWeight - right.deltaClassWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.fieldPath.localeCompare(right.fieldPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeRowId = idSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-manifest-diff-viewer.v1',
+    rows,
+    activeRowId,
+  };
+}
+
+export function moveManifestDiffSelection(input: {
+  rows: ManifestDiffViewerRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (!input.rows.length) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveManifestDiffShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): ManifestDiffShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'm') {
+    return 'focus_manifest_diff';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_finding';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_finding';
+  }
+  if (normalizedKey === 'd' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_drill';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_packet';
+  }
+  return null;
+}
+
+export function getDefaultBlockedLaneHandoffDrillDraft(input: {
+  laneId: string;
+  issueIdentifier: string;
+}): BlockedLaneHandoffDrillDraft {
+  return {
+    laneId: input.laneId,
+    issueIdentifier: input.issueIdentifier,
+    branch: '',
+    fullSha: EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER,
+    prMode: 'no_pr_yet',
+    testCommand: '',
+    artifactPath: '',
+    dependencyIssueLinksText: '',
+    blockerOwner: '',
+    blockerEta: '',
+    updatedAt: '',
+  };
+}
+
+export function applyBlockedLaneHandoffDrillPrMode(input: {
+  draft: BlockedLaneHandoffDrillDraft;
+  prMode: BlockedLaneHandoffDrillPrMode;
+}): BlockedLaneHandoffDrillDraft {
+  if (input.prMode === 'no_pr_yet') {
+    return {
+      ...input.draft,
+      prMode: input.prMode,
+    };
+  }
+  return {
+    ...input.draft,
+    prMode: input.prMode,
+    blockerOwner: '',
+    blockerEta: '',
+  };
+}
+
+export function validateBlockedLaneHandoffDrillDraft(
+  draft: BlockedLaneHandoffDrillDraft,
+): BlockedLaneHandoffDrillValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const testCommand = draft.testCommand.trim();
+  const artifactPath = draft.artifactPath.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const blockerEta = draft.blockerEta.trim();
+  const dependencyIssueLinks = normalizeMultilineEntries(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before handoff.');
+  }
+  if (!draft.prMode) {
+    missingFields.push('prMode');
+  }
+  if (!testCommand) {
+    missingFields.push('testCommand');
+  }
+  if (!artifactPath) {
+    missingFields.push('artifactPath');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!canonicalizePaperclipIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+  if (draft.prMode === 'no_pr_yet') {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!blockerEta) {
+      missingFields.push('blockerEta');
+    } else if (!Number.isFinite(new Date(blockerEta).getTime())) {
+      errors.push('Blocker ETA must be a valid date-time string.');
+    }
+  }
+
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks: dependencyIssueLinks
+      .map((link) => canonicalizePaperclipIssueLink(link))
+      .filter((link): link is string => Boolean(link))
+      .sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+export function resetBlockedLaneHandoffDrillDraft(input: {
+  laneId: string;
+  issueIdentifier: string;
+  confirmFullReset: boolean;
+}): {
+  draft: BlockedLaneHandoffDrillDraft;
+  didFullReset: boolean;
+  message: string;
+} {
+  const draft = getDefaultBlockedLaneHandoffDrillDraft({
+    laneId: input.laneId,
+    issueIdentifier: input.issueIdentifier,
+  });
+  if (input.confirmFullReset) {
+    return {
+      draft,
+      didFullReset: true,
+      message: 'Blocked-lane handoff drill fully reset. Reconfirm active manifest finding before handoff.',
+    };
+  }
+  return {
+    draft,
+    didFullReset: false,
+    message: 'Blocked-lane handoff drill cleared for active finding. Manifest selection preserved.',
+  };
 }
 
 function canonicalizePaperclipIssueLink(input: string): string | null {
