@@ -7,16 +7,24 @@ import {
 } from '../utils/settlementExceptionsInbox';
 import {
   applyCommandSuccessTransition,
+  buildActivityTimelineViewState,
   buildCommandIdempotencyKey,
+  buildFixtureActivityTimelinePage,
   buildOperatorWorkbenchViewState,
+  createSettlementExceptionActivityTimelineClient,
   createSettlementExceptionCommandClient,
+  resolveActivityReasonCodeLabel,
+  resolveActivityTimelineErrorRail,
   resolveCommandOutcomeRail,
   resolveCommandRailMessage,
   resolveOperatorWorkbenchDataSource,
+  sortActivityTimelineDeterministic,
   shouldBlockDuplicateCommand,
+  type ActivityTimelineErrorRail,
   type CommandOutcomeRail,
   type ExceptionCommandAction,
   type OperatorWorkbenchMode,
+  type SettlementExceptionActivityEvent,
 } from '../utils/settlementExceptionsOperatorWorkbench';
 
 const { request } = useGatewayApi();
@@ -46,12 +54,23 @@ const auth = reactive({
 const mode = ref<OperatorWorkbenchMode>('api');
 const listState = reactive({ loading: false, error: '' });
 const actionState = reactive({ loading: false, rail: 'idle' as CommandOutcomeRail, message: '' });
+const timelineState = reactive({
+  loading: false,
+  rail: 'none' as ActivityTimelineErrorRail,
+});
 
 const latestApiStatusCode = ref<number | undefined>(undefined);
+const latestTimelineApiStatusCode = ref<number | undefined>(undefined);
 const rows = ref<SettlementExceptionInboxRow[]>([]);
 const selectedExceptionId = ref('');
 const retryCount = ref(0);
+const timelineRetryCount = ref(0);
 const inflightKeys = ref<Set<string>>(new Set());
+const timelineRows = ref<SettlementExceptionActivityEvent[]>([]);
+const timelineCurrentCursor = ref<string | null>(null);
+const timelineNextCursor = ref<string | null>(null);
+const timelineCursorHistory = ref<Array<string | null>>([]);
+const timelineLimit = 2;
 const form = reactive({
   reason: 'triage_started',
   note: '',
@@ -89,6 +108,58 @@ const fixtureRows: SettlementExceptionInboxRow[] = [
   },
 ];
 
+const fixtureTimelineByException: Record<string, SettlementExceptionActivityEvent[]> = {
+  se_workbench_001: [
+    {
+      id: 'fx_evt_003',
+      eventType: 'exception_mark_resolved',
+      actorType: 'operator',
+      reasonCode: 'resolved_after_manual_review',
+      fromStatus: 'INVESTIGATING',
+      toStatus: 'RESOLVED',
+      occurredAt: '2026-03-19T09:20:00.000Z',
+    },
+    {
+      id: 'fx_evt_002',
+      eventType: 'exception_acknowledged',
+      actorType: 'operator',
+      reasonCode: 'investigation_started',
+      fromStatus: 'OPEN',
+      toStatus: 'INVESTIGATING',
+      occurredAt: '2026-03-19T09:10:00.000Z',
+    },
+    {
+      id: 'fx_evt_001',
+      eventType: 'exception_opened',
+      actorType: 'system',
+      reasonCode: 'ledger_provider_mismatch',
+      fromStatus: null,
+      toStatus: 'OPEN',
+      occurredAt: '2026-03-19T09:00:00.000Z',
+    },
+  ],
+  se_workbench_002: [
+    {
+      id: 'fx_evt_006',
+      eventType: 'exception_acknowledged',
+      actorType: 'operator',
+      reasonCode: 'investigation_started',
+      fromStatus: 'OPEN',
+      toStatus: 'INVESTIGATING',
+      occurredAt: '2026-03-19T08:30:00.000Z',
+    },
+    {
+      id: 'fx_evt_005',
+      eventType: 'exception_opened',
+      actorType: 'system',
+      reasonCode: 'callback_gap',
+      fromStatus: null,
+      toStatus: 'OPEN',
+      occurredAt: '2026-03-19T08:20:00.000Z',
+    },
+  ],
+};
+
 const reasonCodeMap = [
   { command: 'acknowledge', reasonCode: 'triage_started', note: 'Move OPEN -> INVESTIGATING.' },
   { command: 'assign', reasonCode: 'owner_assignment', note: 'Set owner handoff and keep INVESTIGATING.' },
@@ -96,6 +167,7 @@ const reasonCodeMap = [
 ] as const;
 
 const commandClient = createSettlementExceptionCommandClient(request, authHeaders);
+const timelineClient = createSettlementExceptionActivityTimelineClient(request, authHeaders);
 
 const sortedRows = computed(() => sortExceptionsDeterministic(rows.value));
 const selectedRow = computed(() => sortedRows.value.find((row) => row.id === selectedExceptionId.value) ?? null);
@@ -107,6 +179,16 @@ const workbenchViewState = computed(() => buildOperatorWorkbenchViewState({
   emptyMessage: 'No settlement exceptions available for command execution.',
   readyMessage: `${sortedRows.value.length} exception row(s) ready. Retry count: ${retryCount.value}.`,
 }));
+const timelineViewState = computed(() => buildActivityTimelineViewState({
+  loading: timelineState.loading,
+  rail: timelineState.rail,
+  eventCount: timelineRows.value.length,
+  loadingMessage: 'Loading exception activity timeline...',
+  emptyMessage: 'No activity events found for this settlement exception.',
+  readyMessage: `Timeline page ${timelineCursorHistory.value.length + 1} loaded with ${timelineRows.value.length} event(s). Retry count: ${timelineRetryCount.value}.`,
+}));
+const timelineCanPrev = computed(() => timelineCursorHistory.value.length > 0 && !timelineState.loading);
+const timelineCanNext = computed(() => Boolean(timelineNextCursor.value) && !timelineState.loading);
 
 function authHeaders() {
   return {
@@ -163,6 +245,181 @@ async function wait(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function toTimelineEvent(payload: any): SettlementExceptionActivityEvent | null {
+  const id = String(payload?.id || '').trim();
+  const occurredAt = String(payload?.occurredAt || '').trim();
+  const actorType = String(payload?.actorType || '').trim().toLowerCase();
+  const toStatus = normalizeStatus(payload?.toStatus);
+  if (!id || !occurredAt || Number.isNaN(new Date(occurredAt).getTime())) return null;
+  return {
+    id,
+    eventType: String(payload?.eventType || 'exception_status_updated'),
+    actorType: actorType === 'system' || actorType === 'merchant' ? actorType : 'operator',
+    reasonCode: String(payload?.reasonCode || ''),
+    fromStatus: payload?.fromStatus ? normalizeStatus(payload?.fromStatus) : null,
+    toStatus,
+    occurredAt,
+  };
+}
+
+function resetTimelineCursor() {
+  timelineCurrentCursor.value = null;
+  timelineNextCursor.value = null;
+  timelineCursorHistory.value = [];
+}
+
+function clearTimeline() {
+  resetTimelineCursor();
+  timelineRows.value = [];
+  timelineState.rail = 'none';
+}
+
+function resolveFixtureTimelineEvents(exceptionId: string): SettlementExceptionActivityEvent[] {
+  if (mode.value === 'fixture_empty') return [];
+  return fixtureTimelineByException[exceptionId] ?? fixtureTimelineByException.se_workbench_001;
+}
+
+function applyTimelinePage(payload: {
+  data: SettlementExceptionActivityEvent[];
+  nextCursor: string | null;
+}) {
+  timelineRows.value = sortActivityTimelineDeterministic(payload.data);
+  timelineNextCursor.value = payload.nextCursor;
+  timelineState.rail = 'none';
+}
+
+async function loadActivityTimelinePage(cursor: string | null) {
+  if (!selectedRow.value) {
+    clearTimeline();
+    return;
+  }
+
+  timelineState.loading = true;
+  timelineState.rail = 'none';
+
+  try {
+    if (mode.value === 'fixture_loading') {
+      await wait(600);
+    }
+
+    if (mode.value === 'fixture_timeline_invalid_cursor') {
+      timelineState.rail = 'invalid_cursor';
+      timelineRows.value = [];
+      timelineNextCursor.value = null;
+      return;
+    }
+    if (mode.value === 'fixture_timeline_stale_cursor') {
+      timelineState.rail = 'stale_cursor';
+      timelineRows.value = [];
+      timelineNextCursor.value = null;
+      return;
+    }
+    if (mode.value === 'fixture_timeline_error') {
+      timelineState.rail = 'fetch_failed';
+      timelineRows.value = [];
+      timelineNextCursor.value = null;
+      return;
+    }
+
+    const source = resolveOperatorWorkbenchDataSource({
+      mode: mode.value,
+      latestApiStatusCode: latestTimelineApiStatusCode.value,
+    });
+
+    if (source === 'fixture') {
+      const fixturePage = buildFixtureActivityTimelinePage({
+        events: resolveFixtureTimelineEvents(selectedRow.value.id),
+        cursor,
+        limit: timelineLimit,
+      });
+      timelineState.rail = fixturePage.rail;
+      timelineRows.value = fixturePage.data;
+      timelineNextCursor.value = fixturePage.nextCursor;
+      return;
+    }
+
+    if (!hasAuth()) {
+      timelineState.rail = 'fetch_failed';
+      return;
+    }
+
+    const response = await timelineClient.list({
+      exceptionId: selectedRow.value.id,
+      limit: timelineLimit,
+      cursor: cursor || undefined,
+      mode: 'live',
+    });
+
+    const payloadRows = Array.isArray(response?.data)
+      ? response.data.map((row) => toTimelineEvent(row)).filter((row): row is SettlementExceptionActivityEvent => Boolean(row))
+      : null;
+    const nextCursor = typeof response?.pageInfo?.nextCursor === 'string' ? response.pageInfo.nextCursor : null;
+
+    if (response?.contract !== 'settlement-exception-activity-timeline.v1' || !payloadRows) {
+      throw new Error('Unexpected timeline response contract.');
+    }
+
+    latestTimelineApiStatusCode.value = undefined;
+    applyTimelinePage({ data: payloadRows, nextCursor });
+  } catch (error: any) {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : undefined;
+    latestTimelineApiStatusCode.value = statusCode;
+
+    const source = resolveOperatorWorkbenchDataSource({
+      mode: mode.value,
+      latestApiStatusCode: statusCode,
+    });
+    if (source === 'fixture') {
+      const fixturePage = buildFixtureActivityTimelinePage({
+        events: resolveFixtureTimelineEvents(selectedRow.value.id),
+        cursor,
+        limit: timelineLimit,
+      });
+      timelineState.rail = fixturePage.rail;
+      timelineRows.value = fixturePage.data;
+      timelineNextCursor.value = fixturePage.nextCursor;
+    } else {
+      timelineState.rail = resolveActivityTimelineErrorRail(error);
+      timelineRows.value = [];
+      timelineNextCursor.value = null;
+    }
+  } finally {
+    timelineState.loading = false;
+  }
+}
+
+async function loadActivityTimelineFirstPage() {
+  resetTimelineCursor();
+  await loadActivityTimelinePage(null);
+}
+
+async function loadActivityTimelineNextPage() {
+  if (!timelineNextCursor.value || timelineState.loading) return;
+  const nextCursor = timelineNextCursor.value;
+  const nextHistory = [...timelineCursorHistory.value, timelineCurrentCursor.value];
+  await loadActivityTimelinePage(nextCursor);
+  if (timelineState.rail === 'none') {
+    timelineCursorHistory.value = nextHistory;
+    timelineCurrentCursor.value = nextCursor;
+  }
+}
+
+async function loadActivityTimelinePreviousPage() {
+  if (timelineCursorHistory.value.length === 0 || timelineState.loading) return;
+  const history = [...timelineCursorHistory.value];
+  const previousCursor = history.pop() ?? null;
+  await loadActivityTimelinePage(previousCursor);
+  if (timelineState.rail === 'none') {
+    timelineCursorHistory.value = history;
+    timelineCurrentCursor.value = previousCursor;
+  }
+}
+
+async function retryTimeline() {
+  timelineRetryCount.value += 1;
+  await loadActivityTimelinePage(timelineCurrentCursor.value);
+}
+
 async function loadWorkbench() {
   listState.loading = true;
   listState.error = '';
@@ -176,6 +433,7 @@ async function loadWorkbench() {
     if (mode.value === 'fixture_empty') {
       rows.value = [];
       selectedExceptionId.value = '';
+      clearTimeline();
       return;
     }
 
@@ -217,6 +475,7 @@ async function loadWorkbench() {
     } else {
       rows.value = [];
       selectedExceptionId.value = '';
+      clearTimeline();
       listState.error = error?.message || 'Unable to load settlement exceptions.';
     }
   } finally {
@@ -334,8 +593,28 @@ async function retryWorkbench() {
   await loadWorkbench();
 }
 
+watch(selectedExceptionId, async (nextId, prevId) => {
+  if (nextId === prevId) return;
+  if (!nextId) {
+    clearTimeline();
+    return;
+  }
+  await loadActivityTimelineFirstPage();
+});
+
+watch(mode, async (nextMode, prevMode) => {
+  if (nextMode === prevMode) return;
+  clearTimeline();
+  if (selectedExceptionId.value) {
+    await loadActivityTimelineFirstPage();
+  }
+});
+
 onMounted(() => {
   void loadWorkbench();
+  if (selectedExceptionId.value) {
+    void loadActivityTimelineFirstPage();
+  }
 });
 </script>
 
@@ -375,6 +654,9 @@ onMounted(() => {
             <option value="fixture_validation_error">fixture_validation_error</option>
             <option value="fixture_stale_conflict">fixture_stale_conflict</option>
             <option value="fixture_duplicate_event">fixture_duplicate_event</option>
+            <option value="fixture_timeline_invalid_cursor">fixture_timeline_invalid_cursor</option>
+            <option value="fixture_timeline_stale_cursor">fixture_timeline_stale_cursor</option>
+            <option value="fixture_timeline_error">fixture_timeline_error</option>
           </select>
         </label>
         <button type="submit" :disabled="listState.loading">{{ listState.loading ? 'Refreshing...' : 'Refresh Workbench' }}</button>
@@ -486,6 +768,46 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+      </article>
+
+      <article class="card">
+        <h2>Activity Timeline</h2>
+        <p class="state" :class="{ error: timelineViewState.key === 'error' }">
+          {{ selectedRow ? timelineViewState.message : 'Select an exception row to view activity timeline.' }}
+        </p>
+        <div v-if="selectedRow" class="inline-actions compact">
+          <button type="button" :disabled="!timelineCanPrev" @click="loadActivityTimelinePreviousPage">Previous Page</button>
+          <button type="button" :disabled="!timelineCanNext" @click="loadActivityTimelineNextPage">Next Page</button>
+          <button type="button" :disabled="timelineState.loading" @click="loadActivityTimelineFirstPage">Reset Cursor</button>
+        </div>
+        <div v-if="selectedRow && timelineViewState.showRetry" class="inline-actions compact">
+          <button type="button" :disabled="timelineState.loading" @click="retryTimeline">Retry Timeline Fetch</button>
+        </div>
+
+        <ul v-if="selectedRow && timelineState.loading" class="timeline-list">
+          <li v-for="line in 3" :key="`timeline-loading-${line}`">
+            <strong>Loading timeline event...</strong>
+            <small>Fetching deterministic page {{ timelineCursorHistory.length + 1 }}.</small>
+          </li>
+        </ul>
+
+        <ul v-else-if="selectedRow && timelineRows.length" class="timeline-list">
+          <li v-for="event in timelineRows" :key="event.id">
+            <div class="timeline-row-top">
+              <strong>{{ event.eventType }}</strong>
+              <small>{{ event.occurredAt }}</small>
+            </div>
+            <p>
+              {{ event.fromStatus || 'NONE' }} -> {{ event.toStatus }}
+              <span class="pill">{{ event.actorType }}</span>
+            </p>
+            <small>
+              Reason: <code>{{ event.reasonCode }}</code> ({{ resolveActivityReasonCodeLabel(event.reasonCode) }})
+            </small>
+          </li>
+        </ul>
+
+        <p v-else-if="selectedRow" class="state">No activity timeline events to render.</p>
       </article>
     </section>
   </main>
