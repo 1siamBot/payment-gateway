@@ -1,6 +1,10 @@
 import { createHmac } from 'crypto';
 import { TransactionStatus, TransactionType } from '@prisma/client';
 import { PaymentsService } from '../src/payments/payments.service';
+import {
+  PAYMENT_ATTEMPT_TIMELINE_FIXTURES,
+  type PaymentAttemptTimelineScenario,
+} from '../src/payments/payment-attempt-timeline-fixtures';
 import { RoutingReasonCode } from '../src/providers/provider.interface';
 
 function createPrismaMock() {
@@ -8,6 +12,7 @@ function createPrismaMock() {
   const callbackStore = new Set<string>();
   const txStore = new Map<string, any>();
   const txByRef = new Map<string, any>();
+  const refundStore = new Map<string, any>();
   const auditLogStore: any[] = [];
   const merchantStore = new Map<string, any>([['merchant-1', { id: 'merchant-1', name: 'Demo Merchant' }]]);
   const customerStore = new Map<string, any>();
@@ -144,6 +149,64 @@ function createPrismaMock() {
           }));
         }),
       },
+      refund: {
+        findUnique: jest.fn(async ({ where, include }) => {
+          if (where.id) {
+            const refund = refundStore.get(where.id) ?? null;
+            if (!refund) return null;
+            if (!include?.transaction) return refund;
+            const tx = txStore.get(refund.transactionId);
+            return { ...refund, transaction: { reference: tx?.reference } };
+          }
+          if (where.transactionId) {
+            const refund = [...refundStore.values()].find((row) => row.transactionId === where.transactionId) ?? null;
+            if (!refund) return null;
+            if (!include?.transaction) return refund;
+            const tx = txStore.get(refund.transactionId);
+            return { ...refund, transaction: { reference: tx?.reference } };
+          }
+          if (where.merchantId_idempotencyKey) {
+            const refund = [...refundStore.values()].find(
+              (row) => row.merchantId === where.merchantId_idempotencyKey.merchantId
+                && row.idempotencyKey === where.merchantId_idempotencyKey.idempotencyKey,
+            ) ?? null;
+            if (!refund) return null;
+            if (!include?.transaction) return refund;
+            const tx = txStore.get(refund.transactionId);
+            return { ...refund, transaction: { reference: tx?.reference } };
+          }
+          return null;
+        }),
+        create: jest.fn(async ({ data }) => {
+          const id = `refund-${refundStore.size + 1}`;
+          const row = { id, createdAt: new Date(), updatedAt: new Date(), status: 'SUCCEEDED', ...data };
+          refundStore.set(id, row);
+          return row;
+        }),
+        findMany: jest.fn(async ({ where, include, orderBy, take }) => {
+          let rows = [...refundStore.values()].filter((row) => {
+            if (where?.merchantId && row.merchantId !== where.merchantId) return false;
+            if (where?.transaction?.reference?.contains) {
+              const tx = txStore.get(row.transactionId);
+              if (!tx?.reference?.includes(where.transaction.reference.contains)) return false;
+            }
+            return true;
+          });
+
+          if (orderBy?.createdAt === 'desc') {
+            rows = rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          }
+          rows = rows.slice(0, take ?? rows.length);
+
+          if (!include?.transaction) {
+            return rows;
+          }
+          return rows.map((row) => {
+            const tx = txStore.get(row.transactionId);
+            return { ...row, transaction: { reference: tx?.reference } };
+          });
+        }),
+      },
       callbackEvent: {
         findUnique: jest.fn(async ({ where }) => {
           const key = `${where.providerName_eventId.providerName}:${where.providerName_eventId.eventId}`;
@@ -184,6 +247,16 @@ function createPrismaMock() {
       },
     },
   };
+}
+
+function mapFixtureStatusToTransactionStatus(status: string): TransactionStatus {
+  if (status === TransactionStatus.PAID) {
+    return TransactionStatus.PAID;
+  }
+  if (status === TransactionStatus.FAILED) {
+    return TransactionStatus.FAILED;
+  }
+  return TransactionStatus.CREATED;
 }
 
 describe('PaymentsService', () => {
@@ -285,7 +358,7 @@ describe('PaymentsService', () => {
     expect(rows[0].type).toBe(TransactionType.DEPOSIT);
   });
 
-  it('supports manual refund for a paid transaction', async () => {
+  it('supports idempotent refund creation for a paid transaction', async () => {
     const prismaMock = createPrismaMock();
     const router = {
       initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
@@ -313,10 +386,13 @@ describe('PaymentsService', () => {
       signature,
     });
 
-    const refunded = await service.manualRefund(created.reference, 'support_request');
-    expect(refunded.sourceReference).toBe(created.reference);
-    expect(refunded.status).toBe(TransactionStatus.REFUNDED);
+    const refunded = await service.createRefund(created.reference, 'refund-idem-1', 'support_request');
+    const duplicate = await service.createRefund(created.reference, 'refund-idem-1', 'support_request');
+    expect(refunded.paymentReference).toBe(created.reference);
+    expect(refunded.status).toBe('SUCCEEDED');
+    expect(duplicate.id).toBe(refunded.id);
     expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.refunded');
+    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledTimes(2);
   });
 
   it('records routing decision telemetry in audit log when router supplies decision details', async () => {
@@ -501,4 +577,254 @@ describe('PaymentsService', () => {
       estimatedFeePercent: 1.8,
     }));
   });
+
+  it('returns payment-attempt timeline rows ordered by occurredAt with stable status labels', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 149.5,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-timeline-ordered',
+    });
+
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: prismaMock.store.txByRef.get(payment.reference).id,
+        metadata: JSON.stringify({
+          stage: 'Capture confirmed',
+          status: 'completed',
+          actor: 'mock-a',
+          note: 'Capture completed successfully.',
+          occurredAt: '2026-03-18T08:01:12.000Z',
+        }),
+      },
+    });
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: prismaMock.store.txByRef.get(payment.reference).id,
+        metadata: JSON.stringify({
+          stage: 'Payment created',
+          status: 'completed',
+          actor: 'gateway',
+          note: 'Initial request accepted.',
+          occurredAt: '2026-03-18T08:00:00.000Z',
+        }),
+      },
+    });
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: prismaMock.store.txByRef.get(payment.reference).id,
+        metadata: JSON.stringify({
+          stage: 'Capture in progress',
+          status: 'pending',
+          actor: 'mock-a',
+          note: 'Provider processing capture.',
+          occurredAt: '2026-03-18T08:01:05.000Z',
+        }),
+      },
+    });
+
+    const timeline = await service.getPaymentAttemptTimeline(payment.reference);
+
+    expect(timeline.events).toHaveLength(5);
+    expect(timeline.events[0].stage).toBe('Payment created');
+    expect(timeline.events[0].status).toBe('completed');
+    expect(timeline.events[1].status).toBe('pending');
+    expect(timeline.events[1].stage).toBe('Capture in progress');
+    expect(timeline.events[2].stage).toBe('Capture confirmed');
+    expect(timeline.events[2].status).toBe('completed');
+    expect(timeline.summary.malformedCount).toBe(0);
+    expect(timeline.summary.emptyTimeline).toBe(false);
+  });
+
+  it('returns empty timeline summary when no timeline events exist', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-timeline-empty',
+    });
+
+    const timeline = await service.getPaymentAttemptTimeline(payment.reference);
+
+    expect(timeline.events).toHaveLength(2);
+    expect(timeline.summary.emptyTimeline).toBe(false);
+
+    const txId = prismaMock.store.txByRef.get(payment.reference).id;
+    prismaMock.prisma.auditLog.findMany.mockImplementationOnce(async () => []);
+    const empty = await service.getPaymentAttemptTimeline(payment.reference);
+    expect(empty.events).toHaveLength(0);
+    expect(empty.summary.emptyTimeline).toBe(true);
+    expect(empty.transactionId).toBe(txId);
+  });
+
+  it('skips malformed timeline events and reports malformed count', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 64,
+      currency: 'USD',
+      type: 'deposit',
+      idempotencyKey: 'idem-timeline-malformed',
+    });
+    const txId = prismaMock.store.txByRef.get(payment.reference).id;
+
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: txId,
+        metadata: JSON.stringify({
+          stage: 'Payment created',
+          status: 'completed',
+          actor: 'gateway',
+          note: 'Valid row.',
+          occurredAt: '2026-03-18T11:00:00.000Z',
+        }),
+      },
+    });
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: txId,
+        metadata: JSON.stringify({
+          stage: 'Bad timestamp row',
+          status: 'completed',
+          actor: 'gateway',
+          note: 'This row should be dropped.',
+          occurredAt: 'invalid-date',
+        }),
+      },
+    });
+    await prismaMock.prisma.auditLog.create({
+      data: {
+        eventType: 'payment.attempt.event',
+        actor: 'gateway',
+        entityType: 'transaction',
+        entityId: txId,
+        metadata: '{"bad": ',
+      },
+    });
+
+    const timeline = await service.getPaymentAttemptTimeline(payment.reference);
+
+    expect(timeline.events.map((event) => event.stage)).toContain('Payment created');
+    expect(timeline.events.map((event) => event.stage)).not.toContain('Bad timestamp row');
+    expect(timeline.summary.malformedCount).toBe(2);
+    expect(timeline.normalization.contract).toBe('payment-attempt-timeline.v2');
+    expect(timeline.normalization.malformedByCode).toEqual({
+      'TLN-001_INVALID_METADATA_JSON': 1,
+      'TLN-002_MISSING_STAGE': 0,
+      'TLN-003_INVALID_STATUS': 0,
+      'TLN-004_INVALID_OCCURRED_AT': 1,
+      'TLN-005_MISSING_TO_STATUS': 0,
+    });
+    expect(timeline.normalization.errorCodeMap).toHaveLength(5);
+  });
+
+  it.each([
+    ['successful_capture', { expectedEventCount: 9, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['retry_then_success', { expectedEventCount: 9, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['terminal_failure', { expectedEventCount: 8, expectedMalformedCount: 0, expectedEmptyTimeline: false }],
+    ['empty', { expectedEventCount: 0, expectedMalformedCount: 0, expectedEmptyTimeline: true }],
+    ['malformed', { expectedEventCount: 2, expectedMalformedCount: 2, expectedEmptyTimeline: false }],
+  ] satisfies Array<
+    [PaymentAttemptTimelineScenario, { expectedEventCount: number; expectedMalformedCount: number; expectedEmptyTimeline: boolean }]
+  >)(
+    'returns deterministic timeline contract for fixture scenario %s',
+    async (scenario, expectations) => {
+      const fixture = PAYMENT_ATTEMPT_TIMELINE_FIXTURES.find((entry) => entry.scenario === scenario);
+      expect(fixture).toBeDefined();
+
+      const prismaMock = createPrismaMock();
+      const router = {
+        initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+      };
+      const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+      const tx = await prismaMock.prisma.transaction.create({
+        data: {
+          merchantId: fixture!.merchantId,
+          type: TransactionType.DEPOSIT,
+          amount: fixture!.amount,
+          currency: fixture!.currency,
+          status: mapFixtureStatusToTransactionStatus(fixture!.finalStatus),
+          reference: fixture!.paymentReference,
+          providerName: 'mock-a',
+        },
+      });
+
+      for (const event of fixture!.events) {
+        await prismaMock.prisma.auditLog.create({
+          data: {
+            eventType: 'payment.attempt.event',
+            actor: event.actor,
+            entityType: 'transaction',
+            entityId: tx.id,
+            metadata: JSON.stringify({
+              stage: event.stage,
+              status: event.status,
+              actor: event.actor,
+              note: event.note,
+              occurredAt: event.occurredAt,
+            }),
+          },
+        });
+      }
+
+      const timeline = await service.getPaymentAttemptTimeline(fixture!.paymentReference);
+      const validFixtureEvents = fixture!.events.filter((event) => Number.isFinite(Date.parse(event.occurredAt)));
+      const expectedSortedStages = validFixtureEvents
+        .slice()
+        .sort((left, right) => {
+          const timeDelta = Date.parse(left.occurredAt) - Date.parse(right.occurredAt);
+          if (timeDelta !== 0) {
+            return timeDelta;
+          }
+          return left.id.localeCompare(right.id);
+        })
+        .map((event) => event.stage);
+
+      expect(timeline.paymentReference).toBe(fixture!.paymentReference);
+      expect(timeline.merchantId).toBe(fixture!.merchantId);
+      expect(timeline.finalStatus).toBe(mapFixtureStatusToTransactionStatus(fixture!.finalStatus));
+      expect(timeline.summary.eventCount).toBe(expectations.expectedEventCount);
+      expect(timeline.summary.malformedCount).toBe(expectations.expectedMalformedCount);
+      expect(timeline.summary.emptyTimeline).toBe(expectations.expectedEmptyTimeline);
+      expect(timeline.events).toHaveLength(expectations.expectedEventCount);
+      expect(timeline.events.map((event) => event.stage)).toEqual(expectedSortedStages);
+      expect(timeline.events.every((event) => event.source === 'attempt_event')).toBe(true);
+      expect(timeline.normalization.contract).toBe('payment-attempt-timeline.v2');
+    },
+  );
 });

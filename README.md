@@ -27,6 +27,7 @@ A Nuxt 3 customer/admin operations app is available in [`frontend/`](./frontend)
 - Customer search + customer payment history
 - Manual refund trigger for support workflows
 - Loading/error/empty states for each critical path
+- Payment attempt timeline drawer fixture lab at `/payment-attempt-timeline` (supports `?scenario=successful_capture|retry_then_success|terminal_failure|empty|malformed`)
 
 ### Frontend env
 
@@ -113,6 +114,160 @@ Response shape (high level):
 - `breaker.transitions`: circuit breaker state changes (`from`/`to`) when captured during routing
 - `events`: raw ordered routing event stream (`routing.decision`, `routing.failover`, `routing.breaker.transition`, etc.)
 - observability dashboard: aggregated `decisions`, `failovers`, `breakerTransitions`, `margins`, and alert summaries derived from backend routing telemetry records
+
+## Routing Admin APIs (ONE-42)
+
+Internal admin/ops endpoints for live routing policy control (no redeploy required):
+
+- `GET /admin/routing/policy`: current runtime policy (weights, feature flags, circuit breaker, provider profiles)
+- `PUT /admin/routing/policy`: partial update runtime policy configuration
+- `GET /admin/routing/health`: provider health + circuit breaker/runtime counters snapshot
+
+`PUT /admin/routing/policy` payload example:
+
+```json
+{
+  "featureFlags": { "rolloutPercent": 50, "shadowMode": false },
+  "weights": { "fee": 0.35, "successRate": 0.4 },
+  "providerProfiles": {
+    "mock-a": { "feePercent": 1.8, "riskScore": 14 }
+  }
+}
+```
+
+## Settlement Reconciliation APIs (ONE-42)
+
+Daily reconciliation and mismatch query APIs:
+
+- `POST /settlements/reconciliation/generate?date=YYYY-MM-DD`
+  - Generates a daily merchant settlement summary and writes `settlement.reconciliation.generated` audit event.
+- `GET /settlements/reconciliation/mismatches?date=YYYY-MM-DD&merchantId=&transactionReference=`
+  - Returns mismatches queryable by merchant and transaction reference.
+
+Mismatch reason codes:
+
+- `paid_without_success_callback`
+- `failed_with_success_callback`
+- `stuck_non_terminal`
+
+## Settlement Exception QA Fixtures (ONE-77)
+
+Deterministic fixture seeding and replay utilities for settlement exception triage QA.
+
+### Fixture read API
+
+- `GET /settlements/exceptions/qa-fixtures?scenario=&status=`
+  - Returns deterministic rows derived from `SETTLEMENT_EXCEPTION_QA_FIXTURES`.
+  - Optional filters:
+    - `scenario`: `resolve_success | ignore_success | stale_version_conflict | action_failure_retry | investigating_reference | resolved_reference | ignored_reference`
+    - `status`: `OPEN | INVESTIGATING | RESOLVED | IGNORED`
+  - Response keys: `data[]` (`id`, `scenario`, `merchantId`, `providerName`, `windowDate`, `status`, `version`, etc.) and `total`.
+
+### 1) Reset + seed deterministic fixtures
+
+```bash
+npm run settlements:fixtures:seed
+```
+
+Expected output (shape):
+
+```text
+Seeded deterministic settlement exception fixtures
+merchant=merchant_demo
+windowDate=2026-03-18
+fixtures=7
+statusCounts={"OPEN":4,"INVESTIGATING":1,"RESOLVED":1,"IGNORED":1}
+fixtureIds=se_fx_resolve_success,se_fx_ignore_success,se_fx_stale_conflict,se_fx_action_retry,se_fx_investigating_reference,se_fx_resolved_reference,se_fx_ignored_reference
+```
+
+### 2) Replay required scenarios (API must be running)
+
+```bash
+INTERNAL_API_TOKEN=<your-internal-token> npm run settlements:fixtures:replay
+# Optional override when API is not on :3000
+# SETTLEMENT_QA_API_BASE_URL=http://localhost:3001
+```
+
+Expected output (shape):
+
+```text
+Settlement exception fixture replay results
+apiBaseUrl=http://localhost:3001
+resolve_success=201:ok
+ignore_success=201:ok
+stale_conflict_first=201:ok
+stale_conflict_second=409:failed
+stale_conflict_reason=stale_updated_at
+retry_failure=409:failed
+retry_failure_reason=idempotency_in_progress
+retry_success=201:ok
+```
+
+## Adjudication Replay Verifier (ONE-182)
+
+Deterministic verifier runner for ONE-125 checks 10/11/12 using the canonical schema constraints (ONE-180) and fixture matrix (ONE-181).
+
+### Run
+
+```bash
+npm run adjudication:replay:verify
+# optional artifact override:
+# ADJUDICATION_REPLAY_ARTIFACT_PATH=artifacts/custom-replay-summary.json npm run adjudication:replay:verify
+```
+
+### Artifact output
+
+- Default path: `artifacts/adjudication-replay-summary.json`
+- Per-check fields:
+  - `checkId`
+  - `verdict` (`PASS_FINAL` or `FAIL`)
+  - `signatureKey` (first failure key when failing)
+  - `firstOwner`
+  - `escalationOwner`
+- Includes `fixtureResults[]` and fixture totals for auditability.
+
+### Exit behavior
+
+- `0`: all checks (10/11/12) are `PASS_FINAL`
+- non-zero: one or more checks failed, or fixture shape is invalid
+
+## Adjudication Payload Diff Guard CLI (ONE-183)
+
+Deterministic payload schema-diff guard for FE publication artifacts using canonical field expectations (ONE-180) and check mapping compatibility with replay checks 10/11/12 (ONE-182).
+
+### Run
+
+```bash
+npm run adjudication:payload:diff -- --input <path-to-payload.json>
+# optional output override:
+# npm run adjudication:payload:diff -- --input <path> --output artifacts/custom-payload-diff-summary.json
+```
+
+### Artifact output
+
+- Default path: `artifacts/adjudication-payload-diff-summary.json`
+- Includes:
+  - `verdict` (`PASS_FINAL` or `FAIL`)
+  - `checkResults[]` for checks `10/11/12`
+  - `mismatches[]` rows with stable code, path, expected/actual details, and mapped checks
+
+### Exit behavior
+
+- `0`: input payload matches canonical required schema set
+- non-zero: one or more deterministic mismatches found
+
+### Stable console summary lines
+
+```text
+Adjudication replay verifier summary
+artifact=artifacts/adjudication-replay-summary.json
+check10=FAIL signatureKey=TXN_GUARD_FIELDS_MISSING signatures=TXN_GUARD_FIELDS_MISSING,TXN_STALE_VERSION_CONFLICT,TXN_CONFLICT_ENVELOPE_INCOMPLETE firstOwner=frontend escalationOwner=backend
+check11=FAIL signatureKey=TXN_EVIDENCE_FILENAME_DRIFT signatures=TXN_EVIDENCE_FILENAME_DRIFT,MX_08_QA_CHECKLIST_MISSING firstOwner=qa escalationOwner=frontend
+check12=FAIL signatureKey=MX_08_QA_CHECKLIST_MISSING signatures=MX_08_QA_CHECKLIST_MISSING,AC1_OWNER_ROUTE_MISSING firstOwner=frontend escalationOwner=pm
+fixtures.total=10
+fixtures.passed=4
+fixtures.failed=6
+```
 
 ## QA Handoff Package (ONE-38)
 

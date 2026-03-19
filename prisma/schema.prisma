@@ -31,6 +31,17 @@ enum WebhookDeliveryStatus {
   FAILED
 }
 
+enum RefundStatus {
+  SUCCEEDED
+}
+
+enum SettlementExceptionStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  IGNORED
+}
+
 model Merchant {
   id            String   @id @default(cuid())
   name          String
@@ -41,6 +52,8 @@ model Merchant {
   apiKeys       ApiKey[]
   customers     Customer[]
   txns          Transaction[]
+  refunds       Refund[]
+  settlementExceptions SettlementException[]
 }
 
 model ApiKey {
@@ -94,6 +107,7 @@ model Transaction {
   audits            TransactionAudit[]
   callbackEvents    CallbackEvent[]
   webhookDeliveries WebhookDelivery[]
+  refunds           Refund[]
 
   @@index([merchantId, status])
   @@index([customerId, createdAt])
@@ -152,6 +166,24 @@ model IdempotencyKey {
   @@unique([scope, key])
 }
 
+model Refund {
+  id             String       @id @default(cuid())
+  transactionId  String       @unique
+  merchantId     String
+  idempotencyKey String
+  amount         Decimal
+  currency       String
+  reason         String?
+  status         RefundStatus @default(SUCCEEDED)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  transaction    Transaction  @relation(fields: [transactionId], references: [id])
+  merchant       Merchant     @relation(fields: [merchantId], references: [id])
+
+  @@unique([merchantId, idempotencyKey])
+  @@index([merchantId, createdAt])
+}
+
 model AuditLog {
   id         String   @id @default(cuid())
   eventType  String
@@ -160,4 +192,44 @@ model AuditLog {
   entityId   String
   metadata   String
   createdAt  DateTime @default(now())
+}
+
+model SettlementException {
+  id                    String                    @id @default(cuid())
+  merchantId            String
+  providerName          String
+  windowDate            DateTime
+  ledgerTotal           Decimal
+  providerTotal         Decimal
+  deltaAmount           Decimal
+  fingerprint           String                    @unique
+  status                SettlementExceptionStatus @default(OPEN)
+  openedReason          String
+  openedNote            String?
+  latestOperatorReason  String?
+  latestOperatorNote    String?
+  resolutionActor       String?
+  resolutionAt          DateTime?
+  version               Int                       @default(1)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  audits                SettlementExceptionAudit[]
+  merchant              Merchant                  @relation(fields: [merchantId], references: [id])
+
+  @@index([merchantId, providerName, status, windowDate])
+  @@index([status, updatedAt])
+}
+
+model SettlementExceptionAudit {
+  id                    String                    @id @default(cuid())
+  settlementExceptionId String
+  fromStatus            SettlementExceptionStatus?
+  toStatus              SettlementExceptionStatus
+  reason                String
+  note                  String?
+  actor                 String
+  createdAt             DateTime                  @default(now())
+  settlementException   SettlementException       @relation(fields: [settlementExceptionId], references: [id])
+
+  @@index([settlementExceptionId, createdAt])
 }

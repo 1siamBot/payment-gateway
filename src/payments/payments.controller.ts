@@ -3,7 +3,9 @@ import { TransactionStatus, TransactionType } from '@prisma/client';
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { CallbackDto } from './dto/callback.dto';
+import { CreateRefundDto } from './dto/create-refund.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { ListRefundsDto } from './dto/list-refunds.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
 import { PaymentsService } from './payments.service';
@@ -70,6 +72,12 @@ export class PaymentsController {
     return this.payments.getRoutingTelemetry(reference, request.auth?.merchantId);
   }
 
+  @Get('payments/:reference/attempt-timeline')
+  @Authorize('merchant', 'support', 'ops', 'admin')
+  attemptTimeline(@Req() request: AuthenticatedRequest, @Param('reference') reference: string) {
+    return this.payments.getPaymentAttemptTimeline(reference, request.auth?.merchantId);
+  }
+
   @Post('payments/:reference/refund')
   @Authorize('support', 'ops', 'admin')
   refund(
@@ -77,7 +85,34 @@ export class PaymentsController {
     @Param('reference') reference: string,
     @Body() body: RefundPaymentDto,
   ) {
-    return this.payments.manualRefund(reference, body.reason, request.auth?.merchantId);
+    return this.payments.createRefund(reference, body.idempotencyKey, body.reason, request.auth?.merchantId);
+  }
+
+  @Post('refunds')
+  @Authorize('support', 'ops', 'admin')
+  createRefund(@Req() request: AuthenticatedRequest, @Body() body: CreateRefundDto) {
+    return this.payments.createRefund(
+      body.paymentReference,
+      body.idempotencyKey,
+      body.reason,
+      request.auth?.merchantId,
+    );
+  }
+
+  @Get('refunds')
+  @Authorize('merchant', 'support', 'ops', 'admin')
+  listRefunds(@Req() request: AuthenticatedRequest, @Query() query: ListRefundsDto) {
+    return this.payments.listRefunds({
+      merchantId: query.merchantId ?? request.auth?.merchantId,
+      paymentReference: query.paymentReference,
+      take: query.take,
+    }, request.auth?.merchantId);
+  }
+
+  @Get('refunds/:refundId')
+  @Authorize('merchant', 'support', 'ops', 'admin')
+  getRefund(@Req() request: AuthenticatedRequest, @Param('refundId') refundId: string) {
+    return this.payments.getRefund(refundId, request.auth?.merchantId);
   }
 
   @Post('payments/callbacks/provider')

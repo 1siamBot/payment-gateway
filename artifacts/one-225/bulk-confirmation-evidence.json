@@ -1,0 +1,14 @@
+{
+  "confirmationDrawer": {
+    "summary": "Deterministic action summary is rendered from buildExceptionBulkConfirmation and shown in the confirmation modal.",
+    "validatedBy": "test/frontend.wave1.spec.ts :: builds deterministic bulk confirmation summary for render state"
+  },
+  "rollbackHint": {
+    "summary": "Rollback hint is emitted for malformed/mixed-risk selections and rendered in panel + modal copy.",
+    "validatedBy": "test/frontend.wave1.spec.ts :: emits deterministic rollback hint when malformed rows are in preview"
+  },
+  "fallbackSafeReset": {
+    "summary": "Stale/no-selection fallback state includes explicit safe-reset guidance and disable-confirm behavior.",
+    "validatedBy": "test/frontend.wave1.spec.ts :: returns explicit stale/no-selection fallback for safe reset UX"
+  }
+}

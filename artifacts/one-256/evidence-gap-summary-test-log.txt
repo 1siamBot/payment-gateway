@@ -1,0 +1,10 @@
+ONE-256 evidence-gap summary endpoint
+
+Test command:
+- npm test -- test/settlement-evidence-gap-summary.spec.ts test/settlement-evidence-gap-summary-endpoint.spec.ts
+
+Result:
+- PASS test/settlement-evidence-gap-summary.spec.ts
+- PASS test/settlement-evidence-gap-summary-endpoint.spec.ts
+- Test Suites: 2 passed, 2 total
+- Tests: 5 passed, 5 total

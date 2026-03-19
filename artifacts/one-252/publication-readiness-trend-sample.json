@@ -1,0 +1,71 @@
+{
+  "request": {
+    "rows": [
+      {
+        "issueId": "ONE-300",
+        "windowStart": "2026-03-19T00:10:00Z",
+        "lanePriority": 1,
+        "branch": "",
+        "fullSha": "",
+        "prUrl": "",
+        "blockerPacketUrl": "",
+        "testSummary": "",
+        "artifactUrl": ""
+      },
+      {
+        "issueId": "ONE-400",
+        "windowStart": "2026-03-19T00:15:00Z",
+        "lanePriority": 2,
+        "branch": "feat/four-hundred",
+        "fullSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "blockerPacketUrl": "/ONE/issues/ONE-251#comment-1",
+        "testSummary": "6 passed",
+        "artifactUrl": "artifacts/one-400/evidence.md"
+      }
+    ]
+  },
+  "response": {
+    "contract": "settlement-publication-readiness-trend.v1",
+    "rows": [
+      {
+        "issueId": "ONE-300",
+        "windowStart": "2026-03-19T00:10:00.000Z",
+        "lanePriority": 1,
+        "readinessState": "blocked_publish",
+        "gapCodes": [
+          "MISSING_BRANCH",
+          "MISSING_FULL_SHA",
+          "MISSING_PR_OR_BLOCKER_PACKET",
+          "MISSING_TEST_SUMMARY",
+          "MISSING_ARTIFACT_LINK"
+        ]
+      },
+      {
+        "issueId": "ONE-400",
+        "windowStart": "2026-03-19T00:15:00.000Z",
+        "lanePriority": 2,
+        "readinessState": "ready",
+        "gapCodes": []
+      }
+    ],
+    "counters": {
+      "byGapCode": {
+        "MISSING_BRANCH": 1,
+        "MISSING_FULL_SHA": 1,
+        "MISSING_PR_OR_BLOCKER_PACKET": 1,
+        "MISSING_TEST_SUMMARY": 1,
+        "MISSING_ARTIFACT_LINK": 1
+      },
+      "byReadinessState": {
+        "ready": 1,
+        "blocked_publish": 1,
+        "missing_evidence": 0
+      }
+    },
+    "metadata": {
+      "inputCount": 2,
+      "acceptedCount": 2,
+      "skippedCount": 0
+    }
+  }
+}

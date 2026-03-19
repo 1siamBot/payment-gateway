@@ -8,8 +8,17 @@ export function useGatewayApi() {
         ...options,
       });
     } catch (error: any) {
-      const message = error?.data?.message || error?.message || 'Request failed';
-      throw new Error(Array.isArray(message) ? message.join(', ') : String(message));
+      const payload = error?.data;
+      const rawMessage = payload?.message ?? error?.message ?? 'Request failed';
+      const message = Array.isArray(rawMessage)
+        ? rawMessage.join(', ')
+        : typeof rawMessage === 'string'
+          ? rawMessage
+          : JSON.stringify(rawMessage);
+      const wrapped = new Error(message) as Error & { payload?: unknown; statusCode?: number };
+      wrapped.payload = payload;
+      wrapped.statusCode = payload?.statusCode ?? error?.statusCode;
+      throw wrapped;
     }
   }
 

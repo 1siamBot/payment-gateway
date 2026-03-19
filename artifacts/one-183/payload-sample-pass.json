@@ -1,0 +1,24 @@
+{
+  "packet": {
+    "issue": "ONE-104",
+    "generatedAt": "2026-03-19T03:40:00.000Z",
+    "owner": "frontend-engineer",
+    "correlationId": "corr_104_20260319_010",
+    "sourceIssue": "/ONE/issues/ONE-104"
+  },
+  "naming": {
+    "artifactPrefix": "one104_pub_pass3",
+    "filePattern": "^one125_c10_[a-z0-9_]+_[0-9]{8}T[0-9]{6}Z\\.json$",
+    "artifactFileNames": [
+      "one125_c10_packet_20260319T034000Z.json"
+    ]
+  },
+  "version": {
+    "expectedVersion": 22,
+    "expectedUpdatedAt": "2026-03-19T03:39:10.000Z",
+    "isLatestSnapshot": true
+  },
+  "idempotency": {
+    "key": "one104-pass3-v22"
+  }
+}

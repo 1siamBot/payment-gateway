@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
+  RefundStatus,
   TransactionStatus,
   TransactionType,
 } from '@prisma/client';
@@ -17,6 +18,11 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { CallbackDto } from './dto/callback.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListPaymentsDto } from './dto/list-payments.dto';
+import {
+  normalizePaymentAttemptTimelineAuditLogs,
+  type PaymentAttemptTimelineErrorCode,
+  type PaymentAttemptTimelineEvent,
+} from './payment-attempt-timeline-normalizer';
 
 type PaymentResponse = {
   reference: string;
@@ -73,6 +79,39 @@ type ObservabilityQuery = {
   segment?: ObservabilitySegment;
   timeframeHours?: number;
   take?: number;
+};
+
+type RefundResponse = {
+  id: string;
+  paymentReference: string;
+  merchantId: string;
+  amount: number;
+  currency: string;
+  reason: string | null;
+  status: RefundStatus;
+  createdAt: string;
+};
+
+type PaymentAttemptTimelineResponse = {
+  paymentReference: string;
+  transactionId: string;
+  merchantId: string;
+  finalStatus: TransactionStatus;
+  events: PaymentAttemptTimelineEvent[];
+  summary: {
+    eventCount: number;
+    malformedCount: number;
+    emptyTimeline: boolean;
+  };
+  normalization: {
+    contract: 'payment-attempt-timeline.v2';
+    malformedByCode: Record<PaymentAttemptTimelineErrorCode, number>;
+    errorCodeMap: Array<{
+      code: PaymentAttemptTimelineErrorCode;
+      description: string;
+      remediationHint: string;
+    }>;
+  };
 };
 
 @Injectable()
@@ -229,6 +268,45 @@ export class PaymentsService {
     });
 
     return this.buildRoutingTelemetryFeed(reference, tx.id, logs);
+  }
+
+  async getPaymentAttemptTimeline(
+    reference: string,
+    actorMerchantId?: string,
+  ): Promise<PaymentAttemptTimelineResponse> {
+    const tx = await this.prisma.transaction.findUnique({
+      where: { reference },
+    });
+
+    if (!tx) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    this.assertMerchantScope(tx.merchantId, actorMerchantId);
+
+    const logs = await this.prisma.auditLog.findMany({
+      where: {
+        entityType: 'transaction',
+        entityId: tx.id,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const normalizedTimeline = normalizePaymentAttemptTimelineAuditLogs(logs);
+
+    return {
+      paymentReference: tx.reference,
+      transactionId: tx.id,
+      merchantId: tx.merchantId,
+      finalStatus: tx.status,
+      events: normalizedTimeline.events,
+      summary: {
+        eventCount: normalizedTimeline.events.length,
+        malformedCount: normalizedTimeline.malformedCount,
+        emptyTimeline: normalizedTimeline.events.length === 0,
+      },
+      normalization: normalizedTimeline.normalization,
+    };
   }
 
   async getObservabilityDashboard(query: ObservabilityQuery, actorMerchantId?: string) {
@@ -581,11 +659,16 @@ export class PaymentsService {
     };
   }
 
-  async manualRefund(
+  async createRefund(
     reference: string,
+    idempotencyKey: string,
     reason?: string,
     actorMerchantId?: string,
-  ): Promise<{ sourceReference: string; status: TransactionStatus }> {
+  ): Promise<RefundResponse> {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('idempotencyKey is required');
+    }
+
     const tx = await this.prisma.transaction.findUnique({ where: { reference } });
 
     if (!tx) {
@@ -594,11 +677,44 @@ export class PaymentsService {
 
     this.assertMerchantScope(tx.merchantId, actorMerchantId);
 
+    const normalizedIdempotencyKey = idempotencyKey.trim();
+    const existingByKey = await this.prisma.refund.findUnique({
+      where: {
+        merchantId_idempotencyKey: {
+          merchantId: tx.merchantId,
+          idempotencyKey: normalizedIdempotencyKey,
+        },
+      },
+      include: {
+        transaction: {
+          select: { reference: true },
+        },
+      },
+    });
+
+    if (existingByKey) {
+      if (existingByKey.transaction.reference !== reference) {
+        throw new BadRequestException('idempotencyKey already used for another payment');
+      }
+      return this.toRefundResponse(existingByKey, reference);
+    }
+
     if (tx.status !== TransactionStatus.PAID) {
       throw new BadRequestException('Only paid transactions can be refunded');
     }
 
-    const updated = await this.prisma.transaction.update({
+    const created = await this.prisma.refund.create({
+      data: {
+        transactionId: tx.id,
+        merchantId: tx.merchantId,
+        idempotencyKey: normalizedIdempotencyKey,
+        amount: tx.amount,
+        currency: tx.currency,
+        reason: reason ?? null,
+      },
+    });
+
+    await this.prisma.transaction.update({
       where: { id: tx.id },
       data: {
         status: TransactionStatus.REFUNDED,
@@ -609,10 +725,57 @@ export class PaymentsService {
     await this.logTransition(tx.id, tx.status, TransactionStatus.REFUNDED, reason ?? 'manual refund');
     await this.webhooks?.queueTransactionWebhook(tx.id, 'payment.refunded');
 
-    return {
-      sourceReference: updated.reference,
-      status: updated.status,
-    };
+    return this.toRefundResponse(created, reference);
+  }
+
+  async listRefunds(filters: {
+    merchantId?: string;
+    paymentReference?: string;
+    take?: number;
+  }, actorMerchantId?: string): Promise<RefundResponse[]> {
+    const merchantId = filters.merchantId ?? actorMerchantId;
+    if (merchantId) {
+      this.assertMerchantScope(merchantId, actorMerchantId);
+      await this.assertMerchantExists(merchantId);
+    }
+
+    const refunds = await this.prisma.refund.findMany({
+      where: {
+        merchantId,
+        transaction: filters.paymentReference ? { reference: { contains: filters.paymentReference } } : undefined,
+      },
+      include: {
+        transaction: {
+          select: { reference: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: filters.take ?? 20,
+    });
+
+    return refunds.map((refund) => this.toRefundResponse(refund, refund.transaction.reference));
+  }
+
+  async getRefund(refundId: string, actorMerchantId?: string): Promise<RefundResponse> {
+    const refund = await this.prisma.refund.findUnique({
+      where: { id: refundId },
+      include: {
+        transaction: {
+          select: { reference: true },
+        },
+      },
+    });
+
+    if (!refund) {
+      throw new NotFoundException('Refund not found');
+    }
+
+    this.assertMerchantScope(refund.merchantId, actorMerchantId);
+    return this.toRefundResponse(refund, refund.transaction.reference);
+  }
+
+  async manualRefund(reference: string, reason?: string, actorMerchantId?: string) {
+    return this.createRefund(reference, `legacy-${reference}`, reason, actorMerchantId);
   }
 
   async handleCallback(input: CallbackDto): Promise<{ applied: boolean; status: string }> {
@@ -920,5 +1083,29 @@ export class PaymentsService {
         metadata: JSON.stringify({ fromStatus, toStatus, note }),
       },
     });
+  }
+
+  private toRefundResponse(
+    refund: {
+      id: string;
+      merchantId: string;
+      amount: Prisma.Decimal;
+      currency: string;
+      reason: string | null;
+      status: RefundStatus;
+      createdAt: Date;
+    },
+    paymentReference: string,
+  ): RefundResponse {
+    return {
+      id: refund.id,
+      paymentReference,
+      merchantId: refund.merchantId,
+      amount: Number(refund.amount),
+      currency: refund.currency,
+      reason: refund.reason,
+      status: refund.status,
+      createdAt: refund.createdAt.toISOString(),
+    };
   }
 }

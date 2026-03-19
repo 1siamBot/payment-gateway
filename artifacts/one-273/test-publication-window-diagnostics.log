@@ -1,0 +1,4 @@
+
+> payment-gateway@0.1.0 test
+> jest test/settlement-publication-window-diagnostics.spec.ts test/settlement-publication-window-diagnostics-endpoint.spec.ts
+

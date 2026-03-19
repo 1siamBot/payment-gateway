@@ -1,0 +1,100 @@
+{
+  "contract": "settlement-explainability-preset-profile.v1",
+  "presetSlots": [
+    {
+      "key": "all_anomalies",
+      "label": "All anomalies",
+      "reasonBuckets": {
+        "MALFORMED_ROW": true,
+        "STALE_VERSION_RISK": true,
+        "MIXED_STATUS_SELECTION": true,
+        "HIGH_DELTA_ANOMALY": true
+      },
+      "severityWindows": {
+        "warning": true,
+        "critical": true
+      },
+      "isDefault": true
+    },
+    {
+      "key": "critical_guardrails",
+      "label": "Critical guardrails",
+      "reasonBuckets": {
+        "MALFORMED_ROW": true,
+        "STALE_VERSION_RISK": false,
+        "MIXED_STATUS_SELECTION": false,
+        "HIGH_DELTA_ANOMALY": true
+      },
+      "severityWindows": {
+        "warning": false,
+        "critical": true
+      },
+      "isDefault": false
+    },
+    {
+      "key": "stale_and_mixed",
+      "label": "Stale and mixed selection",
+      "reasonBuckets": {
+        "MALFORMED_ROW": false,
+        "STALE_VERSION_RISK": true,
+        "MIXED_STATUS_SELECTION": true,
+        "HIGH_DELTA_ANOMALY": false
+      },
+      "severityWindows": {
+        "warning": true,
+        "critical": false
+      },
+      "isDefault": false
+    }
+  ],
+  "reasonBuckets": [
+    {
+      "code": "MALFORMED_ROW",
+      "severity": "critical",
+      "description": "Input contains malformed or invalid rows that may corrupt bulk-action outcomes."
+    },
+    {
+      "code": "STALE_VERSION_RISK",
+      "severity": "warning",
+      "description": "Selected rows are missing from validated input and may represent stale state."
+    },
+    {
+      "code": "MIXED_STATUS_SELECTION",
+      "severity": "warning",
+      "description": "Selected rows include multiple workflow statuses and may require operator review."
+    },
+    {
+      "code": "HIGH_DELTA_ANOMALY",
+      "severity": "critical",
+      "description": "Selection includes high/critical delta magnitudes that increase rollback risk."
+    }
+  ],
+  "severityWindows": [
+    {
+      "code": "warning",
+      "label": "Warning anomalies",
+      "description": "Include anomaly reasons classified as warning."
+    },
+    {
+      "code": "critical",
+      "label": "Critical anomalies",
+      "description": "Include anomaly reasons classified as critical."
+    }
+  ],
+  "defaultSelection": {
+    "presetSlotKey": "all_anomalies",
+    "reasonBuckets": {
+      "MALFORMED_ROW": true,
+      "STALE_VERSION_RISK": true,
+      "MIXED_STATUS_SELECTION": true,
+      "HIGH_DELTA_ANOMALY": true
+    },
+    "severityWindows": {
+      "warning": true,
+      "critical": true
+    }
+  },
+  "metadata": {
+    "validationReasonCodes": []
+  }
+}
