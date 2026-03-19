@@ -8,6 +8,7 @@ import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListRefundsDto } from './dto/list-refunds.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
+import { UpdatePayoutChargebackDto } from './dto/update-payout-chargeback.dto';
 import { UpdateRefundLifecycleDto } from './dto/update-refund-lifecycle.dto';
 import { PaymentsService } from './payments.service';
 
@@ -83,6 +84,27 @@ export class PaymentsController {
   @Authorize('merchant', 'support', 'ops', 'admin')
   attemptTimeline(@Req() request: AuthenticatedRequest, @Param('reference') reference: string) {
     return this.payments.getPaymentAttemptTimeline(reference, request.auth?.merchantId);
+  }
+
+  @Get('payments/:reference/payout-chargeback')
+  @Authorize('merchant', 'support', 'ops', 'admin')
+  payoutChargebackLifecycle(@Req() request: AuthenticatedRequest, @Param('reference') reference: string) {
+    return this.payments.getPayoutChargebackLifecycle(reference, request.auth?.merchantId);
+  }
+
+  @Patch('payments/:reference/payout-chargeback')
+  @Authorize('support', 'ops', 'admin')
+  updatePayoutChargebackLifecycle(
+    @Req() request: AuthenticatedRequest,
+    @Param('reference') reference: string,
+    @Body() body: UpdatePayoutChargebackDto,
+  ) {
+    return this.payments.transitionPayoutChargeback(reference, {
+      toStatus: body.toStatus,
+      eventId: body.eventId,
+      expectedCurrentStatus: body.expectedCurrentStatus,
+      occurredAt: body.occurredAt,
+    }, request.auth?.merchantId);
   }
 
   @Post('payments/:reference/refund')

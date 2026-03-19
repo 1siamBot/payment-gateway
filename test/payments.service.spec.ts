@@ -271,7 +271,15 @@ function createPrismaMock() {
             if (typeof where.entityId === 'string' && row.entityId !== where.entityId) return false;
             if (where.entityId?.in && !where.entityId.in.includes(row.entityId)) return false;
             if (where.eventType && typeof where.eventType === 'string' && row.eventType !== where.eventType) return false;
-            if (where.eventType?.startsWith && !row.eventType.startsWith(where.eventType.startsWith)) return false;
+            if (
+              where.eventType
+              && typeof where.eventType === 'object'
+              && 'startsWith' in where.eventType
+              && typeof where.eventType.startsWith === 'string'
+              && !row.eventType.startsWith(where.eventType.startsWith)
+            ) {
+              return false;
+            }
             return true;
           });
 
@@ -762,6 +770,175 @@ describe('PaymentsService', () => {
       response: expect.objectContaining({
         code: 'REFUND_LIFECYCLE_CONFLICT',
         reason: 'stale_update',
+      }),
+    });
+  });
+
+  it('creates payout chargeback in opened state with deterministic lifecycle metadata', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-chargeback-opened',
+    });
+
+    const opened = await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'opened',
+      eventId: 'cb_evt_1',
+      occurredAt: '2026-03-19T10:00:00.000Z',
+    });
+
+    expect(opened.transition).toEqual(expect.objectContaining({
+      fromStatus: null,
+      toStatus: 'opened',
+      reasonCode: 'chargeback_opened',
+      eventId: 'cb_evt_1',
+      occurredAt: '2026-03-19T10:00:00.000Z',
+    }));
+    expect(opened.lifecycle.contract).toBe('payout-chargeback-transition.v1');
+    expect(opened.lifecycle.allowedNextStatuses).toEqual(['investigating', 'reversed']);
+  });
+
+  it('advances payout chargeback to investigating and then won with deterministic timeline ordering', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 55,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-chargeback-investigating',
+    });
+
+    await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'opened',
+      eventId: 'cb_evt_2_opened',
+      occurredAt: '2026-03-19T10:00:00.000Z',
+    });
+    await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'investigating',
+      eventId: 'cb_evt_2_investigating',
+      expectedCurrentStatus: 'opened',
+      occurredAt: '2026-03-19T10:01:00.000Z',
+    });
+    const won = await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'won',
+      eventId: 'cb_evt_2_won',
+      expectedCurrentStatus: 'investigating',
+      occurredAt: '2026-03-19T10:02:00.000Z',
+    });
+
+    expect(won.transition).toEqual(expect.objectContaining({
+      fromStatus: 'investigating',
+      toStatus: 'won',
+      reasonCode: 'chargeback_won',
+    }));
+    expect(won.timeline.map((row) => row.toStatus)).toEqual(['opened', 'investigating', 'won']);
+    expect(won.lifecycle.currentStatus).toBe('won');
+    expect(won.lifecycle.terminal).toBe(true);
+    expect(won.lifecycle.allowedNextStatuses).toEqual([]);
+  });
+
+  it('rejects duplicate payout chargeback event ids with stable reason code', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 60,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-chargeback-dup',
+    });
+
+    await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'opened',
+      eventId: 'cb_evt_3',
+    });
+
+    await expect(service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'investigating',
+      eventId: 'cb_evt_3',
+      expectedCurrentStatus: 'opened',
+    })).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'PAYOUT_CHARGEBACK_TRANSITION_CONFLICT',
+        reason: 'duplicate_event',
+      }),
+    });
+  });
+
+  it('rejects invalid prior-state payout chargeback transitions with stable reason code', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 65,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-chargeback-invalid',
+    });
+
+    await expect(service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'won',
+      eventId: 'cb_evt_4',
+    })).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'PAYOUT_CHARGEBACK_TRANSITION_CONFLICT',
+        reason: 'invalid_prior_state',
+      }),
+    });
+  });
+
+  it('rejects stale expectedCurrentStatus during payout chargeback transitions with stable reason code', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 70,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-chargeback-stale',
+    });
+
+    await service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'opened',
+      eventId: 'cb_evt_5_opened',
+    });
+
+    await expect(service.transitionPayoutChargeback(payment.reference, {
+      toStatus: 'investigating',
+      eventId: 'cb_evt_5_investigating',
+      expectedCurrentStatus: 'lost',
+    })).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'PAYOUT_CHARGEBACK_TRANSITION_CONFLICT',
+        reason: 'stale_transition_update',
       }),
     });
   });
