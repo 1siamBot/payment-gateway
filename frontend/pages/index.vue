@@ -4638,6 +4638,7 @@ onMounted(() => {
       <div class="inline-actions">
         <NuxtLink class="button-link" to="/payment-flow">Open Multi-Flow Payment Workspace</NuxtLink>
         <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
+        <NuxtLink class="button-link" to="/merchant-operations">Open Merchant Operations Panel</NuxtLink>
       </div>
       <div class="auth-grid">
         <label>

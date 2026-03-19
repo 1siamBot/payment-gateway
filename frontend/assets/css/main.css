@@ -328,6 +328,35 @@ button.danger {
   gap: 0.5rem;
 }
 
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.tab-button {
+  width: auto;
+  min-width: 180px;
+  border: 1px solid #bfd0e2;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #0b3c5d;
+  font-weight: 600;
+}
+
+.tab-button.active {
+  border-color: #0b3c5d;
+  background: #0b3c5d;
+  color: #ffffff;
+}
+
 @media (max-width: 960px) {
   .operations-layout {
     grid-template-columns: 1fr;
@@ -934,5 +963,10 @@ td small {
 
   .inline-actions > .button-link {
     width: 100%;
+  }
+
+  .tab-button {
+    width: 100%;
+    min-width: 0;
   }
 }

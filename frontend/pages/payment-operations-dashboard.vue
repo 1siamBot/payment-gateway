@@ -370,6 +370,7 @@ onMounted(() => {
       <div class="inline-actions">
         <NuxtLink class="button-link" to="/">Open Legacy Control Tower</NuxtLink>
         <NuxtLink class="button-link" to="/payment-flow">Open Multi-Flow Workspace</NuxtLink>
+        <NuxtLink class="button-link" to="/merchant-operations">Open Merchant Operations Panel</NuxtLink>
       </div>
     </section>
 
