@@ -6,6 +6,7 @@ import { BuildSettlementEvidenceLineageDto } from './dto/build-settlement-eviden
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
+import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-remediation-runbook.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
@@ -107,6 +108,11 @@ export class SettlementsController {
   @Post('exceptions/evidence-anomaly-scorecard')
   evidenceAnomalyScorecard(@Body() body: BuildSettlementEvidenceAnomalyScorecardDto) {
     return this.settlements.buildSettlementExceptionEvidenceAnomalyScorecard(body);
+  }
+
+  @Post('exceptions/remediation-runbook')
+  remediationRunbook(@Body() body: BuildSettlementRemediationRunbookDto) {
+    return this.settlements.buildSettlementExceptionRemediationRunbook(body);
   }
 
   @Get('exceptions/qa-fixtures')

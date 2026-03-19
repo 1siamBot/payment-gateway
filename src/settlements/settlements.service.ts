@@ -33,6 +33,7 @@ import {
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
+import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-remediation-runbook.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import {
   BuildSettlementBulkActionPreviewDto,
@@ -64,6 +65,10 @@ import {
   buildSettlementEvidenceAnomalyScorecard,
   SettlementEvidenceAnomalyScorecard,
 } from './evidence-anomaly-scorecard';
+import {
+  buildSettlementExceptionRemediationRunbook,
+  SettlementExceptionRemediationRunbook,
+} from './remediation-runbook';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -237,6 +242,7 @@ type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLint
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
+type SettlementExceptionRemediationRunbookContractResponse = SettlementExceptionRemediationRunbook;
 
 @Injectable()
 export class SettlementsService {
@@ -599,6 +605,25 @@ export class SettlementsService {
     input: BuildSettlementEvidenceAnomalyScorecardDto,
   ): SettlementEvidenceAnomalyScorecardContractResponse {
     return buildSettlementEvidenceAnomalyScorecard(input);
+  }
+
+  buildSettlementExceptionRemediationRunbook(
+    input: BuildSettlementRemediationRunbookDto,
+  ): SettlementExceptionRemediationRunbookContractResponse {
+    try {
+      return buildSettlementExceptionRemediationRunbook(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
