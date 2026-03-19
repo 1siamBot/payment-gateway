@@ -90,6 +90,40 @@ If GitHub publication is blocked, include all of the following in the same comme
 - Timestamped retry plan (exact date-time + timezone)
 - Latest local commit SHA waiting to publish
 
+## Backend Completion Evidence Workflow (ONE-69)
+
+Every completed backend issue must include a Paperclip completion comment with GitHub publication evidence.
+
+Required fields:
+
+- Branch name
+- Full 40-character commit SHA
+- PR URL, or explicit reason PR is unavailable
+- Tests run for the backend change
+- At least one artifact path (log, report, or checklist) when artifacts are generated
+
+Use this template in backend completion comments:
+
+```md
+## Completion
+
+- Issue: [ONE-XXX](/ONE/issues/ONE-XXX)
+- Parent compliance issue: [ONE-68](/ONE/issues/ONE-68)
+- Branch: `backend/one-xxx-short-name`
+- Commit: `0123456789abcdef0123456789abcdef01234567`
+- PR: `https://github.com/1siamBot/payment-gateway/pull/123` (or `Unavailable: <reason>`)
+- Tests:
+  - `npm test -- <backend-test-target>`
+- Artifacts:
+  - `artifacts/one-xxx/<artifact-file>.md`
+```
+
+If GitHub publication is blocked, include all of the following in the same comment:
+
+- Blocker owner (person/team who must restore publish access)
+- Timestamped retry plan (exact date-time + timezone)
+- Latest local commit SHA waiting to publish
+
 ## Implemented scope
 
 - Prisma data model for tenants, shops, users/roles, wallets, transactions, providers, commissions, settlements, audit logs, api keys, idempotency keys, callback events
