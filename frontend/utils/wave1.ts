@@ -399,6 +399,62 @@ export type PublicationWindowPlanBoard = {
   scoreBandCounts: Record<PublicationWindowScoreBand, number>;
 };
 
+export type PublicationReadinessBoardShortcut =
+  | 'focus_readiness_board'
+  | 'next_lane'
+  | 'prev_lane'
+  | 'open_gap_resolver'
+  | 'validate_readiness_snapshot';
+
+export type PublicationReadinessState = 'ready' | 'blocked_publish' | 'missing_evidence';
+
+export type PublicationReadinessGapField =
+  | 'branch'
+  | 'fullSha'
+  | 'prOrBlocker'
+  | 'testSummary'
+  | 'artifactPath'
+  | 'nextOwner';
+
+export type PublicationReadinessBoardLane = {
+  id: string;
+  issueIdentifier: string;
+  lanePriorityWeight: number;
+  blockerWeight: number;
+  evidenceFieldWeight: number;
+  missingFields: PublicationReadinessGapField[];
+  canonicalLinkViolations: string[];
+  blockedByCredential: boolean;
+  readyToPublish: boolean;
+  nextOwner: string;
+  readinessState: PublicationReadinessState;
+};
+
+export type PublicationReadinessBoard = {
+  contract: 'settlement-publication-readiness-board.v1';
+  rows: PublicationReadinessBoardLane[];
+  activeLaneId: string;
+};
+
+export type PublicationReadinessGapResolverPanel = {
+  contract: 'settlement-publication-readiness-gap-resolver.v1';
+  laneId: string;
+  issueIdentifier: string;
+  missingFields: PublicationReadinessGapField[];
+  canonicalLinkViolations: string[];
+  blockedByCredential: boolean;
+  readyToPublish: boolean;
+  nextOwner: string;
+};
+
+export type PublicationReadinessCanonicalAutofixPreview = {
+  contract: 'settlement-publication-readiness-canonical-autofix.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -1371,6 +1427,19 @@ const RELEASE_READINESS_EVIDENCE_FIELD_LABEL: Record<ReleaseReadinessEvidenceFie
   blockerOwner: 'blockerOwner',
   blockerEta: 'blockerEta',
 };
+const PUBLICATION_READINESS_GAP_FIELD_ORDER: PublicationReadinessGapField[] = [
+  'branch',
+  'fullSha',
+  'prOrBlocker',
+  'testSummary',
+  'artifactPath',
+  'nextOwner',
+];
+const PUBLICATION_READINESS_STATE_ORDER: PublicationReadinessState[] = [
+  'ready',
+  'blocked_publish',
+  'missing_evidence',
+];
 const EVIDENCE_TIMELINE_GAP_CODE_ORDER: EvidenceTimelineGapCode[] = [
   'MISSING_BRANCH',
   'MISSING_FULL_SHA',
@@ -3402,6 +3471,255 @@ export function resolvePublicationWindowPlanShortcut(input: {
     return 'open_dependency_gates';
   }
   return null;
+}
+
+function parsePublicationReadinessLane(input: unknown): PublicationReadinessBoardLane | null {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const row = input as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.issueId === 'string'
+        ? row.issueId
+        : '',
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}:readiness`,
+  ) ?? `${issueIdentifier}:readiness`;
+
+  const lanePriorityWeight = parseFiniteNumber(row.lanePriorityWeight) ?? 999;
+  const blockerWeight = parseFiniteNumber(row.blockerWeight) ?? 999;
+  const evidenceFieldWeight = parseFiniteNumber(row.evidenceFieldWeight) ?? 999;
+  const branch = normalizeOptional(typeof row.branch === 'string' ? row.branch : '');
+  const fullSha = normalizeOptional(typeof row.fullSha === 'string' ? row.fullSha : '');
+  const prUrl = normalizeOptional(
+    typeof row.prUrl === 'string'
+      ? row.prUrl
+      : typeof row.prLink === 'string'
+        ? row.prLink
+        : '',
+  );
+  const blockerPacketUrl = normalizeOptional(
+    typeof row.blockerPacketUrl === 'string'
+      ? row.blockerPacketUrl
+      : typeof row.blockerLink === 'string'
+        ? row.blockerLink
+        : '',
+  );
+  const testSummary = normalizeOptional(
+    typeof row.testSummary === 'string'
+      ? row.testSummary
+      : typeof row.testCommandSummary === 'string'
+        ? row.testCommandSummary
+        : '',
+  );
+  const artifactPath = normalizeOptional(
+    typeof row.artifactPath === 'string'
+      ? row.artifactPath
+      : typeof row.artifactUrl === 'string'
+        ? row.artifactUrl
+        : '',
+  );
+  const blockedByCredential = Boolean(row.blockedByCredential);
+  const nextOwner = normalizeOptional(typeof row.nextOwner === 'string' ? row.nextOwner : '') ?? '';
+
+  const rawCanonicalLinks = Array.isArray(row.canonicalLinks)
+    ? row.canonicalLinks
+    : [row.issueLink, row.commentLink, row.documentLink].filter((value) => typeof value === 'string');
+  const canonicalLinkViolations = rawCanonicalLinks
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim())
+    .filter((value) => !canonicalizePaperclipIssueLink(value))
+    .sort((left, right) => left.localeCompare(right));
+
+  const missing = new Set<PublicationReadinessGapField>();
+  if (!branch) {
+    missing.add('branch');
+  }
+  if (!fullSha) {
+    missing.add('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    missing.add('fullSha');
+  }
+  if (!prUrl && !blockerPacketUrl) {
+    missing.add('prOrBlocker');
+  }
+  if (!testSummary) {
+    missing.add('testSummary');
+  }
+  if (!artifactPath) {
+    missing.add('artifactPath');
+  }
+  if (!nextOwner) {
+    missing.add('nextOwner');
+  }
+
+  const hasBlockingGap = missing.has('prOrBlocker') || blockedByCredential;
+  const readyToPublish = missing.size === 0 && canonicalLinkViolations.length === 0 && !blockedByCredential;
+  const readinessState: PublicationReadinessState = readyToPublish
+    ? 'ready'
+    : hasBlockingGap
+      ? 'blocked_publish'
+      : 'missing_evidence';
+
+  const missingFields = PUBLICATION_READINESS_GAP_FIELD_ORDER.filter((field) => missing.has(field));
+  return {
+    id,
+    issueIdentifier,
+    lanePriorityWeight,
+    blockerWeight,
+    evidenceFieldWeight,
+    missingFields,
+    canonicalLinkViolations,
+    blockedByCredential,
+    readyToPublish,
+    nextOwner: nextOwner || 'unassigned',
+    readinessState,
+  };
+}
+
+export function buildPublicationReadinessBoard(input: {
+  rows: unknown[];
+  activeLaneId: string;
+}): PublicationReadinessBoard {
+  const rows = input.rows
+    .map((row) => parsePublicationReadinessLane(row))
+    .filter((row): row is PublicationReadinessBoardLane => Boolean(row))
+    .sort((left, right) => (
+      left.lanePriorityWeight - right.lanePriorityWeight
+      || left.blockerWeight - right.blockerWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.evidenceFieldWeight - right.evidenceFieldWeight
+      || left.id.localeCompare(right.id)
+    ));
+  const laneIds = new Set(rows.map((row) => row.id));
+  const activeLaneId = laneIds.has(input.activeLaneId)
+    ? input.activeLaneId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-publication-readiness-board.v1',
+    rows,
+    activeLaneId,
+  };
+}
+
+export function movePublicationReadinessLaneSelection(input: {
+  rows: PublicationReadinessBoardLane[];
+  activeLaneId: string;
+  direction: 'next_lane' | 'prev_lane';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeLaneId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_lane') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolvePublicationReadinessShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): PublicationReadinessBoardShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'r') {
+    return 'focus_readiness_board';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_lane';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_lane';
+  }
+  if (normalizedKey === 'g' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_gap_resolver';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_readiness_snapshot';
+  }
+  return null;
+}
+
+export function buildPublicationReadinessGapResolverPanel(input: {
+  rows: unknown[];
+  activeLaneId: string;
+}): PublicationReadinessGapResolverPanel {
+  const board = buildPublicationReadinessBoard(input);
+  const lane = board.rows.find((row) => row.id === board.activeLaneId);
+  if (!lane) {
+    return {
+      contract: 'settlement-publication-readiness-gap-resolver.v1',
+      laneId: '',
+      issueIdentifier: '',
+      missingFields: [],
+      canonicalLinkViolations: [],
+      blockedByCredential: false,
+      readyToPublish: false,
+      nextOwner: 'unassigned',
+    };
+  }
+  return {
+    contract: 'settlement-publication-readiness-gap-resolver.v1',
+    laneId: lane.id,
+    issueIdentifier: lane.issueIdentifier,
+    missingFields: [...lane.missingFields],
+    canonicalLinkViolations: [...lane.canonicalLinkViolations],
+    blockedByCredential: lane.blockedByCredential,
+    readyToPublish: lane.readyToPublish,
+    nextOwner: lane.nextOwner,
+  };
+}
+
+export function buildPublicationReadinessCanonicalAutofixPreview(input: {
+  markdown: string;
+}): PublicationReadinessCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `readiness-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  const changedCount = rows.filter((row) => row.changed).length;
+  return {
+    contract: 'settlement-publication-readiness-canonical-autofix.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+  };
 }
 
 function normalizeDiagnosticsTrendGate(input: unknown): DiagnosticsTrendDigestGate {

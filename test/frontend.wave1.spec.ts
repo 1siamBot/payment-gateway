@@ -95,6 +95,9 @@ import {
   buildBlockerAwareDispatchCockpit,
   buildReleaseReadinessSimulator,
   buildPublicationWindowPlanBoard,
+  buildPublicationReadinessBoard,
+  buildPublicationReadinessGapResolverPanel,
+  buildPublicationReadinessCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -115,6 +118,7 @@ import {
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
+  movePublicationReadinessLaneSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -126,6 +130,7 @@ import {
   resolveReplayDiffInspectorShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
+  resolvePublicationReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -1493,6 +1498,185 @@ describe('frontend wave1 helpers', () => {
       activeLaneId: '',
       direction: 'next_lane',
     })).toBe('lane-links');
+  });
+
+  it('builds publication readiness board rows in deterministic lane tuple order', () => {
+    const board = buildPublicationReadinessBoard({
+      rows: [
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-285',
+          lanePriorityWeight: 2,
+          blockerWeight: 30,
+          evidenceFieldWeight: 20,
+          branch: 'feature/one-285',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prUrl: 'https://github.com/1siamBot/payment-gateway/pull/285',
+          testSummary: 'npm run test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-285/readiness.md',
+          nextOwner: 'frontend',
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-284',
+          lanePriorityWeight: 1,
+          blockerWeight: 10,
+          evidenceFieldWeight: 40,
+          branch: 'feature/one-284',
+          fullSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          blockerPacketUrl: '/ONE/issues/ONE-286#comment-10',
+          testSummary: 'npm run test -- test/frontend.wave1.spec.ts -t "publication readiness"',
+          artifactPath: 'artifacts/one-284/readiness.md',
+          nextOwner: 'qa',
+        },
+        {
+          id: 'lane-c',
+          issueIdentifier: 'ONE-279',
+          lanePriorityWeight: 1,
+          blockerWeight: 20,
+          evidenceFieldWeight: 10,
+          branch: 'feature/one-279',
+          fullSha: 'cccccccccccccccccccccccccccccccccccccccc',
+          prUrl: 'https://github.com/1siamBot/payment-gateway/pull/279',
+          testSummary: 'npm run test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-279/readiness.md',
+          nextOwner: 'frontend',
+        },
+      ],
+      activeLaneId: '',
+    });
+
+    expect(board.contract).toBe('settlement-publication-readiness-board.v1');
+    expect(board.rows.map((row) => row.id)).toEqual(['lane-a', 'lane-c', 'lane-b']);
+    expect(board.rows.map((row) => row.readinessState)).toEqual(['ready', 'ready', 'ready']);
+  });
+
+  it('keeps publication gap resolver output byte-stable for identical lane data', () => {
+    const rows = [
+      {
+        id: 'lane-one',
+        issueIdentifier: 'ONE-285',
+        lanePriorityWeight: 1,
+        blockerWeight: 20,
+        evidenceFieldWeight: 20,
+        branch: '',
+        fullSha: 'bad-sha',
+        prUrl: '',
+        blockerPacketUrl: '',
+        testSummary: '',
+        artifactPath: '',
+        nextOwner: '',
+        blockedByCredential: true,
+        canonicalLinks: ['/issues/ONE-287', '/ONE/issues/ONE-291#comment-abc'],
+      },
+      {
+        id: 'lane-two',
+        issueIdentifier: 'ONE-284',
+        lanePriorityWeight: 2,
+        blockerWeight: 10,
+        evidenceFieldWeight: 10,
+        branch: 'feature/one-284',
+        fullSha: 'dddddddddddddddddddddddddddddddddddddddd',
+        prUrl: 'https://github.com/1siamBot/payment-gateway/pull/284',
+        testSummary: 'npm run test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-284/readiness.md',
+        nextOwner: 'qa',
+      },
+    ];
+
+    const first = buildPublicationReadinessGapResolverPanel({
+      rows,
+      activeLaneId: 'lane-one',
+    });
+    const second = buildPublicationReadinessGapResolverPanel({
+      rows: [...rows].reverse(),
+      activeLaneId: 'lane-one',
+    });
+
+    expect(first.contract).toBe('settlement-publication-readiness-gap-resolver.v1');
+    expect(first.missingFields).toEqual([
+      'branch',
+      'fullSha',
+      'prOrBlocker',
+      'testSummary',
+      'artifactPath',
+      'nextOwner',
+    ]);
+    expect(first.canonicalLinkViolations).toEqual(['/ONE/issues/ONE-291#comment-abc']);
+    expect(first.blockedByCredential).toBe(true);
+    expect(first.readyToPublish).toBe(false);
+    expect(first.nextOwner).toBe('unassigned');
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('builds publication readiness canonical-link autofix preview with patched markdown output', () => {
+    const preview = buildPublicationReadinessCanonicalAutofixPreview({
+      markdown: [
+        'Depends on /issues/ONE-287 and /issues/ONE-291#document-plan.',
+        'QA note: https://paperclip.local/issues/ONE-241#comment-44',
+        'Invalid link: /ONE/issues/ONE-241#comment-abc',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-publication-readiness-canonical-autofix.v1');
+    expect(preview.changedCount).toBe(3);
+    expect(preview.invalidCount).toBe(1);
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-287');
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-291#document-plan');
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-241#comment-44');
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-241#comment-abc');
+  });
+
+  it('supports publication readiness keyboard workflow and deterministic next/prev lane selection', () => {
+    expect(resolvePublicationReadinessShortcut({ key: 'r', altKey: true })).toBe('focus_readiness_board');
+    expect(resolvePublicationReadinessShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_lane');
+    expect(resolvePublicationReadinessShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_lane');
+    expect(resolvePublicationReadinessShortcut({ key: 'g', ctrlKey: true, shiftKey: true })).toBe('open_gap_resolver');
+    expect(resolvePublicationReadinessShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('validate_readiness_snapshot');
+
+    const board = buildPublicationReadinessBoard({
+      rows: [
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-279',
+          lanePriorityWeight: 1,
+          blockerWeight: 10,
+          evidenceFieldWeight: 10,
+          branch: 'feature/one-279',
+          fullSha: '1111111111111111111111111111111111111111',
+          prUrl: 'https://github.com/1siamBot/payment-gateway/pull/279',
+          testSummary: 'npm run test',
+          artifactPath: 'artifacts/one-279.md',
+          nextOwner: 'frontend',
+        },
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-284',
+          lanePriorityWeight: 1,
+          blockerWeight: 20,
+          evidenceFieldWeight: 20,
+          branch: 'feature/one-284',
+          fullSha: '2222222222222222222222222222222222222222',
+          prUrl: 'https://github.com/1siamBot/payment-gateway/pull/284',
+          testSummary: 'npm run test',
+          artifactPath: 'artifacts/one-284.md',
+          nextOwner: 'frontend',
+        },
+      ],
+      activeLaneId: 'lane-a',
+    });
+
+    expect(movePublicationReadinessLaneSelection({
+      rows: board.rows,
+      activeLaneId: 'lane-a',
+      direction: 'next_lane',
+    })).toBe('lane-b');
+    expect(movePublicationReadinessLaneSelection({
+      rows: board.rows,
+      activeLaneId: 'lane-b',
+      direction: 'prev_lane',
+    })).toBe('lane-a');
   });
 
   it('builds diagnostics trend digest rows in deterministic tuple order', () => {
