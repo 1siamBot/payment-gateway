@@ -16,6 +16,9 @@ import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/
 import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
+import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
+import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -135,6 +138,21 @@ export class SettlementsController {
   @Post('exceptions/publication-diagnostics-trend-digest')
   publicationDiagnosticsTrendDigest(@Body() body: BuildSettlementPublicationDiagnosticsTrendDigestDto) {
     return this.settlements.buildSettlementExceptionPublicationDiagnosticsTrendDigest(body);
+  }
+
+  @Post('exceptions/publication-evidence-manifest')
+  publicationEvidenceManifest(@Body() body: BuildSettlementPublicationEvidenceManifestDto) {
+    return this.settlements.buildSettlementExceptionPublicationEvidenceManifest(body);
+  }
+
+  @Post('exceptions/release-candidate-scorecard')
+  releaseCandidateScorecard(@Body() body: BuildSettlementReleaseCandidateScorecardDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateScorecard(body);
+  }
+
+  @Post('exceptions/release-candidate-handoff-packet')
+  releaseCandidateHandoffPacket(@Body() body: BuildSettlementReleaseCandidateHandoffPacketDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateHandoffPacket(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')

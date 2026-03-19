@@ -46,6 +46,9 @@ import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/
 import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
+import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
+import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -80,6 +83,18 @@ import {
   buildSettlementPublicationDiagnosticsTrendDigest,
   SettlementPublicationDiagnosticsTrendDigest,
 } from './publication-diagnostics-trend-digest';
+import {
+  buildSettlementPublicationEvidenceManifest,
+  SettlementPublicationEvidenceManifest,
+} from './publication-evidence-manifest';
+import {
+  buildSettlementReleaseCandidateScorecard,
+  SettlementReleaseCandidateScorecard,
+} from './release-candidate-scorecard';
+import {
+  buildSettlementReleaseCandidateHandoffPacket,
+  SettlementReleaseCandidateHandoffPacket,
+} from './release-candidate-handoff-packet';
 import {
   buildSettlementPublicationWindowPlan,
   SettlementPublicationWindowPlan,
@@ -281,6 +296,9 @@ type SettlementPublicationDiagnosticsContractSnapshotContractResponse =
 type SettlementPublicationDiagnosticsDeltaBundleContractResponse = SettlementPublicationDiagnosticsDeltaBundle;
 type SettlementPublicationDiagnosticsFixtureExportContractResponse = SettlementPublicationDiagnosticsFixtureExport;
 type SettlementPublicationDiagnosticsTrendDigestContractResponse = SettlementPublicationDiagnosticsTrendDigest;
+type SettlementPublicationEvidenceManifestContractResponse = SettlementPublicationEvidenceManifest;
+type SettlementReleaseCandidateScorecardContractResponse = SettlementReleaseCandidateScorecard;
+type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementReleaseCandidateHandoffPacket;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -685,6 +703,24 @@ export class SettlementsService {
     input: BuildSettlementPublicationDiagnosticsTrendDigestDto,
   ): SettlementPublicationDiagnosticsTrendDigestContractResponse {
     return buildSettlementPublicationDiagnosticsTrendDigest(input);
+  }
+
+  buildSettlementExceptionPublicationEvidenceManifest(
+    input: BuildSettlementPublicationEvidenceManifestDto,
+  ): SettlementPublicationEvidenceManifestContractResponse {
+    return buildSettlementPublicationEvidenceManifest(input);
+  }
+
+  buildSettlementExceptionReleaseCandidateScorecard(
+    input: BuildSettlementReleaseCandidateScorecardDto,
+  ): SettlementReleaseCandidateScorecardContractResponse {
+    return buildSettlementReleaseCandidateScorecard(input);
+  }
+
+  buildSettlementExceptionReleaseCandidateHandoffPacket(
+    input: BuildSettlementReleaseCandidateHandoffPacketDto,
+  ): SettlementReleaseCandidateHandoffPacketContractResponse {
+    return buildSettlementReleaseCandidateHandoffPacket(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(
