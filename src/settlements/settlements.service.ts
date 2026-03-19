@@ -55,6 +55,7 @@ import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/bui
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
 import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
+import { BuildSettlementRemediationPublicationHandoffBundleDto } from './dto/build-settlement-remediation-publication-handoff-bundle.dto';
 import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto/build-settlement-remediation-publication-readiness-envelope.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
@@ -110,6 +111,10 @@ import {
   buildSettlementRemediationExecutionBlueprintPacket,
   SettlementRemediationExecutionBlueprintPacket,
 } from './remediation-execution-blueprint-packet';
+import {
+  buildSettlementRemediationPublicationHandoffBundle,
+  SettlementRemediationPublicationHandoffBundle,
+} from './remediation-publication-handoff-bundle';
 import {
   buildSettlementRemediationPublicationReadinessEnvelope,
   SettlementRemediationPublicationReadinessEnvelope,
@@ -337,6 +342,7 @@ type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementRelease
 type SettlementReleaseEvidenceAdjudicationSnapshotContractResponse = SettlementReleaseEvidenceAdjudicationSnapshot;
 type SettlementReleaseCandidateRemediationQueueContractResponse = SettlementReleaseCandidateRemediationQueue;
 type SettlementRemediationExecutionBlueprintPacketContractResponse = SettlementRemediationExecutionBlueprintPacket;
+type SettlementRemediationPublicationHandoffBundleContractResponse = SettlementRemediationPublicationHandoffBundle;
 type SettlementRemediationPublicationReadinessEnvelopeContractResponse = SettlementRemediationPublicationReadinessEnvelope;
 type SettlementReleaseReadyDependencyGraphSnapshotContractResponse = SettlementReleaseReadyDependencyGraphSnapshot;
 type SettlementQaReleaseGateVerdictPacketContractResponse = SettlementQaReleaseGateVerdictPacket;
@@ -790,6 +796,12 @@ export class SettlementsService {
       ...input,
       executionReadiness: input.executionReadiness === 'ready' ? 'ready' : 'blocked',
     });
+  }
+
+  buildSettlementExceptionRemediationPublicationHandoffBundle(
+    input: BuildSettlementRemediationPublicationHandoffBundleDto,
+  ): SettlementRemediationPublicationHandoffBundleContractResponse {
+    return buildSettlementRemediationPublicationHandoffBundle(input);
   }
 
   buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(
