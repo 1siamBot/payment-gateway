@@ -1,7 +1,10 @@
 import {
+  applyExplainabilityPresetSlot,
   activateExceptionSavedView,
   applyRefundStatus,
   buildExceptionQueryFromSavedView,
+  buildDeterministicExplainabilityFilterChips,
+  buildExplainabilityComposerDraftFromSlot,
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
@@ -10,12 +13,16 @@ import {
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
   createExceptionSavedView,
+  createDefaultExplainabilityPresetSlots,
   DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
   deleteExceptionSavedView,
   DEFAULT_EXCEPTION_QUERY_STATE,
+  overwriteExplainabilityPresetSlot,
   pinExceptionSavedView,
   renameExceptionSavedView,
+  resetExplainabilityComposerDraftSafe,
   restoreExceptionSavedViewState,
+  resolveExplainabilityPresetShortcut,
   serializeExceptionSavedViewState,
   canRefundStatus,
   filterSettlementMerchants,
@@ -204,6 +211,85 @@ describe('frontend wave1 helpers', () => {
     expect(state.merchantId).toBe('merchant-high-risk');
     expect(state.status).toBe('open');
     expect(resolveActiveExceptionPreset(state)).toBe('high_risk_merchant');
+  });
+
+  it('builds deterministic explainability chip order for identical input', () => {
+    const slot = createDefaultExplainabilityPresetSlots('2026-03-19T00:00:00.000Z')[2];
+    const counts = {
+      stale_version: 4,
+      malformed: 2,
+      high_delta: 1,
+      mixed_status: 3,
+    };
+    const first = buildDeterministicExplainabilityFilterChips({ slot, reasonCounts: counts });
+    const second = buildDeterministicExplainabilityFilterChips({ slot, reasonCounts: counts });
+    expect(first).toEqual(second);
+    expect(first.map((chip) => chip.key)).toEqual([
+      'slot',
+      'severity',
+      'reason-stale_version',
+      'reason-malformed',
+      'reason-high_delta',
+      'reason-mixed_status',
+    ]);
+  });
+
+  it('resolves keyboard shortcuts for explainability apply and overwrite', () => {
+    expect(resolveExplainabilityPresetShortcut({
+      key: '2',
+      altKey: true,
+      shiftKey: false,
+    })).toEqual({ action: 'apply', slotIndex: 2 });
+    expect(resolveExplainabilityPresetShortcut({
+      key: '4',
+      altKey: true,
+      shiftKey: true,
+    })).toEqual({ action: 'overwrite', slotIndex: 4 });
+    expect(resolveExplainabilityPresetShortcut({
+      key: '2',
+      altKey: false,
+      shiftKey: false,
+    })).toBeNull();
+  });
+
+  it('keeps applied chips stable after reset-safe draft reset', () => {
+    const initialSlots = createDefaultExplainabilityPresetSlots('2026-03-19T00:00:00.000Z');
+    const overwrittenSlots = overwriteExplainabilityPresetSlot({
+      slots: initialSlots,
+      slotIndex: 1,
+      draft: {
+        name: 'Critical Sweep',
+        severityWindow: 'critical',
+        reasonBuckets: {
+          stale_version: false,
+          malformed: true,
+          high_delta: true,
+          mixed_status: false,
+        },
+      },
+      nowIso: '2026-03-19T00:10:00.000Z',
+    });
+    const applied = applyExplainabilityPresetSlot({
+      slots: overwrittenSlots,
+      slotIndex: 1,
+      reasonCounts: {
+        stale_version: 6,
+        malformed: 2,
+        high_delta: 3,
+        mixed_status: 1,
+      },
+    });
+    const draft = buildExplainabilityComposerDraftFromSlot(overwrittenSlots[0]);
+    draft.name = 'Unsaved Local Draft';
+    draft.reasonBuckets.stale_version = true;
+    const safe = resetExplainabilityComposerDraftSafe({
+      slots: overwrittenSlots,
+      activeSlotIndex: 1,
+      appliedChips: applied.chips,
+    });
+    expect(safe.draft.name).toBe('Critical Sweep');
+    expect(safe.draft.reasonBuckets.stale_version).toBe(false);
+    expect(safe.appliedChips).toEqual(applied.chips);
   });
 
   it('serializes and restores exception query state from URL params', () => {

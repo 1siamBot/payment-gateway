@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import {
+  applyExplainabilityPresetSlot,
   activateExceptionSavedView,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
   applyRefundStatus,
+  buildDeterministicExplainabilityFilterChips,
+  buildExplainabilityComposerDraftFromSlot,
   buildExceptionBulkDiffInspector,
   buildExceptionQueryFromSavedView,
   buildExceptionActionIdempotencyKey,
@@ -12,6 +15,7 @@ import {
   canRefundStatus,
   classifyExceptionActionFailure,
   createExceptionSavedView,
+  createDefaultExplainabilityPresetSlots,
   DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
   DEFAULT_EXCEPTION_QUERY_STATE,
   deleteExceptionSavedView,
@@ -24,8 +28,11 @@ import {
   pinExceptionSavedView,
   normalizeExceptionStatus,
   normalizeOptional,
+  overwriteExplainabilityPresetSlot,
   prependExceptionAudit,
+  resetExplainabilityComposerDraftSafe,
   renameExceptionSavedView,
+  resolveExplainabilityPresetShortcut,
   resolveActiveExceptionPreset,
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
@@ -39,6 +46,7 @@ import {
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
+import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -360,6 +368,21 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
   { key: 'high_delta', label: 'high_delta' },
   { key: 'mixed_status', label: 'mixed_status' },
 ];
+const explainabilityPresetSlots = ref<ExplainabilityPresetSlot[]>(createDefaultExplainabilityPresetSlots());
+const activeExplainabilitySlotIndex = ref<1 | 2 | 3 | 4>(1);
+const explainabilityComposerOpen = ref(false);
+const explainabilityPendingReplaceSlot = ref<1 | 2 | 3 | 4 | null>(null);
+const explainabilityComposerState = reactive({
+  message: '',
+  error: '',
+});
+const explainabilityDraft = reactive<ExplainabilityComposerDraft>({
+  ...buildExplainabilityComposerDraftFromSlot(explainabilityPresetSlots.value[0]),
+});
+const explainabilityAppliedChips = ref(buildDeterministicExplainabilityFilterChips({
+  slot: explainabilityPresetSlots.value[0],
+  reasonCounts: {},
+}));
 const rollbackPlanReasonOptions = computed(() => {
   const options: Array<{ key: ExceptionSimulationReasonDrilldownKey; label: string; count: number }> = [
     {
@@ -754,6 +777,14 @@ function setupAutoRefresh() {
 watch(() => healthFilters.autoRefreshSec, setupAutoRefresh);
 onMounted(setupAutoRefresh);
 onBeforeUnmount(clearAutoRefresh);
+onMounted(() => {
+  if (!import.meta.client) return;
+  window.addEventListener('keydown', onExplainabilityComposerKeydown);
+});
+onBeforeUnmount(() => {
+  if (!import.meta.client) return;
+  window.removeEventListener('keydown', onExplainabilityComposerKeydown);
+});
 
 const healthLevel = computed(() => {
   const data = healthData.value;
@@ -1102,6 +1133,15 @@ watch(filteredBulkDiffRows, (rows) => {
   }
 }, { immediate: true });
 
+watch(() => bulkDiffInspector.value.reasonCounts, () => {
+  const applied = applyExplainabilityPresetSlot({
+    slots: explainabilityPresetSlots.value,
+    slotIndex: activeExplainabilitySlotIndex.value,
+    reasonCounts: resolveExplainabilityReasonCounts(),
+  });
+  explainabilityAppliedChips.value = applied.chips;
+}, { deep: true, immediate: true });
+
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
   activeConflictDrilldown.value = key;
   const nextRows = filterExceptionDiffInspectorRows(bulkDiffInspector.value.rows, key);
@@ -1114,6 +1154,97 @@ function setActiveBulkDiffRow(rowId: string) {
 
 function setActiveRollbackPlanReason(reasonCode: ExceptionSimulationReasonDrilldownKey) {
   activeRollbackPlanReason.value = reasonCode;
+}
+
+function resolveExplainabilityReasonCounts() {
+  return {
+    stale_version: bulkDiffInspector.value.reasonCounts.stale_version,
+    malformed: bulkDiffInspector.value.reasonCounts.malformed,
+    high_delta: bulkDiffInspector.value.reasonCounts.high_delta,
+    mixed_status: bulkDiffInspector.value.reasonCounts.mixed_status,
+  };
+}
+
+function loadExplainabilityDraftForSlot(slotIndex: 1 | 2 | 3 | 4) {
+  const slot = explainabilityPresetSlots.value.find((candidate) => candidate.slotIndex === slotIndex);
+  if (!slot) {
+    return;
+  }
+  const draft = buildExplainabilityComposerDraftFromSlot(slot);
+  explainabilityDraft.name = draft.name;
+  explainabilityDraft.reasonBuckets = { ...draft.reasonBuckets };
+  explainabilityDraft.severityWindow = draft.severityWindow;
+}
+
+function openExplainabilityComposer(slotIndex = activeExplainabilitySlotIndex.value) {
+  explainabilityComposerOpen.value = true;
+  activeExplainabilitySlotIndex.value = slotIndex as 1 | 2 | 3 | 4;
+  explainabilityComposerState.error = '';
+  explainabilityComposerState.message = '';
+  loadExplainabilityDraftForSlot(activeExplainabilitySlotIndex.value);
+}
+
+function closeExplainabilityComposer(resetDraftOnly = true) {
+  if (resetDraftOnly) {
+    const safe = resetExplainabilityComposerDraftSafe({
+      slots: explainabilityPresetSlots.value,
+      activeSlotIndex: activeExplainabilitySlotIndex.value,
+      appliedChips: explainabilityAppliedChips.value,
+    });
+    explainabilityDraft.name = safe.draft.name;
+    explainabilityDraft.reasonBuckets = { ...safe.draft.reasonBuckets };
+    explainabilityDraft.severityWindow = safe.draft.severityWindow;
+    explainabilityAppliedChips.value = safe.appliedChips;
+  }
+  explainabilityComposerOpen.value = false;
+}
+
+function applyExplainabilitySlot(slotIndex: 1 | 2 | 3 | 4) {
+  const applied = applyExplainabilityPresetSlot({
+    slots: explainabilityPresetSlots.value,
+    slotIndex,
+    reasonCounts: resolveExplainabilityReasonCounts(),
+  });
+  activeExplainabilitySlotIndex.value = applied.activeSlotIndex;
+  explainabilityAppliedChips.value = applied.chips;
+  explainabilityPendingReplaceSlot.value = null;
+  explainabilityComposerState.message = `Applied explainability slot ${slotIndex}.`;
+  explainabilityComposerState.error = '';
+  loadExplainabilityDraftForSlot(slotIndex);
+}
+
+function overwriteExplainabilitySlot(slotIndex: 1 | 2 | 3 | 4) {
+  explainabilityPresetSlots.value = overwriteExplainabilityPresetSlot({
+    slots: explainabilityPresetSlots.value,
+    slotIndex,
+    draft: explainabilityDraft,
+  });
+  activeExplainabilitySlotIndex.value = slotIndex;
+  explainabilityPendingReplaceSlot.value = slotIndex;
+  explainabilityComposerState.error = '';
+  explainabilityComposerState.message = `Slot ${slotIndex} overwritten. Confirm replacement to apply updated chips.`;
+}
+
+function confirmExplainabilityReplacement() {
+  const slotIndex = explainabilityPendingReplaceSlot.value;
+  if (!slotIndex) {
+    return;
+  }
+  applyExplainabilitySlot(slotIndex);
+}
+
+function applyExplainabilityResetSafe() {
+  const safe = resetExplainabilityComposerDraftSafe({
+    slots: explainabilityPresetSlots.value,
+    activeSlotIndex: activeExplainabilitySlotIndex.value,
+    appliedChips: explainabilityAppliedChips.value,
+  });
+  explainabilityDraft.name = safe.draft.name;
+  explainabilityDraft.reasonBuckets = { ...safe.draft.reasonBuckets };
+  explainabilityDraft.severityWindow = safe.draft.severityWindow;
+  explainabilityAppliedChips.value = safe.appliedChips;
+  explainabilityComposerState.message = 'Reset-safe: draft cleared; applied chips preserved until replacement is confirmed.';
+  explainabilityComposerState.error = '';
 }
 
 function resetBulkInspectorViewState() {
@@ -1159,6 +1290,37 @@ function onBulkDiffKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault();
     resetBulkInspectorViewState();
+  }
+}
+
+function onExplainabilityComposerKeydown(event: KeyboardEvent) {
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  const shortcut = resolveExplainabilityPresetShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+  });
+
+  if (shortcut) {
+    event.preventDefault();
+    openExplainabilityComposer(shortcut.slotIndex);
+    if (shortcut.action === 'apply') {
+      applyExplainabilitySlot(shortcut.slotIndex);
+      return;
+    }
+    overwriteExplainabilitySlot(shortcut.slotIndex);
+    return;
+  }
+
+  if (event.key === 'Escape' && explainabilityComposerOpen.value) {
+    event.preventDefault();
+    closeExplainabilityComposer(true);
+    explainabilityComposerState.message = 'Composer closed. Applied chips were not changed.';
+    return;
+  }
+
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') && !event.altKey) {
+    return;
   }
 }
 
@@ -1523,6 +1685,7 @@ function applyExceptionPresetAndLoad(presetKey: 'open' | 'investigating' | 'reso
 function resetExceptionQueryState() {
   applyExceptionQueryState(DEFAULT_EXCEPTION_QUERY_STATE);
   exceptionFixtureMode.value = 'api';
+  applyExplainabilityResetSafe();
   clearExceptionQueryRecovery();
   void loadExceptions(1);
 }
@@ -2164,7 +2327,15 @@ onMounted(() => {
         >
           {{ preset.label }}
         </button>
+        <button type="button" class="link" @click="openExplainabilityComposer()">
+          Open Explainability Composer
+        </button>
       </div>
+      <p class="state" :class="{ error: explainabilityComposerState.error }">
+        {{ explainabilityComposerState.error
+          || explainabilityComposerState.message
+          || 'Keyboard shortcuts: Alt+1..4 apply slot, Alt+Shift+1..4 overwrite slot, Esc closes composer safely.' }}
+      </p>
 
       <article class="saved-view-panel">
         <h3>Saved Triage Views</h3>
@@ -2401,6 +2572,13 @@ onMounted(() => {
               <span>malformed {{ bulkDiffInspector.reasonCounts.malformed }}</span>
               <span>high_delta {{ bulkDiffInspector.reasonCounts.high_delta }}</span>
               <span>mixed_status {{ bulkDiffInspector.reasonCounts.mixed_status }}</span>
+              <span
+                v-for="chip in explainabilityAppliedChips"
+                :key="chip.key"
+                class="anomaly-chip"
+              >
+                {{ chip.label }}: {{ chip.value }}
+              </span>
             </div>
             <div class="chip-row">
               <button
@@ -2604,6 +2782,75 @@ onMounted(() => {
               Cancel
             </button>
           </div>
+        </div>
+      </div>
+
+      <div v-if="explainabilityComposerOpen" class="modal-backdrop" @click.self="closeExplainabilityComposer(true)">
+        <div class="modal explainability-modal">
+          <h3>Explainability Preset Composer</h3>
+          <p class="state">
+            Slot shortcuts: <code>Alt+1..4</code> apply, <code>Alt+Shift+1..4</code> overwrite, <code>Esc</code> close safely.
+          </p>
+          <div class="chip-row">
+            <button
+              v-for="slot in explainabilityPresetSlots"
+              :key="`composer-slot-${slot.slotIndex}`"
+              type="button"
+              class="preset-chip"
+              :class="{ active: activeExplainabilitySlotIndex === slot.slotIndex }"
+              @click="openExplainabilityComposer(slot.slotIndex)"
+            >
+              Slot {{ slot.slotIndex }}: {{ slot.name }}
+            </button>
+          </div>
+          <form class="grid" @submit.prevent="overwriteExplainabilitySlot(activeExplainabilitySlotIndex)">
+            <label>
+              Slot name
+              <input v-model="explainabilityDraft.name" maxlength="42" placeholder="Preset label" />
+            </label>
+            <label>
+              Severity window
+              <select v-model="explainabilityDraft.severityWindow">
+                <option value="all">all</option>
+                <option value="warning">warning</option>
+                <option value="critical">critical</option>
+              </select>
+            </label>
+            <label>
+              Last saved
+              <input
+                :value="explainabilityPresetSlots.find((slot) => slot.slotIndex === activeExplainabilitySlotIndex)?.savedAt || '-'"
+                disabled
+              />
+            </label>
+            <fieldset class="composer-fieldset">
+              <legend>Reason bucket toggles</legend>
+              <label><input v-model="explainabilityDraft.reasonBuckets.stale_version" type="checkbox" /> stale_version</label>
+              <label><input v-model="explainabilityDraft.reasonBuckets.malformed" type="checkbox" /> malformed</label>
+              <label><input v-model="explainabilityDraft.reasonBuckets.high_delta" type="checkbox" /> high_delta</label>
+              <label><input v-model="explainabilityDraft.reasonBuckets.mixed_status" type="checkbox" /> mixed_status</label>
+            </fieldset>
+            <div class="inline-actions">
+              <button type="submit">Overwrite Slot {{ activeExplainabilitySlotIndex }}</button>
+              <button type="button" class="link" @click="applyExplainabilitySlot(activeExplainabilitySlotIndex)">
+                Apply Slot {{ activeExplainabilitySlotIndex }}
+              </button>
+              <button
+                v-if="explainabilityPendingReplaceSlot"
+                type="button"
+                class="link"
+                @click="confirmExplainabilityReplacement"
+              >
+                Confirm Replacement For Slot {{ explainabilityPendingReplaceSlot }}
+              </button>
+              <button type="button" class="link" @click="applyExplainabilityResetSafe">
+                Reset Draft (Preserve Applied Chips)
+              </button>
+              <button type="button" class="link" @click="closeExplainabilityComposer(true)">
+                Close
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </section>

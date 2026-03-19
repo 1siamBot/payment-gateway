@@ -772,6 +772,33 @@ export type ExceptionQueryPreset = {
   filters: Pick<ExceptionQueryState, 'merchantId' | 'provider' | 'status' | 'startDate' | 'endDate'>;
 };
 
+export type ExplainabilitySeverityWindow = 'all' | 'warning' | 'critical';
+
+export type ExplainabilityPresetSlot = {
+  slotIndex: 1 | 2 | 3 | 4;
+  name: string;
+  reasonBuckets: Record<ExceptionConflictReason, boolean>;
+  severityWindow: ExplainabilitySeverityWindow;
+  savedAt: string;
+};
+
+export type ExplainabilityComposerDraft = {
+  name: string;
+  reasonBuckets: Record<ExceptionConflictReason, boolean>;
+  severityWindow: ExplainabilitySeverityWindow;
+};
+
+export type ExplainabilityFilterChip = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+type ExplainabilityPresetShortcut = {
+  action: 'apply' | 'overwrite';
+  slotIndex: 1 | 2 | 3 | 4;
+} | null;
+
 export const DEFAULT_EXCEPTION_QUERY_STATE: ExceptionQueryState = {
   merchantId: '',
   provider: '',
@@ -810,6 +837,37 @@ const EXCEPTION_QUERY_PRESETS: ExceptionQueryPreset[] = [
     filters: { merchantId: 'merchant-high-risk', provider: '', status: 'open', startDate: '', endDate: '' },
   },
 ];
+const EXPLAINABILITY_SLOT_INDEXES: Array<1 | 2 | 3 | 4> = [1, 2, 3, 4];
+const EXPLAINABILITY_REASON_BUCKET_ORDER: ExceptionConflictReason[] = [
+  'stale_version',
+  'malformed',
+  'high_delta',
+  'mixed_status',
+];
+const EXPLAINABILITY_DEFAULT_REASON_BUCKETS: Record<ExceptionConflictReason, boolean> = {
+  stale_version: true,
+  malformed: true,
+  high_delta: true,
+  mixed_status: true,
+};
+const EXPLAINABILITY_DEFAULT_NAMES: Record<1 | 2 | 3 | 4, string> = {
+  1: 'Open + Warning',
+  2: 'Critical Only',
+  3: 'Mixed Status Watch',
+  4: 'Stale Version Focus',
+};
+const EXPLAINABILITY_DEFAULT_SEVERITY: Record<1 | 2 | 3 | 4, ExplainabilitySeverityWindow> = {
+  1: 'warning',
+  2: 'critical',
+  3: 'all',
+  4: 'warning',
+};
+const EXPLAINABILITY_REASON_SEVERITY: Record<ExceptionConflictReason, Exclude<ExplainabilitySeverityWindow, 'all'>> = {
+  stale_version: 'warning',
+  mixed_status: 'warning',
+  malformed: 'critical',
+  high_delta: 'critical',
+};
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -850,6 +908,189 @@ function resolvePreset(key: ExceptionPresetKey): ExceptionQueryPreset {
 
 export function listExceptionQueryPresets(): ExceptionQueryPreset[] {
   return EXCEPTION_QUERY_PRESETS;
+}
+
+export function createDefaultExplainabilityPresetSlots(nowIso = new Date().toISOString()): ExplainabilityPresetSlot[] {
+  return EXPLAINABILITY_SLOT_INDEXES.map((slotIndex) => {
+    const reasonBuckets = { ...EXPLAINABILITY_DEFAULT_REASON_BUCKETS };
+    if (slotIndex === 2) {
+      reasonBuckets.stale_version = false;
+      reasonBuckets.mixed_status = false;
+    }
+    if (slotIndex === 4) {
+      reasonBuckets.malformed = false;
+      reasonBuckets.high_delta = false;
+    }
+    return {
+      slotIndex,
+      name: EXPLAINABILITY_DEFAULT_NAMES[slotIndex],
+      reasonBuckets,
+      severityWindow: EXPLAINABILITY_DEFAULT_SEVERITY[slotIndex],
+      savedAt: nowIso,
+    };
+  });
+}
+
+export function buildExplainabilityComposerDraftFromSlot(slot: ExplainabilityPresetSlot): ExplainabilityComposerDraft {
+  return {
+    name: slot.name,
+    reasonBuckets: { ...slot.reasonBuckets },
+    severityWindow: slot.severityWindow,
+  };
+}
+
+function normalizeExplainabilityDraft(
+  draft: Partial<ExplainabilityComposerDraft>,
+  fallbackName: string,
+): ExplainabilityComposerDraft {
+  return {
+    name: (draft.name ?? '').trim() || fallbackName,
+    reasonBuckets: {
+      stale_version: draft.reasonBuckets?.stale_version ?? true,
+      malformed: draft.reasonBuckets?.malformed ?? true,
+      high_delta: draft.reasonBuckets?.high_delta ?? true,
+      mixed_status: draft.reasonBuckets?.mixed_status ?? true,
+    },
+    severityWindow: draft.severityWindow === 'warning' || draft.severityWindow === 'critical'
+      ? draft.severityWindow
+      : 'all',
+  };
+}
+
+function normalizeExplainabilitySlot(
+  slot: ExplainabilityPresetSlot,
+  nowIso: string,
+): ExplainabilityPresetSlot {
+  return {
+    slotIndex: slot.slotIndex,
+    name: slot.name.trim() || EXPLAINABILITY_DEFAULT_NAMES[slot.slotIndex],
+    reasonBuckets: {
+      stale_version: Boolean(slot.reasonBuckets.stale_version),
+      malformed: Boolean(slot.reasonBuckets.malformed),
+      high_delta: Boolean(slot.reasonBuckets.high_delta),
+      mixed_status: Boolean(slot.reasonBuckets.mixed_status),
+    },
+    severityWindow: slot.severityWindow === 'warning' || slot.severityWindow === 'critical'
+      ? slot.severityWindow
+      : 'all',
+    savedAt: slot.savedAt || nowIso,
+  };
+}
+
+export function overwriteExplainabilityPresetSlot(input: {
+  slots: ExplainabilityPresetSlot[];
+  slotIndex: 1 | 2 | 3 | 4;
+  draft: Partial<ExplainabilityComposerDraft>;
+  nowIso?: string;
+}): ExplainabilityPresetSlot[] {
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const fallback = EXPLAINABILITY_DEFAULT_NAMES[input.slotIndex];
+  const normalizedDraft = normalizeExplainabilityDraft(input.draft, fallback);
+  const slots = input.slots.length
+    ? input.slots
+    : createDefaultExplainabilityPresetSlots(nowIso);
+  return slots.map((slot) => (
+    slot.slotIndex === input.slotIndex
+      ? normalizeExplainabilitySlot({
+        slotIndex: input.slotIndex,
+        name: normalizedDraft.name,
+        reasonBuckets: normalizedDraft.reasonBuckets,
+        severityWindow: normalizedDraft.severityWindow,
+        savedAt: nowIso,
+      }, nowIso)
+      : normalizeExplainabilitySlot(slot, nowIso)
+  ));
+}
+
+function severityWindowMatches(
+  reason: ExceptionConflictReason,
+  severityWindow: ExplainabilitySeverityWindow,
+): boolean {
+  if (severityWindow === 'all') {
+    return true;
+  }
+  return EXPLAINABILITY_REASON_SEVERITY[reason] === severityWindow;
+}
+
+export function buildDeterministicExplainabilityFilterChips(input: {
+  slot: ExplainabilityPresetSlot;
+  reasonCounts?: Partial<Record<ExceptionConflictReason, number>>;
+}): ExplainabilityFilterChip[] {
+  const chips: ExplainabilityFilterChip[] = [
+    {
+      key: 'slot',
+      label: `slot-${input.slot.slotIndex}`,
+      value: input.slot.name,
+    },
+    {
+      key: 'severity',
+      label: 'severity_window',
+      value: input.slot.severityWindow,
+    },
+  ];
+
+  for (const reason of EXPLAINABILITY_REASON_BUCKET_ORDER) {
+    if (!input.slot.reasonBuckets[reason]) {
+      continue;
+    }
+    if (!severityWindowMatches(reason, input.slot.severityWindow)) {
+      continue;
+    }
+    const count = Number(input.reasonCounts?.[reason] ?? 0);
+    chips.push({
+      key: `reason-${reason}`,
+      label: reason,
+      value: String(Math.max(0, count)),
+    });
+  }
+  return chips;
+}
+
+export function applyExplainabilityPresetSlot(input: {
+  slots: ExplainabilityPresetSlot[];
+  slotIndex: 1 | 2 | 3 | 4;
+  reasonCounts?: Partial<Record<ExceptionConflictReason, number>>;
+}): { activeSlotIndex: 1 | 2 | 3 | 4; chips: ExplainabilityFilterChip[] } {
+  const slot = input.slots.find((candidate) => candidate.slotIndex === input.slotIndex)
+    ?? createDefaultExplainabilityPresetSlots()[input.slotIndex - 1];
+  return {
+    activeSlotIndex: input.slotIndex,
+    chips: buildDeterministicExplainabilityFilterChips({
+      slot,
+      reasonCounts: input.reasonCounts,
+    }),
+  };
+}
+
+export function resolveExplainabilityPresetShortcut(input: {
+  key: string;
+  altKey: boolean;
+  shiftKey: boolean;
+}): ExplainabilityPresetShortcut {
+  if (!input.altKey) {
+    return null;
+  }
+  if (!/^[1-4]$/.test(input.key)) {
+    return null;
+  }
+  const slotIndex = Number(input.key) as 1 | 2 | 3 | 4;
+  return {
+    action: input.shiftKey ? 'overwrite' : 'apply',
+    slotIndex,
+  };
+}
+
+export function resetExplainabilityComposerDraftSafe(input: {
+  slots: ExplainabilityPresetSlot[];
+  activeSlotIndex: 1 | 2 | 3 | 4;
+  appliedChips: ExplainabilityFilterChip[];
+}): { draft: ExplainabilityComposerDraft; appliedChips: ExplainabilityFilterChip[] } {
+  const slot = input.slots.find((candidate) => candidate.slotIndex === input.activeSlotIndex)
+    ?? createDefaultExplainabilityPresetSlots()[input.activeSlotIndex - 1];
+  return {
+    draft: buildExplainabilityComposerDraftFromSlot(slot),
+    appliedChips: [...input.appliedChips],
+  };
 }
 
 export function applyExceptionQueryPreset(state: ExceptionQueryState, key: ExceptionPresetKey): ExceptionQueryState {

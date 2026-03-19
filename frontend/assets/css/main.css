@@ -360,6 +360,37 @@ button.danger {
   margin: 0.45rem 0;
 }
 
+.anomaly-chip {
+  border: 1px solid #93c5fd;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1d4ed8;
+  padding: 0.15rem 0.45rem;
+  font-weight: 600;
+}
+
+.explainability-modal {
+  width: min(760px, 100%);
+}
+
+.composer-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.composer-fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.composer-fieldset input[type='checkbox'] {
+  width: auto;
+}
+
 .bulk-diff-table-wrap {
   border: 1px solid #bfdbfe;
   border-radius: 8px;
