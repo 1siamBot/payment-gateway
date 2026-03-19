@@ -79,6 +79,13 @@ import {
   moveLineageReplayNavigatorSelection,
   resolveLineageReplayNavigatorShortcut,
   resetQaEvidencePacketComposerDraftSafe,
+  buildReplayDiffInspector,
+  filterReplayDiffInspectorRows,
+  moveReplayDiffInspectorSelection,
+  resolveReplayDiffInspectorShortcut,
+  getDefaultEvidenceGapChecklistDraft,
+  validateEvidenceGapChecklistDraft,
+  resetEvidenceGapChecklistDraftSafe,
   buildEvidenceDiffRail,
   moveEvidenceDiffRailSelection,
   resolveEvidenceDiffRailShortcut,
@@ -851,6 +858,174 @@ describe('frontend wave1 helpers', () => {
     expect(fullReset.didFullReset).toBe(true);
     expect(fullReset.activeLineageFilter).toBe('all');
     expect(fullReset.activeReplayRowId).toBe('');
+  });
+
+  it('builds replay diff inspector rows in deterministic tuple order by changeTypePriority, lineageDepth, sourceIssueId, artifactPath', () => {
+    const inspector = buildReplayDiffInspector({
+      primarySnapshotId: 'snap-a',
+      secondarySnapshotId: 'snap-b',
+      primaryRows: [
+        {
+          id: 'row-3',
+          lineageDepth: 1,
+          sourceIssueId: 'ONE-256',
+          artifactPath: 'artifacts/one-256/checklist.md',
+          payload: 'old-checklist',
+        },
+        {
+          id: 'row-1',
+          lineageDepth: 0,
+          sourceIssueId: 'ONE-253',
+          artifactPath: 'artifacts/one-253/lineage.json',
+          payload: 'same',
+        },
+        {
+          id: 'row-2',
+          lineageDepth: 1,
+          sourceIssueId: 'ONE-254',
+          artifactPath: '',
+          payload: 'removed',
+        },
+      ],
+      secondaryRows: [
+        {
+          id: 'row-1b',
+          lineageDepth: 0,
+          sourceIssueId: 'ONE-253',
+          artifactPath: 'artifacts/one-253/lineage.json',
+          payload: 'same',
+        },
+        {
+          id: 'row-4',
+          lineageDepth: 0,
+          sourceIssueId: 'ONE-255',
+          artifactPath: 'artifacts/one-255/diff.json',
+          payload: 'added',
+        },
+        {
+          id: 'row-3b',
+          lineageDepth: 1,
+          sourceIssueId: 'ONE-256',
+          artifactPath: 'artifacts/one-256/checklist.md',
+          payload: 'new-checklist',
+        },
+      ],
+      activeRowId: '',
+      activeFilter: 'all',
+    });
+
+    expect(inspector.contract).toBe('settlement-replay-diff-inspector.v1');
+    expect(inspector.rows.map((row) => row.changeType)).toEqual(['added', 'removed', 'modified']);
+    expect(inspector.rows.map((row) => row.id)).toEqual([
+      'added|0|ONE-255|artifacts/one-255/diff.json',
+      'removed|1|ONE-254|',
+      'modified|1|ONE-256|artifacts/one-256/checklist.md',
+    ]);
+    expect(filterReplayDiffInspectorRows(inspector.rows, 'modified').map((row) => row.id))
+      .toEqual(['modified|1|ONE-256|artifacts/one-256/checklist.md']);
+  });
+
+  it('supports replay diff inspector keyboard workflow for focus, next, previous, and checklist validate', () => {
+    expect(resolveReplayDiffInspectorShortcut({ key: 'd', altKey: true })).toBe('focus_diff_inspector');
+    expect(resolveReplayDiffInspectorShortcut({ key: 'ArrowRight', altKey: true })).toBe('next_row');
+    expect(resolveReplayDiffInspectorShortcut({ key: 'ArrowLeft', altKey: true })).toBe('prev_row');
+    expect(resolveReplayDiffInspectorShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_checklist');
+
+    const inspector = buildReplayDiffInspector({
+      primarySnapshotId: 'snap-a',
+      secondarySnapshotId: 'snap-b',
+      primaryRows: [
+        {
+          id: 'row-1',
+          lineageDepth: 0,
+          sourceIssueId: 'ONE-253',
+          artifactPath: '',
+          payload: 'old-a',
+        },
+      ],
+      secondaryRows: [
+        {
+          id: 'row-1b',
+          lineageDepth: 0,
+          sourceIssueId: 'ONE-253',
+          artifactPath: '',
+          payload: 'new-a',
+        },
+        {
+          id: 'row-2',
+          lineageDepth: 1,
+          sourceIssueId: 'ONE-255',
+          artifactPath: 'artifacts/one-255/new.md',
+          payload: 'added',
+        },
+      ],
+      activeRowId: '',
+      activeFilter: 'all',
+    });
+    expect(moveReplayDiffInspectorSelection({
+      rows: inspector.rows,
+      activeRowId: inspector.rows[0].id,
+      direction: 'next',
+    })).toBe(inspector.rows[1].id);
+    expect(moveReplayDiffInspectorSelection({
+      rows: inspector.rows,
+      activeRowId: inspector.rows[1].id,
+      direction: 'prev',
+    })).toBe(inspector.rows[0].id);
+  });
+
+  it('validates evidence-gap checklist fields and preserves diff filter + selected pair on safe reset', () => {
+    const incomplete = validateEvidenceGapChecklistDraft(getDefaultEvidenceGapChecklistDraft());
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'blockerOwner',
+      'eta',
+      'missingArtifactPaths',
+      'dependencyIssueLinks',
+    ]);
+
+    const complete = validateEvidenceGapChecklistDraft({
+      branch: 'frontend/one-255-replay-diff',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      mode: 'no_pr',
+      prLink: '',
+      blockerOwner: 'GitHub Admin / DevOps',
+      eta: '2026-03-20T18:00:00.000Z',
+      missingArtifactPathsText: 'artifacts/one-255/replay-diff-inspector.json',
+      dependencyIssueLinksText: '/ONE/issues/ONE-253\n/ONE/issues/ONE-254\n/ONE/issues/ONE-241',
+    });
+    expect(complete.isComplete).toBe(true);
+    expect(complete.errors).toEqual([]);
+    expect(complete.missingFields).toEqual([]);
+
+    const safeReset = resetEvidenceGapChecklistDraftSafe({
+      activeDiffFilter: 'modified',
+      primarySnapshotId: 'snap-a',
+      secondarySnapshotId: 'snap-b',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.activeDiffFilter).toBe('modified');
+    expect(safeReset.primarySnapshotId).toBe('snap-a');
+    expect(safeReset.secondarySnapshotId).toBe('snap-b');
+    expect(safeReset.message).toContain('preserved');
+
+    const fullReset = resetEvidenceGapChecklistDraftSafe({
+      activeDiffFilter: 'modified',
+      primarySnapshotId: 'snap-a',
+      secondarySnapshotId: 'snap-b',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.activeDiffFilter).toBe('all');
+    expect(fullReset.primarySnapshotId).toBe('');
+    expect(fullReset.secondarySnapshotId).toBe('');
   });
 
   it('builds deterministic evidence diff rail ordering by sectionPriority/fieldKey/id', () => {

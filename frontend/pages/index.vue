@@ -62,13 +62,20 @@ import {
   resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
   resolveReviewQueueLedgerShortcut,
+  resolveReplayDiffInspectorShortcut,
   resetOperatorDecisionQueueDraftSafe,
   resetReviewQueueHandoffPacketDraftSafe,
+  resetEvidenceGapChecklistDraftSafe,
   swapReplayBookmarkCompareSlots,
   validateExceptionActionInput,
+  validateEvidenceGapChecklistDraft,
+  getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
   filterReviewQueueLedgerRows,
   moveReviewQueueLedgerSelection,
+  moveReplayDiffInspectorSelection,
+  filterReplayDiffInspectorRows,
+  buildReplayDiffInspector,
   buildReviewQueueHandoffPacketDraftFromLedgerRow,
   validateReviewQueueHandoffPacketDraft,
 } from '../utils/wave1';
@@ -79,6 +86,7 @@ import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../u
 import type { IncidentBookmarkFilterKey } from '../utils/wave1';
 import type { OperatorTimelinePresetKey } from '../utils/wave1';
 import type { ReviewQueueLedgerFilterKey } from '../utils/wave1';
+import type { ReplayDiffInspectorFilterKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -427,6 +435,65 @@ const replayDeltaInspector = computed(() => buildReplayDeltaInspector({
   items: filteredIncidentBookmarkItems.value,
   primaryBookmarkId: replayComparePrimaryBookmarkId.value,
   secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+}));
+const activeReplayDiffFilter = ref<ReplayDiffInspectorFilterKey>('all');
+const activeReplayDiffRowId = ref('');
+const replayDiffState = reactive({
+  message: '',
+  error: '',
+});
+const evidenceGapChecklistDraft = ref(getDefaultEvidenceGapChecklistDraft());
+const evidenceGapChecklistMissingFields = ref<Set<string>>(new Set());
+const replayDiffPanelRef = ref<HTMLElement | null>(null);
+const evidenceGapBranchInputRef = ref<HTMLInputElement | null>(null);
+const replayDiffFilterOptions: Array<{ key: ReplayDiffInspectorFilterKey; label: string }> = [
+  { key: 'all', label: 'all' },
+  { key: 'added', label: 'added' },
+  { key: 'removed', label: 'removed' },
+  { key: 'modified', label: 'modified' },
+];
+const replaySnapshotRowsByBookmarkId = computed(() => {
+  const map = new Map<string, Array<{
+    id: string;
+    lineageDepth: number;
+    sourceIssueId: string;
+    artifactPath: string;
+    payload: string;
+  }>>();
+  for (const item of filteredIncidentBookmarkItems.value) {
+    map.set(item.id, [
+      {
+        id: `${item.id}-root`,
+        lineageDepth: 0,
+        sourceIssueId: 'ONE-253',
+        artifactPath: `artifacts/one-253/${item.id}-lineage.json`,
+        payload: `${item.status}|${item.amount}|${item.riskFlags.join(',')}`,
+      },
+      {
+        id: `${item.id}-evidence`,
+        lineageDepth: 1,
+        sourceIssueId: 'ONE-254',
+        artifactPath: `artifacts/one-254/${item.id}-evidence.md`,
+        payload: `${item.title}|${item.updatedAt}`,
+      },
+      {
+        id: `${item.id}-qa`,
+        lineageDepth: 1,
+        sourceIssueId: 'ONE-241',
+        artifactPath: `artifacts/one-241/${item.id}-qa-checklist.md`,
+        payload: item.riskFlags.join(','),
+      },
+    ]);
+  }
+  return map;
+});
+const replayDiffInspector = computed(() => buildReplayDiffInspector({
+  primarySnapshotId: replayComparePrimaryBookmarkId.value,
+  secondarySnapshotId: replayCompareSecondaryBookmarkId.value,
+  primaryRows: replaySnapshotRowsByBookmarkId.value.get(replayComparePrimaryBookmarkId.value) ?? [],
+  secondaryRows: replaySnapshotRowsByBookmarkId.value.get(replayCompareSecondaryBookmarkId.value) ?? [],
+  activeRowId: activeReplayDiffRowId.value,
+  activeFilter: activeReplayDiffFilter.value,
 }));
 const operatorTimelineScrubber = computed(() => buildOperatorTimelineScrubber({
   items: filteredIncidentBookmarkItems.value,
@@ -1339,6 +1406,16 @@ watch(operatorDecisionQueue, (queue) => {
   }
 }, { deep: true, immediate: true });
 
+watch(replayDiffInspector, (inspector) => {
+  if (!inspector.rows.length) {
+    activeReplayDiffRowId.value = '';
+    return;
+  }
+  if (!inspector.rows.some((row) => row.id === activeReplayDiffRowId.value)) {
+    activeReplayDiffRowId.value = inspector.activeRowId;
+  }
+}, { deep: true, immediate: true });
+
 watch(reviewQueueLedger, (ledger) => {
   if (!ledger.rows.length) {
     activeReviewQueueRowId.value = '';
@@ -1509,6 +1586,12 @@ function resetReplayCompareState() {
   replayCompareState.message = '';
 }
 
+function resetReplayDiffState() {
+  replayDiffState.error = '';
+  replayDiffState.message = '';
+  evidenceGapChecklistMissingFields.value = new Set();
+}
+
 function resetTimelineScrubberState() {
   timelineScrubberState.error = '';
   timelineScrubberState.message = '';
@@ -1623,6 +1706,69 @@ function clearTimelineCompareDraftSafe() {
   timelineScrubberState.message = safe.message;
 }
 
+function setActiveReplayDiffFilter(filter: ReplayDiffInspectorFilterKey) {
+  resetReplayDiffState();
+  activeReplayDiffFilter.value = filter;
+  const nextRows = filterReplayDiffInspectorRows(replayDiffInspector.value.rows, filter);
+  if (!nextRows.some((row) => row.id === activeReplayDiffRowId.value)) {
+    activeReplayDiffRowId.value = nextRows[0]?.id ?? '';
+  }
+}
+
+function setActiveReplayDiffRow(rowId: string) {
+  resetReplayDiffState();
+  activeReplayDiffRowId.value = rowId;
+}
+
+function validateEvidenceGapChecklist() {
+  resetReplayDiffState();
+  const validation = validateEvidenceGapChecklistDraft(evidenceGapChecklistDraft.value);
+  evidenceGapChecklistMissingFields.value = new Set(validation.missingFields);
+  if (validation.isComplete) {
+    replayDiffState.message = `Evidence-gap checklist validated. Missing artifacts: ${validation.missingArtifactPaths.length}, dependencies: ${validation.dependencyIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  replayDiffState.error = errorParts.join(' | ') || 'Evidence-gap checklist is incomplete.';
+}
+
+function clearEvidenceGapChecklistDraft(confirmFullReset: boolean) {
+  resetReplayDiffState();
+  const next = resetEvidenceGapChecklistDraftSafe({
+    activeDiffFilter: activeReplayDiffFilter.value,
+    primarySnapshotId: replayComparePrimaryBookmarkId.value,
+    secondarySnapshotId: replayCompareSecondaryBookmarkId.value,
+    confirmFullReset,
+  });
+  evidenceGapChecklistDraft.value = next.draft;
+  activeReplayDiffFilter.value = next.activeDiffFilter;
+  replayComparePrimaryBookmarkId.value = next.primarySnapshotId;
+  replayCompareSecondaryBookmarkId.value = next.secondarySnapshotId;
+  replayDiffState.message = next.message;
+}
+
+function clearEvidenceGapChecklistDraftWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears checklist draft, diff filter, and selected snapshot pair. Continue?')) {
+    return;
+  }
+  clearEvidenceGapChecklistDraft(true);
+}
+
+function focusReplayDiffInspector() {
+  replayDiffPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  evidenceGapBranchInputRef.value?.focus();
+}
+
+function isEvidenceGapFieldMissing(fieldKey: string): boolean {
+  return evidenceGapChecklistMissingFields.value.has(fieldKey);
+}
+
 function onReplayCompareKeydown(event: KeyboardEvent) {
   const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
   if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
@@ -1684,6 +1830,38 @@ function onOperatorTimelineKeydown(event: KeyboardEvent) {
     return;
   }
   clearTimelineCompareDraftSafe();
+}
+
+function onReplayDiffInspectorKeydown(event: KeyboardEvent) {
+  const shortcut = resolveReplayDiffInspectorShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'validate_checklist') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_diff_inspector') {
+    focusReplayDiffInspector();
+    return;
+  }
+  if (shortcut === 'next_row' || shortcut === 'prev_row') {
+    activeReplayDiffRowId.value = moveReplayDiffInspectorSelection({
+      rows: replayDiffInspector.value.rows,
+      activeRowId: activeReplayDiffRowId.value,
+      direction: shortcut === 'next_row' ? 'next' : 'prev',
+    });
+    return;
+  }
+  validateEvidenceGapChecklist();
 }
 
 function onDecisionQueueKeydown(event: KeyboardEvent) {
@@ -3522,6 +3700,105 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div ref="replayDiffPanelRef" class="simulation-outcome-panel" tabindex="0" @keydown="onReplayDiffInspectorKeydown">
+              <h4>Replay Diff Inspector</h4>
+              <p class="state" :class="{ error: replayDiffState.error }">
+                {{ replayDiffState.error
+                  || replayDiffState.message
+                  || 'Deterministic order: changeTypePriority, lineageDepth, sourceIssueId, artifactPath. Keyboard: Alt+D focus, Alt+Right next, Alt+Left previous, Ctrl+Shift+Enter validate checklist.' }}
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in replayDiffFilterOptions"
+                  :key="`replay-diff-filter-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeReplayDiffFilter === option.key }"
+                  @click="setActiveReplayDiffFilter(option.key)"
+                >
+                  {{ option.label }}
+                  ({{ option.key === 'all'
+                    ? replayDiffInspector.rows.length
+                    : replayDiffInspector.rows.filter((row) => row.changeType === option.key).length }})
+                </button>
+              </div>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Change</th>
+                      <th>lineageDepth</th>
+                      <th>sourceIssueId</th>
+                      <th>artifactPath</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!replayDiffInspector.rows.length">
+                      <td colspan="4">Select primary and secondary bookmarks to inspect replay diffs.</td>
+                    </tr>
+                    <tr
+                      v-for="row in replayDiffInspector.rows"
+                      :key="row.id"
+                      :class="{ 'queue-row-active': activeReplayDiffRowId === row.id }"
+                      @click="setActiveReplayDiffRow(row.id)"
+                    >
+                      <td>{{ row.changeType }}</td>
+                      <td>{{ row.lineageDepth }}</td>
+                      <td>{{ row.sourceIssueId }}</td>
+                      <td>{{ row.artifactPath || '(none)' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h5>Evidence Gap Checklist</h5>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="validateEvidenceGapChecklist">Validate Checklist</button>
+                <button type="button" class="link" @click="clearEvidenceGapChecklistDraft(false)">Clear Draft Only</button>
+                <button type="button" class="link" @click="clearEvidenceGapChecklistDraftWithConfirm">Full Reset</button>
+              </div>
+              <div class="triage-grid">
+                <label :class="{ 'field-missing': isEvidenceGapFieldMissing('branch') }">
+                  Branch
+                  <input
+                    ref="evidenceGapBranchInputRef"
+                    v-model="evidenceGapChecklistDraft.branch"
+                    placeholder="frontend/one-255-replay-diff"
+                  />
+                </label>
+                <label :class="{ 'field-missing': isEvidenceGapFieldMissing('fullSha') }">
+                  Full SHA
+                  <input v-model="evidenceGapChecklistDraft.fullSha" placeholder="40-char commit SHA" />
+                </label>
+                <label>
+                  PR / no-PR mode
+                  <select v-model="evidenceGapChecklistDraft.mode">
+                    <option value="pr">PR</option>
+                    <option value="no_pr">No PR</option>
+                  </select>
+                </label>
+                <label :class="{ 'field-missing': isEvidenceGapFieldMissing('prLink') }">
+                  PR Link
+                  <input v-model="evidenceGapChecklistDraft.prLink" placeholder="https://github.com/org/repo/pull/123" />
+                </label>
+                <label :class="{ 'field-missing': isEvidenceGapFieldMissing('blockerOwner') }">
+                  Blocker Owner
+                  <input v-model="evidenceGapChecklistDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                </label>
+                <label :class="{ 'field-missing': isEvidenceGapFieldMissing('eta') }">
+                  ETA
+                  <input v-model="evidenceGapChecklistDraft.eta" placeholder="2026-03-20 18:00 UTC" />
+                </label>
+              </div>
+              <label :class="{ 'field-missing': isEvidenceGapFieldMissing('missingArtifactPaths') }">
+                Missing Artifact Paths (one per line)
+                <textarea v-model="evidenceGapChecklistDraft.missingArtifactPathsText" rows="4" placeholder="artifacts/one-255/replay-diff-inspector.json"></textarea>
+              </label>
+              <label :class="{ 'field-missing': isEvidenceGapFieldMissing('dependencyIssueLinks') }">
+                Dependency Issue Links (one per line)
+                <textarea v-model="evidenceGapChecklistDraft.dependencyIssueLinksText" rows="4" placeholder="/ONE/issues/ONE-253"></textarea>
+              </label>
+            </div>
             <h4>Replay Delta Inspector</h4>
             <p class="state">Field-level compare order is deterministic: status, amount, riskFlags, updatedAt.</p>
             <div class="replay-delta-table-wrap">

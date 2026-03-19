@@ -322,6 +322,62 @@ export type QaEvidencePacketComposerValidation = {
   dependencyIssueLinks: string[];
 };
 
+export type ReplayDiffInspectorFilterKey = 'all' | 'added' | 'removed' | 'modified';
+export type ReplayDiffInspectorShortcut =
+  | 'focus_diff_inspector'
+  | 'next_row'
+  | 'prev_row'
+  | 'validate_checklist';
+
+export type ReplayDiffSnapshotRow = {
+  id: string;
+  lineageDepth: number;
+  sourceIssueId: string;
+  artifactPath: string;
+  payload: string;
+};
+
+export type ReplayDiffInspectorRow = {
+  id: string;
+  changeType: 'added' | 'removed' | 'modified';
+  changeTypePriority: number;
+  lineageDepth: number;
+  sourceIssueId: string;
+  artifactPath: string;
+  previousPayload: string;
+  nextPayload: string;
+};
+
+export type ReplayDiffInspector = {
+  contract: 'settlement-replay-diff-inspector.v1';
+  primarySnapshotId: string;
+  secondarySnapshotId: string;
+  rows: ReplayDiffInspectorRow[];
+  activeFilter: ReplayDiffInspectorFilterKey;
+  activeRowId: string;
+};
+
+export type EvidenceGapChecklistMode = 'pr' | 'no_pr';
+
+export type EvidenceGapChecklistDraft = {
+  branch: string;
+  fullSha: string;
+  mode: EvidenceGapChecklistMode;
+  prLink: string;
+  blockerOwner: string;
+  eta: string;
+  missingArtifactPathsText: string;
+  dependencyIssueLinksText: string;
+};
+
+export type EvidenceGapChecklistValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  missingArtifactPaths: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type EvidenceDiffRailFilterKey = 'all' | 'changed' | 'unchanged';
 export type EvidenceDiffRailShortcut =
   | 'next_row'
@@ -558,6 +614,11 @@ const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high',
 const REVIEW_QUEUE_PRIORITY_ORDER: ReviewQueuePriority[] = ['critical', 'high', 'medium', 'low'];
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
+const REPLAY_DIFF_CHANGE_TYPE_PRIORITY: Record<'added' | 'removed' | 'modified', number> = {
+  added: 1,
+  removed: 2,
+  modified: 3,
+};
 const DEFAULT_REPLAY_CHECKLIST_STEPS = [
   { id: 'load_context', label: 'Load bookmark context into replay scope.' },
   { id: 'verify_determinism', label: 'Verify deterministic ordering and incident grouping.' },
@@ -2247,6 +2308,7 @@ export function resetReviewQueueHandoffPacketDraftSafe(input: {
 const QA_EVIDENCE_SHA_PLACEHOLDER = '0000000000000000000000000000000000000000';
 const LINEAGE_REPLAY_FALLBACK_WINDOW_START = '2026-03-19T00:00:00.000Z';
 const LINEAGE_REPLAY_FALLBACK_WINDOW_END = '2026-03-19T23:59:59.000Z';
+const EVIDENCE_GAP_SHA_PLACEHOLDER = '0000000000000000000000000000000000000000';
 
 function parseLineageReplayNavigatorRow(raw: unknown): LineageReplayNavigatorRow | null {
   if (!raw || typeof raw !== 'object') {
@@ -2478,6 +2540,283 @@ export function resetQaEvidencePacketComposerDraftSafe(input: {
     activeReplayRowId: input.activeReplayRowId,
     didFullReset: false,
     message: 'Evidence packet draft cleared. Lineage filter and active replay row preserved.',
+  };
+}
+
+function parseReplayDiffSnapshotRow(raw: unknown): ReplayDiffSnapshotRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : String(row.id ?? ''));
+  const sourceIssueId = normalizeOptional(
+    typeof row.sourceIssueId === 'string'
+      ? row.sourceIssueId
+      : String(row.sourceIssueId ?? ''),
+  );
+  if (!id || !sourceIssueId) {
+    return null;
+  }
+  const lineageDepthRaw = parseFiniteNumber(row.lineageDepth);
+  if (lineageDepthRaw === null) {
+    return null;
+  }
+  const artifactPath = normalizeOptional(
+    typeof row.artifactPath === 'string'
+      ? row.artifactPath
+      : String(row.artifactPath ?? ''),
+  ) ?? '';
+  const payload = normalizeOptional(
+    typeof row.payload === 'string'
+      ? row.payload
+      : String(row.payload ?? ''),
+  ) ?? '';
+  return {
+    id,
+    lineageDepth: Math.max(0, Math.trunc(lineageDepthRaw)),
+    sourceIssueId,
+    artifactPath,
+    payload,
+  };
+}
+
+function replayDiffSnapshotRowKey(row: Pick<ReplayDiffSnapshotRow, 'lineageDepth' | 'sourceIssueId' | 'artifactPath'>): string {
+  return `${row.lineageDepth}|${row.sourceIssueId}|${row.artifactPath}`;
+}
+
+export function filterReplayDiffInspectorRows(
+  rows: ReplayDiffInspectorRow[],
+  filter: ReplayDiffInspectorFilterKey,
+): ReplayDiffInspectorRow[] {
+  if (filter === 'all') {
+    return [...rows];
+  }
+  return rows.filter((row) => row.changeType === filter);
+}
+
+export function buildReplayDiffInspector(input: {
+  primarySnapshotId: string;
+  secondarySnapshotId: string;
+  primaryRows: unknown[];
+  secondaryRows: unknown[];
+  activeRowId: string;
+  activeFilter?: ReplayDiffInspectorFilterKey;
+}): ReplayDiffInspector {
+  const activeFilter = input.activeFilter ?? 'all';
+  const primaryRows = input.primaryRows
+    .map((row) => parseReplayDiffSnapshotRow(row))
+    .filter((row): row is ReplayDiffSnapshotRow => Boolean(row));
+  const secondaryRows = input.secondaryRows
+    .map((row) => parseReplayDiffSnapshotRow(row))
+    .filter((row): row is ReplayDiffSnapshotRow => Boolean(row));
+  const primaryMap = new Map(primaryRows.map((row) => [replayDiffSnapshotRowKey(row), row] as const));
+  const secondaryMap = new Map(secondaryRows.map((row) => [replayDiffSnapshotRowKey(row), row] as const));
+  const rowKeys = Array.from(new Set([
+    ...primaryMap.keys(),
+    ...secondaryMap.keys(),
+  ]));
+  const rows = rowKeys
+    .map((rowKey) => {
+      const previousRow = primaryMap.get(rowKey) ?? null;
+      const nextRow = secondaryMap.get(rowKey) ?? null;
+      if (!previousRow && !nextRow) {
+        return null;
+      }
+      let changeType: 'added' | 'removed' | 'modified' = 'modified';
+      if (!previousRow && nextRow) {
+        changeType = 'added';
+      } else if (previousRow && !nextRow) {
+        changeType = 'removed';
+      } else if ((previousRow?.payload ?? '') !== (nextRow?.payload ?? '')) {
+        changeType = 'modified';
+      } else {
+        return null;
+      }
+
+      const lineageDepth = previousRow?.lineageDepth ?? nextRow?.lineageDepth ?? 0;
+      const sourceIssueId = previousRow?.sourceIssueId ?? nextRow?.sourceIssueId ?? '';
+      const artifactPath = previousRow?.artifactPath ?? nextRow?.artifactPath ?? '';
+      const id = `${changeType}|${lineageDepth}|${sourceIssueId}|${artifactPath}`;
+      return {
+        id,
+        changeType,
+        changeTypePriority: REPLAY_DIFF_CHANGE_TYPE_PRIORITY[changeType],
+        lineageDepth,
+        sourceIssueId,
+        artifactPath,
+        previousPayload: previousRow?.payload ?? '',
+        nextPayload: nextRow?.payload ?? '',
+      };
+    })
+    .filter((row): row is ReplayDiffInspectorRow => Boolean(row))
+    .sort((left, right) => (
+      left.changeTypePriority - right.changeTypePriority
+      || left.lineageDepth - right.lineageDepth
+      || left.sourceIssueId.localeCompare(right.sourceIssueId)
+      || left.artifactPath.localeCompare(right.artifactPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const filteredRows = filterReplayDiffInspectorRows(rows, activeFilter);
+  const rowIdSet = new Set(filteredRows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (filteredRows[0]?.id ?? '');
+  return {
+    contract: 'settlement-replay-diff-inspector.v1',
+    primarySnapshotId: normalizeOptional(input.primarySnapshotId) ?? '',
+    secondarySnapshotId: normalizeOptional(input.secondarySnapshotId) ?? '',
+    rows: filteredRows,
+    activeFilter,
+    activeRowId,
+  };
+}
+
+export function moveReplayDiffInspectorSelection(input: {
+  rows: ReplayDiffInspectorRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveReplayDiffInspectorShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): ReplayDiffInspectorShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'd') {
+    return 'focus_diff_inspector';
+  }
+  if (input.altKey && normalizedKey === 'arrowright') {
+    return 'next_row';
+  }
+  if (input.altKey && normalizedKey === 'arrowleft') {
+    return 'prev_row';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_checklist';
+  }
+  return null;
+}
+
+export function getDefaultEvidenceGapChecklistDraft(): EvidenceGapChecklistDraft {
+  return {
+    branch: '',
+    fullSha: EVIDENCE_GAP_SHA_PLACEHOLDER,
+    mode: 'no_pr',
+    prLink: '',
+    blockerOwner: '',
+    eta: '',
+    missingArtifactPathsText: '',
+    dependencyIssueLinksText: '',
+  };
+}
+
+export function validateEvidenceGapChecklistDraft(
+  draft: EvidenceGapChecklistDraft,
+): EvidenceGapChecklistValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const prLink = draft.prLink.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const eta = draft.eta.trim();
+  const missingArtifactPaths = normalizeMultilineEntries(draft.missingArtifactPathsText);
+  const dependencyIssueLinks = normalizeDependencyIssueLinks(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === EVIDENCE_GAP_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before completion.');
+  }
+
+  if (draft.mode === 'pr') {
+    if (!prLink) {
+      missingFields.push('prLink');
+    } else if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/i.test(prLink)) {
+      errors.push('PR link must be a GitHub pull request URL.');
+    }
+  } else {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!eta) {
+      missingFields.push('eta');
+    } else if (!Number.isFinite(new Date(eta).getTime())) {
+      errors.push('ETA must be a valid date-time string.');
+    }
+  }
+
+  if (missingArtifactPaths.length === 0) {
+    missingFields.push('missingArtifactPaths');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!isValidIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    missingArtifactPaths,
+    dependencyIssueLinks,
+  };
+}
+
+export function resetEvidenceGapChecklistDraftSafe(input: {
+  activeDiffFilter: ReplayDiffInspectorFilterKey;
+  primarySnapshotId: string;
+  secondarySnapshotId: string;
+  confirmFullReset: boolean;
+}): {
+  draft: EvidenceGapChecklistDraft;
+  activeDiffFilter: ReplayDiffInspectorFilterKey;
+  primarySnapshotId: string;
+  secondarySnapshotId: string;
+  didFullReset: boolean;
+  message: string;
+} {
+  if (input.confirmFullReset) {
+    return {
+      draft: getDefaultEvidenceGapChecklistDraft(),
+      activeDiffFilter: 'all',
+      primarySnapshotId: '',
+      secondarySnapshotId: '',
+      didFullReset: true,
+      message: 'Evidence-gap checklist draft cleared. Diff filter and selected snapshot pair reset to default.',
+    };
+  }
+  return {
+    draft: getDefaultEvidenceGapChecklistDraft(),
+    activeDiffFilter: input.activeDiffFilter,
+    primarySnapshotId: input.primarySnapshotId,
+    secondarySnapshotId: input.secondarySnapshotId,
+    didFullReset: false,
+    message: 'Evidence-gap checklist draft cleared. Diff filter and selected snapshot pair preserved.',
   };
 }
 
