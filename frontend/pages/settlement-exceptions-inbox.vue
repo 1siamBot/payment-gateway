@@ -413,6 +413,7 @@ onMounted(() => {
         <NuxtLink class="button-link" to="/payment-reconciliation-workspace">Open Reconciliation Workspace</NuxtLink>
         <NuxtLink class="button-link" to="/merchant-balance-anomaly-console">Open Merchant Balance Anomaly Console</NuxtLink>
         <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
+        <NuxtLink class="button-link" to="/settlement-exceptions-operator-workbench">Open Settlement Exceptions Operator Workbench</NuxtLink>
         <NuxtLink class="button-link" to="/provider-failover-insights">Open Provider Failover Insights</NuxtLink>
       </div>
     </section>

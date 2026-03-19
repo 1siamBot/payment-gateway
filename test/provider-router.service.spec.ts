@@ -152,4 +152,34 @@ describe('ProviderRouterService', () => {
       }),
     ).rejects.toThrow(ServiceUnavailableException);
   });
+
+  it('supports runtime policy updates and provider health snapshots', async () => {
+    const first = {
+      name: 'mock-a',
+      isHealthy: jest.fn(async () => true),
+      initiate: jest.fn(async () => ({ providerName: 'mock-a', externalRef: 'A-ref' })),
+    };
+    const router = new ProviderRouterService([first as any], {
+      weights: { successRate: 0.45, latency: 0.25, fee: 0.2, risk: 0.1 },
+      featureFlags: { policyEnabled: true, shadowMode: false, rolloutPercent: 100, legacyFallbackEnabled: true },
+    });
+
+    const updated = router.updatePolicyConfig({
+      featureFlags: { rolloutPercent: 35 },
+      weights: { fee: 0.6 },
+      providerProfiles: {
+        'mock-a': { feePercent: 1.7, riskScore: 10 },
+      },
+    });
+    expect(updated.featureFlags.rolloutPercent).toBe(35);
+    expect(updated.weights.fee).toBe(0.6);
+    expect(updated.providerProfiles['mock-a'].feePercent).toBe(1.7);
+
+    const health = await router.getProviderHealthSnapshot();
+    expect(health).toHaveLength(1);
+    expect(health[0]).toMatchObject({
+      providerName: 'mock-a',
+      healthy: true,
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { MockAConnector } from './mock-a.connector';
 import { MockBConnector } from './mock-b.connector';
 import { ProviderRouterOptions, ProviderRouterService } from './provider-router.service';
 import { ProviderConnector } from './provider.interface';
+import { RoutingAdminController } from './routing-admin.controller';
 
 function parseNumber(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === '') {
@@ -22,6 +23,7 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
 }
 
 @Module({
+  controllers: [RoutingAdminController],
   providers: [
     MockAConnector,
     MockBConnector,

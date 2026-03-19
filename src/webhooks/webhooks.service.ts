@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { WebhookDeliveryStatus } from '@prisma/client';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +14,55 @@ type DeliveryPayload = {
 @Injectable()
 export class WebhooksService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async listDeliveries(filters: {
+    merchantId?: string;
+    status?: WebhookDeliveryStatus;
+    eventType?: string;
+    take?: number;
+  }, actorMerchantId?: string) {
+    const merchantId = filters.merchantId ?? actorMerchantId;
+    if (merchantId && actorMerchantId && merchantId !== actorMerchantId) {
+      throw new ForbiddenException('Merchant is not allowed to access this resource');
+    }
+
+    const take = this.clampInteger(filters.take, 50, 1, 200);
+    const deliveries = await this.prisma.webhookDelivery.findMany({
+      where: {
+        status: filters.status,
+        eventType: filters.eventType,
+        transaction: merchantId ? { merchantId } : undefined,
+      },
+      include: {
+        transaction: {
+          select: {
+            merchantId: true,
+            reference: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+
+    return deliveries.map((delivery) => ({
+      id: delivery.id,
+      transactionId: delivery.transactionId,
+      transactionReference: delivery.transaction.reference,
+      merchantId: delivery.transaction.merchantId,
+      eventType: delivery.eventType,
+      status: delivery.status,
+      retry: {
+        attemptCount: delivery.attemptCount,
+        maxAttempts: delivery.maxAttempts,
+        nextRetryAt: delivery.nextRetryAt ? delivery.nextRetryAt.toISOString() : null,
+        lastError: delivery.lastError,
+      },
+      deliveredAt: delivery.deliveredAt ? delivery.deliveredAt.toISOString() : null,
+      createdAt: delivery.createdAt.toISOString(),
+      updatedAt: delivery.updatedAt.toISOString(),
+    }));
+  }
 
   signPayload(payload: string, secret: string): string {
     return createHmac('sha256', secret).update(payload).digest('hex');
@@ -154,5 +203,12 @@ export class WebhooksService {
     });
 
     return 1;
+  }
+
+  private clampInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, Math.trunc(value)));
   }
 }

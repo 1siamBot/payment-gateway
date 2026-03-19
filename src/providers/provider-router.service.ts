@@ -35,6 +35,27 @@ type CircuitBreakerSettings = {
   cooldownMs: number;
 };
 
+export type RoutingPolicyConfigSnapshot = {
+  weights: RoutingWeights;
+  featureFlags: RouterFlags;
+  circuitBreaker: CircuitBreakerSettings;
+  providerProfiles: Record<string, ProviderProfile>;
+};
+
+export type RoutingPolicyConfigUpdate = {
+  weights?: Partial<RoutingWeights>;
+  featureFlags?: Partial<RouterFlags>;
+  circuitBreaker?: Partial<CircuitBreakerSettings>;
+  providerProfiles?: Record<string, Partial<ProviderProfile>>;
+};
+
+export type ProviderHealthSnapshot = {
+  providerName: string;
+  healthy: boolean;
+  circuit: BreakerState;
+  runtime: ProviderRuntimeStats;
+};
+
 export type ProviderRouterOptions = {
   providerProfiles?: Record<string, ProviderProfile>;
   weights?: Partial<RoutingWeights>;
@@ -94,6 +115,68 @@ export class ProviderRouterService {
       failureThreshold: Math.max(1, options?.circuitBreaker?.failureThreshold ?? 2),
       cooldownMs: Math.max(100, options?.circuitBreaker?.cooldownMs ?? 30_000),
     };
+  }
+
+  getPolicyConfig(): RoutingPolicyConfigSnapshot {
+    return {
+      weights: { ...this.weights },
+      featureFlags: { ...this.flags },
+      circuitBreaker: { ...this.breakerSettings },
+      providerProfiles: JSON.parse(JSON.stringify(this.profiles)) as Record<string, ProviderProfile>,
+    };
+  }
+
+  updatePolicyConfig(input: RoutingPolicyConfigUpdate): RoutingPolicyConfigSnapshot {
+    if (input.weights) {
+      this.weights.successRate = this.clamp(input.weights.successRate ?? this.weights.successRate, 0, 1);
+      this.weights.latency = this.clamp(input.weights.latency ?? this.weights.latency, 0, 1);
+      this.weights.fee = this.clamp(input.weights.fee ?? this.weights.fee, 0, 1);
+      this.weights.risk = this.clamp(input.weights.risk ?? this.weights.risk, 0, 1);
+    }
+
+    if (input.featureFlags) {
+      this.flags.policyEnabled = input.featureFlags.policyEnabled ?? this.flags.policyEnabled;
+      this.flags.shadowMode = input.featureFlags.shadowMode ?? this.flags.shadowMode;
+      this.flags.rolloutPercent = this.clamp(input.featureFlags.rolloutPercent ?? this.flags.rolloutPercent, 0, 100);
+      this.flags.legacyFallbackEnabled = input.featureFlags.legacyFallbackEnabled ?? this.flags.legacyFallbackEnabled;
+    }
+
+    if (input.circuitBreaker) {
+      this.breakerSettings.failureThreshold = Math.max(
+        1,
+        input.circuitBreaker.failureThreshold ?? this.breakerSettings.failureThreshold,
+      );
+      this.breakerSettings.cooldownMs = Math.max(100, input.circuitBreaker.cooldownMs ?? this.breakerSettings.cooldownMs);
+    }
+
+    if (input.providerProfiles) {
+      for (const [providerName, patch] of Object.entries(input.providerProfiles)) {
+        const current = this.getProfile(providerName);
+        this.profiles[providerName] = {
+          successRate: this.clamp(patch.successRate ?? current.successRate, 0, 1),
+          latencyMs: Math.max(1, patch.latencyMs ?? current.latencyMs),
+          feePercent: this.clamp(patch.feePercent ?? current.feePercent, 0, 100),
+          riskScore: this.clamp(patch.riskScore ?? current.riskScore, 0, 100),
+        };
+      }
+    }
+
+    return this.getPolicyConfig();
+  }
+
+  async getProviderHealthSnapshot(): Promise<ProviderHealthSnapshot[]> {
+    const snapshots: ProviderHealthSnapshot[] = [];
+    for (const provider of this.providers) {
+      const breaker = this.getOrInitBreaker(provider.name);
+      const runtime = this.getOrInitRuntimeStats(provider.name);
+      snapshots.push({
+        providerName: provider.name,
+        healthy: await provider.isHealthy(),
+        circuit: { ...breaker },
+        runtime: { ...runtime },
+      });
+    }
+    return snapshots;
   }
 
   async initiateWithFailover(request: ProviderRequest): Promise<ProviderResult> {
