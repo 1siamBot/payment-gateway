@@ -103,6 +103,9 @@ import {
   buildRemediationQueueTriageWorkspace,
   buildRemediationQueueHandoffPanel,
   buildRemediationQueueCanonicalAutofixPreview,
+  buildReleaseGateVerdictExplorer,
+  buildReleaseGateRemediationActionMatrix,
+  buildReleaseGateCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -126,6 +129,7 @@ import {
   movePublicationReadinessLaneSelection,
   moveOfflinePublicationEvidenceLaneSelection,
   moveRemediationQueueSelection,
+  moveReleaseGateVerdictSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -140,6 +144,7 @@ import {
   resolvePublicationReadinessShortcut,
   resolveOfflinePublicationEvidenceShortcut,
   resolveRemediationQueueShortcut,
+  resolveReleaseGateVerdictShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -4249,5 +4254,200 @@ describe('frontend wave1 helpers', () => {
       activeRowId: 'lane-1',
       direction: 'next_item',
     })).toBe('lane-2');
+  });
+
+  it('builds release-gate verdict explorer rows in deterministic ordering-key order', () => {
+    const first = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'gate-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'dependency_graph',
+          gatePriorityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+      ],
+      activeVerdictId: '',
+    });
+    const second = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'gate-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+        {
+          id: 'gate-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'dependency_graph',
+          gatePriorityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 2,
+        },
+      ],
+      activeVerdictId: '',
+    });
+    expect(first.contract).toBe('settlement-release-gate-verdict-explorer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['gate-a', 'gate-b', 'gate-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, 2, 'ONE-300', 2]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits release-gate matrix machine fields with deterministic readiness and canonical checks', () => {
+    const explorer = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          releaseGateState: 'pass',
+          requiredRemediations: [],
+          blockingDependencies: [],
+          missingEvidence: [],
+          nextOwner: 'qa',
+          branch: 'feature/one-300',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/300',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-300/test-settlement-qa-release-gate-verdict-packet-endpoint.log',
+          canonicalLinks: ['/ONE/issues/ONE-300', '/ONE/issues/ONE-291'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 2,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          releaseGateState: 'block',
+          requiredRemediations: ['backfill queue parity'],
+          blockingDependencies: ['ONE-292 credential restore'],
+          missingEvidence: ['operatorSignoff'],
+          nextOwner: '',
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          canonicalLinks: ['/issues/ONE-301'],
+        },
+      ],
+      activeVerdictId: '',
+    });
+    const matrix = buildReleaseGateRemediationActionMatrix({ rows: explorer.rows });
+
+    expect(explorer.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      releaseGateState: 'pass',
+      requiredRemediations: [],
+      blockingDependencies: [],
+      missingEvidence: [],
+      nextOwner: 'qa',
+      readyForExecution: true,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      releaseGateState: 'block',
+      requiredRemediations: ['backfill queue parity'],
+      blockingDependencies: ['ONE-292 credential restore'],
+      missingEvidence: ['artifactPath', 'branch', 'fullSha', 'operatorSignoff', 'prLink', 'testCommand'],
+      nextOwner: 'unassigned',
+      readyForExecution: false,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.canonicalLinkViolations).toEqual(['/issues/ONE-301']);
+    expect(matrix.contract).toBe('settlement-release-gate-remediation-action-matrix.v1');
+    expect(matrix.markdown).toContain('/ONE/issues/ONE-300');
+    expect(matrix.markdown).toContain('ONE-292 credential restore');
+  });
+
+  it('builds release-gate canonical autofix preview and shortcut workflow deterministically', () => {
+    const preview = buildReleaseGateCanonicalAutofixPreview({
+      markdown: [
+        '- queue source: /issues/ONE-301',
+        '- verdict packet: /ONE/issues/ONE-300#document-plan',
+        '- dependency comment: https://paperclip.dev/issues/ONE-299#comment-9',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-release-gate-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-301',
+      '/ONE/issues/ONE-300#document-plan',
+      '/ONE/issues/ONE-299#comment-9',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-301');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'g', altKey: true })).toBe('focus_verdict_explorer');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_verdict');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_verdict');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'm', ctrlKey: true, shiftKey: true }))
+      .toBe('open_remediation_matrix');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveReleaseGateVerdictSelection({
+      rows: buildReleaseGateVerdictExplorer({
+        rows: [
+          {
+            id: 'gate-1',
+            issueIdentifier: 'ONE-300',
+            remediationType: 'qa_packet',
+            gatePriorityWeight: 1,
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+          {
+            id: 'gate-2',
+            issueIdentifier: 'ONE-301',
+            remediationType: 'queue_contract',
+            gatePriorityWeight: 1,
+            blockerWeight: 2,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+        ],
+        activeVerdictId: '',
+      }).rows,
+      activeVerdictId: 'gate-1',
+      direction: 'next_verdict',
+    })).toBe('gate-2');
   });
 });

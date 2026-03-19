@@ -561,6 +561,72 @@ export type RemediationQueueCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type ReleaseGateVerdictShortcut =
+  | 'focus_verdict_explorer'
+  | 'next_verdict'
+  | 'prev_verdict'
+  | 'open_remediation_matrix'
+  | 'run_deterministic_validation_pass';
+
+export type ReleaseGateState = 'pass' | 'warn' | 'block';
+
+export type ReleaseGateVerdictMachineFields = {
+  releaseGateState: ReleaseGateState;
+  requiredRemediations: string[];
+  blockingDependencies: string[];
+  missingEvidence: string[];
+  nextOwner: string;
+  readyForExecution: boolean;
+};
+
+export type ReleaseGateVerdictRow = {
+  id: string;
+  issueIdentifier: string;
+  remediationType: string;
+  gatePriorityWeight: number;
+  blockerWeight: number;
+  dependencyDepthWeight: number;
+  remediationTypeWeight: number;
+  title: string;
+  evidencePath: string;
+  orderingKey: [number, number, number, string, number];
+  machineFields: ReleaseGateVerdictMachineFields;
+  canonicalLinkViolations: string[];
+};
+
+export type ReleaseGateVerdictExplorer = {
+  contract: 'settlement-release-gate-verdict-explorer.v1';
+  rows: ReleaseGateVerdictRow[];
+  activeVerdictId: string;
+  readyCount: number;
+  blockedCount: number;
+};
+
+export type ReleaseGateRemediationActionMatrix = {
+  contract: 'settlement-release-gate-remediation-action-matrix.v1';
+  items: Array<{
+    id: string;
+    issueIdentifier: string;
+    releaseGateState: ReleaseGateState;
+    requiredRemediations: string[];
+    blockingDependencies: string[];
+    missingEvidence: string[];
+    nextOwner: string;
+    readyForExecution: boolean;
+    canonicalLinkViolations: string[];
+  }>;
+  markdown: string;
+};
+
+export type ReleaseGateCanonicalAutofixPreview = {
+  contract: 'settlement-release-gate-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -4353,6 +4419,301 @@ export function buildRemediationQueueCanonicalAutofixPreview(input: {
   const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
   return {
     contract: 'settlement-remediation-queue-canonical-autofix-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+  };
+}
+
+function normalizeReleaseGateState(input: unknown): ReleaseGateState {
+  if (typeof input !== 'string') {
+    return 'pass';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'block' || normalized === 'blocked' || normalized === 'fail' || normalized === 'failed') {
+    return 'block';
+  }
+  if (normalized === 'warn' || normalized === 'warning') {
+    return 'warn';
+  }
+  return 'pass';
+}
+
+function normalizeReleaseGateVerdictIdentifier(raw: unknown, fallbackIndex: number): string {
+  if (typeof raw === 'string') {
+    const value = raw.trim().toUpperCase();
+    if (/^[A-Z0-9]+-\d+$/.test(value)) {
+      return value;
+    }
+  }
+  return `ONE-${1200 + fallbackIndex}`;
+}
+
+function normalizeReleaseGateVerdictWeight(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  return fallback;
+}
+
+function parseReleaseGateVerdictRow(row: unknown, index: number): ReleaseGateVerdictRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizeReleaseGateVerdictIdentifier(payload.issueIdentifier, index);
+  const idRaw = normalizeOptional(typeof payload.id === 'string' ? payload.id : '');
+  const id = idRaw ?? `release-gate-verdict-${index + 1}`;
+  const remediationType = normalizeOptional(typeof payload.remediationType === 'string' ? payload.remediationType : '')
+    ?? 'unspecified';
+  const gatePriorityWeight = normalizeReleaseGateVerdictWeight(payload.gatePriorityWeight, 5);
+  const blockerWeight = normalizeReleaseGateVerdictWeight(payload.blockerWeight, 5);
+  const dependencyDepthWeight = normalizeReleaseGateVerdictWeight(payload.dependencyDepthWeight, 5);
+  const remediationTypeWeight = normalizeReleaseGateVerdictWeight(payload.remediationTypeWeight, 5);
+  const title = normalizeOptional(typeof payload.title === 'string' ? payload.title : '')
+    ?? `${issueIdentifier} release gate lane`;
+  const evidencePath = normalizeOptional(
+    typeof payload.evidencePath === 'string'
+      ? payload.evidencePath
+      : (typeof payload.artifactPath === 'string' ? payload.artifactPath : ''),
+  ) ?? `artifacts/${issueIdentifier.toLowerCase()}/release-gate.md`;
+  const nextOwner = normalizeOptional(typeof payload.nextOwner === 'string' ? payload.nextOwner : '') ?? 'unassigned';
+  const releaseGateState = normalizeReleaseGateState(payload.releaseGateState);
+
+  const requiredRemediations = Array.isArray(payload.requiredRemediations)
+    ? payload.requiredRemediations.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const blockingDependencies = Array.isArray(payload.blockingDependencies)
+    ? payload.blockingDependencies.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const missingEvidence = Array.isArray(payload.missingEvidence)
+    ? payload.missingEvidence.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  const evidenceChecks = [
+    ['branch', normalizeOptional(typeof payload.branch === 'string' ? payload.branch : '')],
+    ['fullSha', normalizeOptional(typeof payload.fullSha === 'string' ? payload.fullSha : '')],
+    ['prLink', normalizeOptional(typeof payload.prLink === 'string' ? payload.prLink : '')],
+    ['testCommand', normalizeOptional(typeof payload.testCommand === 'string' ? payload.testCommand : '')],
+    ['artifactPath', normalizeOptional(typeof payload.artifactPath === 'string' ? payload.artifactPath : '')],
+  ] as const;
+  for (const [field, value] of evidenceChecks) {
+    if (!value) {
+      missingEvidence.push(field);
+    }
+  }
+  const uniqueMissingEvidence = [...new Set(missingEvidence)].sort((left, right) => left.localeCompare(right));
+  const uniqueRequiredRemediations = [...new Set(requiredRemediations)].sort((left, right) => left.localeCompare(right));
+  const uniqueBlockingDependencies = [...new Set(blockingDependencies)].sort((left, right) => left.localeCompare(right));
+
+  const canonicalCandidates = [
+    ...(Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : []),
+    ...(Array.isArray(payload.dependencyLinks) ? payload.dependencyLinks : []),
+    payload.issueLink,
+    payload.documentLink,
+    payload.commentLink,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  const canonicalLinkViolations = canonicalCandidates
+    .map((link) => {
+      const normalized = canonicalizePaperclipIssueLink(link);
+      if (!normalized) {
+        return link;
+      }
+      return normalized === link ? '' : link;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    id,
+    issueIdentifier,
+    remediationType,
+    gatePriorityWeight,
+    blockerWeight,
+    dependencyDepthWeight,
+    remediationTypeWeight,
+    title,
+    evidencePath,
+    orderingKey: [
+      gatePriorityWeight,
+      blockerWeight,
+      dependencyDepthWeight,
+      issueIdentifier,
+      remediationTypeWeight,
+    ],
+    machineFields: {
+      releaseGateState,
+      requiredRemediations: uniqueRequiredRemediations,
+      blockingDependencies: uniqueBlockingDependencies,
+      missingEvidence: uniqueMissingEvidence,
+      nextOwner,
+      readyForExecution: releaseGateState !== 'block'
+        && uniqueRequiredRemediations.length === 0
+        && uniqueBlockingDependencies.length === 0
+        && uniqueMissingEvidence.length === 0
+        && canonicalLinkViolations.length === 0,
+    },
+    canonicalLinkViolations,
+  };
+}
+
+export function buildReleaseGateVerdictExplorer(input: {
+  rows: unknown[];
+  activeVerdictId: string;
+}): ReleaseGateVerdictExplorer {
+  const rows = input.rows
+    .map((row, index) => parseReleaseGateVerdictRow(row, index))
+    .filter((row): row is ReleaseGateVerdictRow => Boolean(row))
+    .sort((left, right) => (
+      left.gatePriorityWeight - right.gatePriorityWeight
+      || left.blockerWeight - right.blockerWeight
+      || left.dependencyDepthWeight - right.dependencyDepthWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.remediationTypeWeight - right.remediationTypeWeight
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeVerdictId = rowIds.has(input.activeVerdictId)
+    ? input.activeVerdictId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-release-gate-verdict-explorer.v1',
+    rows,
+    activeVerdictId,
+    readyCount: rows.filter((row) => row.machineFields.readyForExecution).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForExecution).length,
+  };
+}
+
+export function moveReleaseGateVerdictSelection(input: {
+  rows: ReleaseGateVerdictRow[];
+  activeVerdictId: string;
+  direction: 'next_verdict' | 'prev_verdict';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeVerdictId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_verdict') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveReleaseGateVerdictShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): ReleaseGateVerdictShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'g') {
+    return 'focus_verdict_explorer';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_verdict';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_verdict';
+  }
+  if (normalizedKey === 'm' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_remediation_matrix';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_validation_pass';
+  }
+  return null;
+}
+
+function buildReleaseGateRemediationActionMatrixMarkdown(rows: ReleaseGateVerdictRow[]): string {
+  const lines = [
+    '# Release Gate Remediation Action Matrix',
+    '',
+    '| Issue | releaseGateState | requiredRemediations[] | blockingDependencies[] | missingEvidence[] | nextOwner | readyForExecution |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.machineFields.releaseGateState,
+      '|',
+      row.machineFields.requiredRemediations.join(', ') || 'none',
+      '|',
+      row.machineFields.blockingDependencies.join(', ') || 'none',
+      '|',
+      row.machineFields.missingEvidence.join(', ') || 'none',
+      '|',
+      row.machineFields.nextOwner,
+      '|',
+      row.machineFields.readyForExecution ? 'yes' : 'no',
+      '|',
+    ].join(' '));
+  }
+  return lines.join('\n');
+}
+
+export function buildReleaseGateRemediationActionMatrix(input: {
+  rows: ReleaseGateVerdictRow[];
+}): ReleaseGateRemediationActionMatrix {
+  const items = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    releaseGateState: row.machineFields.releaseGateState,
+    requiredRemediations: [...row.machineFields.requiredRemediations],
+    blockingDependencies: [...row.machineFields.blockingDependencies],
+    missingEvidence: [...row.machineFields.missingEvidence],
+    nextOwner: row.machineFields.nextOwner,
+    readyForExecution: row.machineFields.readyForExecution,
+    canonicalLinkViolations: [...row.canonicalLinkViolations],
+  }));
+  return {
+    contract: 'settlement-release-gate-remediation-action-matrix.v1',
+    items,
+    markdown: buildReleaseGateRemediationActionMatrixMarkdown(input.rows),
+  };
+}
+
+export function buildReleaseGateCanonicalAutofixPreview(input: {
+  markdown: string;
+}): ReleaseGateCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `release-gate-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-release-gate-canonical-autofix-preview.v1',
     rows,
     patchedMarkdown,
     changedCount,
