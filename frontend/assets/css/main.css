@@ -29,6 +29,39 @@ body {
     var(--bg);
 }
 
+.app-shell {
+  min-height: 100vh;
+}
+
+.top-nav-wrap {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: 0.8rem 1rem 0;
+}
+
+.top-nav {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.top-nav a {
+  text-decoration: none;
+  color: var(--brand);
+  background: #ffffff;
+  border: 1px solid #c9d7e6;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.84rem;
+}
+
+.top-nav a.router-link-active {
+  color: #ffffff;
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
 .page {
   width: min(1200px, 100%);
   margin: 0 auto;
@@ -742,6 +775,39 @@ button.danger {
   color: #92400e;
 }
 
+.risk-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.42rem;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.risk-critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.risk-high {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.risk-medium {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.risk-low {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.empty-row {
+  text-align: center;
+  color: var(--muted);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -763,6 +829,15 @@ td small {
 }
 
 @media (max-width: 860px) {
+  .top-nav-wrap {
+    padding: 0.7rem 0.8rem 0;
+  }
+
+  .top-nav a {
+    width: 100%;
+    text-align: center;
+  }
+
   .page {
     padding: 0.8rem;
   }
