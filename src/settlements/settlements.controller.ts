@@ -19,6 +19,7 @@ import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build
 import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
 import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
+import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
@@ -160,6 +161,11 @@ export class SettlementsController {
   @Post('exceptions/release-evidence-adjudication-snapshot')
   releaseEvidenceAdjudicationSnapshot(@Body() body: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto) {
     return this.settlements.buildSettlementExceptionReleaseEvidenceAdjudicationSnapshot(body);
+  }
+
+  @Post('exceptions/release-ready-dependency-graph-snapshot')
+  releaseReadyDependencyGraphSnapshot(@Body() body: BuildSettlementReleaseReadyDependencyGraphSnapshotDto) {
+    return this.settlements.buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(body);
   }
 
   @Post('exceptions/adjudication-routing-manifest')
