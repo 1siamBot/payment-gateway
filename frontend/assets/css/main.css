@@ -371,6 +371,18 @@ button.danger {
   overflow-x: auto;
 }
 
+.table-sort {
+  width: auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .triage-grid {
   display: grid;
   grid-template-columns: 1.4fr 1fr;

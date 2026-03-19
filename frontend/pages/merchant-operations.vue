@@ -577,6 +577,8 @@ onMounted(async () => {
       <p>Unified merchant profile, API key controls, and webhook endpoint operations with deterministic states.</p>
       <div class="inline-actions">
         <NuxtLink class="button-link" to="/">Open Legacy Control Tower</NuxtLink>
+        <NuxtLink class="button-link" to="/payment-flow">Open Multi-Flow Workspace</NuxtLink>
+        <NuxtLink class="button-link" to="/payment-reconciliation-workspace">Open Reconciliation Workspace</NuxtLink>
         <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
       </div>
     </section>
