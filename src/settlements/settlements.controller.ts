@@ -4,6 +4,7 @@ import type { AuthenticatedRequest } from '../common/authz.guard';
 import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
+import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
@@ -71,6 +72,11 @@ export class SettlementsController {
   @Post('exceptions/packet-audit-summary')
   packetAuditSummary(@Body() body: BuildSettlementPacketAuditSummaryDto) {
     return this.settlements.buildSettlementExceptionPacketAuditSummary(body);
+  }
+
+  @Post('exceptions/publication-readiness-trend')
+  publicationReadinessTrend(@Body() body: BuildSettlementPublicationReadinessTrendDto) {
+    return this.settlements.buildSettlementExceptionPublicationReadinessTrend(body);
   }
 
   @Get('exceptions/qa-fixtures')

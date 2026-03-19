@@ -32,12 +32,17 @@ import {
 } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
+import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
   ExceptionQaScenario,
   SETTLEMENT_EXCEPTION_QA_FIXTURES,
   SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
 } from './exception-qa-fixtures';
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
+import {
+  buildSettlementPublicationReadinessTrend,
+  SettlementPublicationReadinessTrend,
+} from './publication-readiness-trend';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -205,6 +210,7 @@ type SettlementBulkActionPreviewContractResponse = {
 type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimulation;
 type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainabilityPresetProfile;
 type SettlementPacketAuditSummaryContractResponse = SettlementPacketAuditSummary;
+type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 
 @Injectable()
 export class SettlementsService {
@@ -505,6 +511,12 @@ export class SettlementsService {
       }
       throw error;
     }
+  }
+
+  buildSettlementExceptionPublicationReadinessTrend(
+    input: BuildSettlementPublicationReadinessTrendDto,
+  ): SettlementPublicationReadinessTrendContractResponse {
+    return buildSettlementPublicationReadinessTrend(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
