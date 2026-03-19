@@ -627,6 +627,68 @@ export type ReleaseGateCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type PublicationHandoffBundleShortcut =
+  | 'focus_handoff_viewer'
+  | 'next_section'
+  | 'prev_section'
+  | 'run_export_validation'
+  | 'open_export_preview';
+
+export type PublicationHandoffBundleMachineFields = {
+  bundleFingerprint: string;
+  missingArtifacts: string[];
+  nonCanonicalLinks: string[];
+  ownerCoverage: number;
+  readyForQA: boolean;
+};
+
+export type PublicationHandoffBundleRow = {
+  id: string;
+  issueIdentifier: string;
+  sectionWeight: number;
+  blockerWeight: number;
+  dependencyDepthWeight: number;
+  evidenceTypeWeight: number;
+  sectionTitle: string;
+  evidenceType: string;
+  evidencePath: string;
+  nextOwner: string;
+  blockingDependencies: string[];
+  orderingKey: [number, number, number, string, number, string];
+  machineFields: PublicationHandoffBundleMachineFields;
+};
+
+export type PublicationHandoffBundleViewer = {
+  contract: 'settlement-remediation-publication-handoff-bundle-viewer.v1';
+  rows: PublicationHandoffBundleRow[];
+  activeSectionId: string;
+  readyForQACount: number;
+  blockedCount: number;
+};
+
+export type PublicationHandoffBundleExportValidator = {
+  contract: 'settlement-remediation-publication-handoff-export-validator.v1';
+  items: Array<{
+    id: string;
+    issueIdentifier: string;
+    bundleFingerprint: string;
+    missingArtifacts: string[];
+    nonCanonicalLinks: string[];
+    ownerCoverage: number;
+    readyForQA: boolean;
+  }>;
+  markdown: string;
+};
+
+export type PublicationHandoffBundleCanonicalAutofixPreview = {
+  contract: 'settlement-remediation-publication-handoff-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -4714,6 +4776,306 @@ export function buildReleaseGateCanonicalAutofixPreview(input: {
   const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
   return {
     contract: 'settlement-release-gate-canonical-autofix-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+  };
+}
+
+function normalizePublicationHandoffIdentifier(raw: unknown, fallbackIndex: number): string {
+  if (typeof raw === 'string') {
+    const value = raw.trim().toUpperCase();
+    if (/^[A-Z0-9]+-\d+$/.test(value)) {
+      return value;
+    }
+  }
+  return `ONE-${1300 + fallbackIndex}`;
+}
+
+function normalizePublicationHandoffWeight(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizePublicationOwnerCoverage(raw: unknown, nextOwner: string): number {
+  const value = Number(raw);
+  if (Number.isFinite(value)) {
+    return Math.max(0, Math.min(1, Number(value.toFixed(4))));
+  }
+  return nextOwner === 'unassigned' ? 0 : 1;
+}
+
+function parsePublicationHandoffBundleRow(row: unknown, index: number): PublicationHandoffBundleRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizePublicationHandoffIdentifier(payload.issueIdentifier, index);
+  const evidenceType = normalizeOptional(typeof payload.evidenceType === 'string' ? payload.evidenceType : '')
+    ?? 'handoff_bundle';
+  const evidencePath = normalizeOptional(
+    typeof payload.evidencePath === 'string'
+      ? payload.evidencePath
+      : (typeof payload.artifactPath === 'string' ? payload.artifactPath : ''),
+  ) ?? `artifacts/${issueIdentifier.toLowerCase()}/remediation-publication-handoff.md`;
+  const id = normalizeOptional(typeof payload.id === 'string' ? payload.id : '')
+    ?? `${issueIdentifier.toLowerCase()}-${evidenceType.toLowerCase()}-${hashFNV1a(evidencePath)}`;
+  const sectionWeight = normalizePublicationHandoffWeight(payload.sectionWeight, 5);
+  const blockerWeight = normalizePublicationHandoffWeight(payload.blockerWeight, 5);
+  const dependencyDepthWeight = normalizePublicationHandoffWeight(payload.dependencyDepthWeight, 5);
+  const evidenceTypeWeight = normalizePublicationHandoffWeight(payload.evidenceTypeWeight, 5);
+  const sectionTitle = normalizeOptional(typeof payload.sectionTitle === 'string' ? payload.sectionTitle : '')
+    ?? `${issueIdentifier} remediation publication handoff`;
+  const nextOwner = normalizeOptional(typeof payload.nextOwner === 'string' ? payload.nextOwner : '') ?? 'unassigned';
+  const ownerCoverage = normalizePublicationOwnerCoverage(payload.ownerCoverage, nextOwner);
+
+  const blockingDependencies = Array.isArray(payload.blockingDependencies)
+    ? payload.blockingDependencies.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const normalizedBlockingDependencies = [...new Set(blockingDependencies)]
+    .sort((left, right) => left.localeCompare(right));
+
+  const requiredArtifacts = Array.isArray(payload.requiredArtifacts)
+    ? payload.requiredArtifacts.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const missingArtifacts = [...requiredArtifacts];
+  const evidenceChecks = [
+    ['branch', normalizeOptional(typeof payload.branch === 'string' ? payload.branch : '')],
+    ['fullSha', normalizeOptional(typeof payload.fullSha === 'string' ? payload.fullSha : '')],
+    ['prLink', normalizeOptional(typeof payload.prLink === 'string' ? payload.prLink : '')],
+    ['testCommand', normalizeOptional(typeof payload.testCommand === 'string' ? payload.testCommand : '')],
+    ['artifactPath', normalizeOptional(typeof payload.artifactPath === 'string' ? payload.artifactPath : '')],
+  ] as const;
+  for (const [field, value] of evidenceChecks) {
+    if (!value) {
+      missingArtifacts.push(field);
+    }
+  }
+  const normalizedMissingArtifacts = [...new Set(missingArtifacts)]
+    .sort((left, right) => left.localeCompare(right));
+
+  const canonicalCandidates = [
+    ...(Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : []),
+    ...(Array.isArray(payload.dependencyLinks) ? payload.dependencyLinks : []),
+    payload.issueLink,
+    payload.documentLink,
+    payload.commentLink,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  const nonCanonicalLinks = canonicalCandidates
+    .map((link) => {
+      const normalized = canonicalizePaperclipIssueLink(link);
+      if (!normalized) {
+        return link;
+      }
+      return normalized === link ? '' : link;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+  const fingerprintSource = serializeDeterministicUnknown({
+    issueIdentifier,
+    sectionWeight,
+    blockerWeight,
+    dependencyDepthWeight,
+    evidenceTypeWeight,
+    evidenceType,
+    evidencePath,
+    nextOwner,
+    ownerCoverage,
+    blockingDependencies: normalizedBlockingDependencies,
+    missingArtifacts: normalizedMissingArtifacts,
+    nonCanonicalLinks,
+  });
+
+  return {
+    id,
+    issueIdentifier,
+    sectionWeight,
+    blockerWeight,
+    dependencyDepthWeight,
+    evidenceTypeWeight,
+    sectionTitle,
+    evidenceType,
+    evidencePath,
+    nextOwner,
+    blockingDependencies: normalizedBlockingDependencies,
+    orderingKey: [
+      sectionWeight,
+      blockerWeight,
+      dependencyDepthWeight,
+      issueIdentifier,
+      evidenceTypeWeight,
+      evidencePath,
+    ],
+    machineFields: {
+      bundleFingerprint: `bundle-${hashFNV1a(fingerprintSource)}`,
+      missingArtifacts: normalizedMissingArtifacts,
+      nonCanonicalLinks,
+      ownerCoverage,
+      readyForQA: normalizedMissingArtifacts.length === 0
+        && nonCanonicalLinks.length === 0
+        && ownerCoverage >= 1
+        && normalizedBlockingDependencies.length === 0,
+    },
+  };
+}
+
+export function buildPublicationHandoffBundleViewer(input: {
+  rows: unknown[];
+  activeSectionId: string;
+}): PublicationHandoffBundleViewer {
+  const rows = input.rows
+    .map((row, index) => parsePublicationHandoffBundleRow(row, index))
+    .filter((row): row is PublicationHandoffBundleRow => Boolean(row))
+    .sort((left, right) => (
+      left.sectionWeight - right.sectionWeight
+      || left.blockerWeight - right.blockerWeight
+      || left.dependencyDepthWeight - right.dependencyDepthWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.evidenceTypeWeight - right.evidenceTypeWeight
+      || left.evidencePath.localeCompare(right.evidencePath)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeSectionId = rowIds.has(input.activeSectionId)
+    ? input.activeSectionId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-publication-handoff-bundle-viewer.v1',
+    rows,
+    activeSectionId,
+    readyForQACount: rows.filter((row) => row.machineFields.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForQA).length,
+  };
+}
+
+export function movePublicationHandoffBundleSelection(input: {
+  rows: PublicationHandoffBundleRow[];
+  activeSectionId: string;
+  direction: 'next_section' | 'prev_section';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeSectionId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_section') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolvePublicationHandoffBundleShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): PublicationHandoffBundleShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'h') {
+    return 'focus_handoff_viewer';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_section';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_section';
+  }
+  if (normalizedKey === 'v' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_export_validation';
+  }
+  if (normalizedKey === 'e' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_export_preview';
+  }
+  return null;
+}
+
+function buildPublicationHandoffExportValidatorMarkdown(rows: PublicationHandoffBundleRow[]): string {
+  const lines = [
+    '# Remediation Publication Handoff Export Validator',
+    '',
+    '| Issue | bundleFingerprint | missingArtifacts[] | nonCanonicalLinks[] | ownerCoverage | readyForQA |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.machineFields.bundleFingerprint,
+      '|',
+      row.machineFields.missingArtifacts.join(', ') || 'none',
+      '|',
+      row.machineFields.nonCanonicalLinks.join(', ') || 'none',
+      '|',
+      row.machineFields.ownerCoverage.toFixed(2),
+      '|',
+      row.machineFields.readyForQA ? 'yes' : 'no',
+      '|',
+    ].join(' '));
+  }
+  return lines.join('\n');
+}
+
+export function buildPublicationHandoffExportValidator(input: {
+  rows: PublicationHandoffBundleRow[];
+}): PublicationHandoffBundleExportValidator {
+  const items = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    bundleFingerprint: row.machineFields.bundleFingerprint,
+    missingArtifacts: [...row.machineFields.missingArtifacts],
+    nonCanonicalLinks: [...row.machineFields.nonCanonicalLinks],
+    ownerCoverage: row.machineFields.ownerCoverage,
+    readyForQA: row.machineFields.readyForQA,
+  }));
+  return {
+    contract: 'settlement-remediation-publication-handoff-export-validator.v1',
+    items,
+    markdown: buildPublicationHandoffExportValidatorMarkdown(input.rows),
+  };
+}
+
+export function buildPublicationHandoffCanonicalAutofixPreview(input: {
+  markdown: string;
+}): PublicationHandoffBundleCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `publication-handoff-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-remediation-publication-handoff-canonical-autofix-preview.v1',
     rows,
     patchedMarkdown,
     changedCount,

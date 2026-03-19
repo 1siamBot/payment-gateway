@@ -106,6 +106,9 @@ import {
   buildReleaseGateVerdictExplorer,
   buildReleaseGateRemediationActionMatrix,
   buildReleaseGateCanonicalAutofixPreview,
+  buildPublicationHandoffBundleViewer,
+  buildPublicationHandoffExportValidator,
+  buildPublicationHandoffCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -130,6 +133,7 @@ import {
   moveOfflinePublicationEvidenceLaneSelection,
   moveRemediationQueueSelection,
   moveReleaseGateVerdictSelection,
+  movePublicationHandoffBundleSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -145,6 +149,7 @@ import {
   resolveOfflinePublicationEvidenceShortcut,
   resolveRemediationQueueShortcut,
   resolveReleaseGateVerdictShortcut,
+  resolvePublicationHandoffBundleShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -4449,5 +4454,196 @@ describe('frontend wave1 helpers', () => {
       activeVerdictId: 'gate-1',
       direction: 'next_verdict',
     })).toBe('gate-2');
+  });
+
+  it('builds publication handoff bundle viewer rows in deterministic section order', () => {
+    const first = buildPublicationHandoffBundleViewer({
+      rows: [
+        {
+          id: 'section-c',
+          issueIdentifier: 'ONE-340',
+          sectionWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          evidenceTypeWeight: 2,
+          evidenceType: 'qa_preflight',
+          evidencePath: 'artifacts/one-340/qa.md',
+        },
+        {
+          id: 'section-a',
+          issueIdentifier: 'ONE-304',
+          sectionWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          evidenceTypeWeight: 2,
+          evidenceType: 'backend_packet',
+          evidencePath: 'artifacts/one-304/backend.md',
+        },
+        {
+          id: 'section-b',
+          issueIdentifier: 'ONE-306',
+          sectionWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend_packet',
+          evidencePath: 'artifacts/one-306/frontend.md',
+        },
+      ],
+      activeSectionId: '',
+    });
+    const second = buildPublicationHandoffBundleViewer({
+      rows: [
+        {
+          id: 'section-b',
+          issueIdentifier: 'ONE-306',
+          sectionWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend_packet',
+          evidencePath: 'artifacts/one-306/frontend.md',
+        },
+        {
+          id: 'section-c',
+          issueIdentifier: 'ONE-340',
+          sectionWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          evidenceTypeWeight: 2,
+          evidenceType: 'qa_preflight',
+          evidencePath: 'artifacts/one-340/qa.md',
+        },
+        {
+          id: 'section-a',
+          issueIdentifier: 'ONE-304',
+          sectionWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          evidenceTypeWeight: 2,
+          evidenceType: 'backend_packet',
+          evidencePath: 'artifacts/one-304/backend.md',
+        },
+      ],
+      activeSectionId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-publication-handoff-bundle-viewer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['section-a', 'section-b', 'section-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, 1, 'ONE-304', 2, 'artifacts/one-304/backend.md']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits export validator machine fields with stable fingerprint and readiness flags', () => {
+    const viewer = buildPublicationHandoffBundleViewer({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-304',
+          sectionWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          evidenceTypeWeight: 1,
+          ownerCoverage: 1,
+          branch: 'feature/one-304',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/304',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-304/test.log',
+          canonicalLinks: ['/ONE/issues/ONE-304', '/ONE/issues/ONE-305#document-plan'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-306',
+          sectionWeight: 1,
+          blockerWeight: 2,
+          dependencyDepthWeight: 2,
+          evidenceTypeWeight: 1,
+          ownerCoverage: 0.5,
+          requiredArtifacts: ['dependencyMapSnapshot'],
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          canonicalLinks: ['/issues/ONE-306'],
+          blockingDependencies: ['ONE-307 release-gate publication on hold'],
+        },
+      ],
+      activeSectionId: '',
+    });
+    const validator = buildPublicationHandoffExportValidator({ rows: viewer.rows });
+
+    expect(viewer.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      bundleFingerprint: expect.stringMatching(/^bundle-[a-f0-9]{8}$/),
+      missingArtifacts: [],
+      nonCanonicalLinks: [],
+      ownerCoverage: 1,
+      readyForQA: true,
+    });
+    expect(viewer.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      bundleFingerprint: expect.stringMatching(/^bundle-[a-f0-9]{8}$/),
+      missingArtifacts: ['artifactPath', 'branch', 'dependencyMapSnapshot', 'fullSha', 'prLink', 'testCommand'],
+      nonCanonicalLinks: ['/issues/ONE-306'],
+      ownerCoverage: 0.5,
+      readyForQA: false,
+    });
+    expect(validator.contract).toBe('settlement-remediation-publication-handoff-export-validator.v1');
+    expect(validator.markdown).toContain('/ONE/issues/ONE-304');
+    expect(validator.markdown).toContain('bundle-');
+  });
+
+  it('builds publication handoff canonical autofix preview and keyboard workflow deterministically', () => {
+    const preview = buildPublicationHandoffCanonicalAutofixPreview({
+      markdown: [
+        '- handoff source: /issues/ONE-306',
+        '- backend continuity: /ONE/issues/ONE-304#document-plan',
+        '- qa comment: https://paperclip.dev/issues/ONE-305#comment-2',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-remediation-publication-handoff-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-306',
+      '/ONE/issues/ONE-304#document-plan',
+      '/ONE/issues/ONE-305#comment-2',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-306');
+    expect(resolvePublicationHandoffBundleShortcut({ key: 'h', altKey: true })).toBe('focus_handoff_viewer');
+    expect(resolvePublicationHandoffBundleShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_section');
+    expect(resolvePublicationHandoffBundleShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_section');
+    expect(resolvePublicationHandoffBundleShortcut({ key: 'v', ctrlKey: true, shiftKey: true }))
+      .toBe('run_export_validation');
+    expect(resolvePublicationHandoffBundleShortcut({ key: 'e', ctrlKey: true, shiftKey: true }))
+      .toBe('open_export_preview');
+    expect(movePublicationHandoffBundleSelection({
+      rows: buildPublicationHandoffBundleViewer({
+        rows: [
+          {
+            id: 'section-1',
+            issueIdentifier: 'ONE-304',
+            sectionWeight: 1,
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-304/handoff.md',
+          },
+          {
+            id: 'section-2',
+            issueIdentifier: 'ONE-305',
+            sectionWeight: 2,
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-305/handoff.md',
+          },
+        ],
+        activeSectionId: '',
+      }).rows,
+      activeSectionId: 'section-1',
+      direction: 'next_section',
+    })).toBe('section-2');
   });
 });
