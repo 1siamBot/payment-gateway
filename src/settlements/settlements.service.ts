@@ -30,6 +30,7 @@ import {
 import {
   BuildSettlementEvidenceLineageDto,
 } from './dto/build-settlement-evidence-lineage.dto';
+import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import {
   BuildSettlementBulkActionPreviewDto,
 } from './dto/build-settlement-bulk-action-preview.dto';
@@ -43,6 +44,7 @@ import {
 } from './exception-qa-fixtures';
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
 import { buildSettlementEvidenceLineage, SettlementEvidenceLineageContract } from './evidence-lineage';
+import { buildSettlementEvidenceGapSummary, SettlementEvidenceGapSummary } from './evidence-gap-summary';
 import {
   buildSettlementPublicationReadinessTrend,
   SettlementPublicationReadinessTrend,
@@ -215,6 +217,7 @@ type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimula
 type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainabilityPresetProfile;
 type SettlementPacketAuditSummaryContractResponse = SettlementPacketAuditSummary;
 type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContract;
+type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 
 @Injectable()
@@ -523,6 +526,25 @@ export class SettlementsService {
   ): SettlementEvidenceLineageContractResponse {
     try {
       return buildSettlementEvidenceLineage(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
+  }
+
+  buildSettlementExceptionEvidenceGapSummary(
+    input: BuildSettlementEvidenceGapSummaryDto,
+  ): SettlementEvidenceGapSummaryContractResponse {
+    try {
+      return buildSettlementEvidenceGapSummary(input);
     } catch (error) {
       if (
         typeof error === 'object'
