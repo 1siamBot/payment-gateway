@@ -80,6 +80,7 @@ import {
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
   buildAnomalyTriageBoard,
+  buildRemediationRunbookTimelineBoard,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
   buildReleaseReadinessSimulator,
@@ -87,6 +88,7 @@ import {
   classifyBlockerEtaDrift,
   moveEvidencePacketLintSelection,
   moveEvidenceTimelineHeatmapSelection,
+  moveRemediationRunbookTimelineSelection,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
@@ -104,11 +106,16 @@ import {
   applyDispatchEvidenceDraftPrMode,
   upsertDispatchEvidenceDraft,
   validateDispatchEvidenceDraft,
+  getDefaultRemediationRunbookHandoffPackDraft,
+  applyRemediationRunbookHandoffPackPrMode,
+  validateRemediationRunbookHandoffPackDraft,
+  resetRemediationRunbookHandoffPackDraft,
   validateRemediationPlaybookDraft,
   getDefaultRemediationPlaybookDraft,
   resetRemediationPlaybookDraftSafe,
   moveAnomalyTriageSelection,
   upsertRemediationPlaybookDraft,
+  resolveRemediationRunbookShortcut,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
@@ -616,6 +623,19 @@ const remediationPlaybookState = reactive({
   message: '',
   error: '',
 });
+const remediationRunbookState = reactive({
+  message: '',
+  error: '',
+});
+const remediationRunbookComposerOpen = ref(false);
+const activeRemediationRunbookStepId = ref('');
+const remediationRunbookTimelinePanelRef = ref<HTMLElement | null>(null);
+const remediationRunbookBranchInputRef = ref<HTMLInputElement | null>(null);
+const remediationRunbookHandoffMissingFields = ref<Set<string>>(new Set());
+const remediationRunbookHandoffDraft = ref(getDefaultRemediationRunbookHandoffPackDraft({
+  stepId: '',
+  issueIdentifier: '',
+}));
 const activeAnomalyTriageRowId = ref('');
 const remediationPlaybookDraftBank = ref<Array<ReturnType<typeof getDefaultRemediationPlaybookDraft>>>([]);
 const remediationPlaybookDraft = ref(getDefaultRemediationPlaybookDraft({
@@ -739,6 +759,32 @@ const activeDispatchCockpitRow = computed(() => dispatchCockpit.value.rows
   .find((row) => row.id === activeDispatchCockpitRowId.value) ?? null);
 const dispatchDraftCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
   linksText: dispatchDraft.value.dependencyIssueLinksText,
+}));
+const remediationRunbookTimelineSourceRows = computed(() => reviewQueueLedger.value.rows.flatMap((row, index) => (
+  [1, 2].map((stepIndex) => ({
+    id: `runbook-${row.id}-${stepIndex}`,
+    issueIdentifier: row.id.toUpperCase(),
+    stepIndex,
+    severityWeight: row.priority === 'critical'
+      ? 100 - (stepIndex * 4)
+      : row.priority === 'high'
+        ? 80 - (stepIndex * 4)
+        : row.priority === 'medium'
+          ? 60 - (stepIndex * 4)
+          : 40 - (stepIndex * 4),
+    etaDriftMinutes: (index + 1) * 12 + (stepIndex * (row.priority === 'critical' ? 20 : 8)),
+    summary: `Step ${stepIndex} for ${row.id.toUpperCase()}: align remediation lane handoff evidence.`,
+    owner: stepIndex % 2 === 0 ? 'Frontend Engineer' : 'Ops',
+  }))
+)));
+const remediationRunbookTimelineBoard = computed(() => buildRemediationRunbookTimelineBoard({
+  rows: remediationRunbookTimelineSourceRows.value,
+  activeRowId: activeRemediationRunbookStepId.value,
+}));
+const activeRemediationRunbookStep = computed(() => remediationRunbookTimelineBoard.value.rows
+  .find((row) => row.id === activeRemediationRunbookStepId.value) ?? null);
+const remediationRunbookCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: remediationRunbookHandoffDraft.value.dependencyIssueLinksText,
 }));
 const anomalyTriageSourceRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => {
   const category = remediationCategoryCycle[index % remediationCategoryCycle.length];
@@ -1668,6 +1714,12 @@ function resetRemediationPlaybookState() {
   remediationPlaybookState.error = '';
 }
 
+function resetRemediationRunbookState() {
+  remediationRunbookState.message = '';
+  remediationRunbookState.error = '';
+  remediationRunbookHandoffMissingFields.value = new Set();
+}
+
 function resetReleaseReadinessState() {
   releaseReadinessState.message = '';
   releaseReadinessState.error = '';
@@ -1813,6 +1865,20 @@ watch(evidenceTimelineHeatmap, (heatmap) => {
   }
   if (!heatmap.rows.some((row) => row.id === activeEvidenceTimelineRowId.value)) {
     activeEvidenceTimelineRowId.value = heatmap.activeRowId;
+  }
+}, { deep: true, immediate: true });
+
+watch(remediationRunbookTimelineBoard, (board) => {
+  if (!board.rows.length) {
+    activeRemediationRunbookStepId.value = '';
+    remediationRunbookHandoffDraft.value = getDefaultRemediationRunbookHandoffPackDraft({
+      stepId: '',
+      issueIdentifier: '',
+    });
+    return;
+  }
+  if (!board.rows.some((row) => row.id === activeRemediationRunbookStepId.value)) {
+    setActiveRemediationRunbookStep(board.activeRowId);
   }
 }, { deep: true, immediate: true });
 
@@ -1965,6 +2031,108 @@ function validateDispatchDraft() {
 function focusDispatchCockpit() {
   dispatchCockpitPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   dispatchDraftBranchInputRef.value?.focus();
+}
+
+function setActiveRemediationRunbookStep(stepId: string) {
+  resetRemediationRunbookState();
+  activeRemediationRunbookStepId.value = stepId;
+  const step = remediationRunbookTimelineBoard.value.rows.find((row) => row.id === stepId) ?? null;
+  if (!step) {
+    remediationRunbookHandoffDraft.value = getDefaultRemediationRunbookHandoffPackDraft({
+      stepId: '',
+      issueIdentifier: '',
+    });
+    return;
+  }
+  const existing = remediationRunbookHandoffDraft.value;
+  if (existing.stepId === step.id) {
+    return;
+  }
+  remediationRunbookHandoffDraft.value = getDefaultRemediationRunbookHandoffPackDraft({
+    stepId: step.id,
+    issueIdentifier: step.issueIdentifier,
+  });
+}
+
+function focusRemediationRunbookTimelineBoard() {
+  remediationRunbookTimelinePanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  remediationRunbookTimelinePanelRef.value?.focus();
+}
+
+function openRemediationRunbookComposer() {
+  resetRemediationRunbookState();
+  if (!activeRemediationRunbookStep.value && remediationRunbookTimelineBoard.value.rows.length) {
+    setActiveRemediationRunbookStep(remediationRunbookTimelineBoard.value.rows[0].id);
+  }
+  remediationRunbookComposerOpen.value = true;
+  nextTick(() => {
+    remediationRunbookBranchInputRef.value?.focus();
+  });
+}
+
+function updateRemediationRunbookHandoffPrMode(mode: 'pr_link' | 'no_pr_yet') {
+  remediationRunbookHandoffDraft.value = applyRemediationRunbookHandoffPackPrMode({
+    draft: remediationRunbookHandoffDraft.value,
+    prMode: mode,
+  });
+}
+
+function validateRemediationRunbookHandoffPack() {
+  resetRemediationRunbookState();
+  const step = activeRemediationRunbookStep.value;
+  if (!step) {
+    remediationRunbookState.error = 'Select a runbook step before validating handoff pack.';
+    return;
+  }
+  const validation = validateRemediationRunbookHandoffPackDraft({
+    ...remediationRunbookHandoffDraft.value,
+    stepId: step.id,
+    issueIdentifier: step.issueIdentifier,
+    updatedAt: new Date().toISOString(),
+  });
+  remediationRunbookHandoffMissingFields.value = new Set(validation.missingFields);
+  if (validation.isComplete) {
+    remediationRunbookState.message = `Runbook handoff validated. Canonical links: ${validation.dependencyIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  remediationRunbookState.error = errorParts.join(' | ') || 'Runbook handoff pack is incomplete.';
+}
+
+function clearRemediationRunbookHandoffPack(confirmFullReset: boolean) {
+  resetRemediationRunbookState();
+  const step = activeRemediationRunbookStep.value;
+  if (!step) {
+    remediationRunbookState.error = 'Select a runbook step before clearing handoff pack.';
+    return;
+  }
+  const next = resetRemediationRunbookHandoffPackDraft({
+    stepId: step.id,
+    issueIdentifier: step.issueIdentifier,
+    confirmFullReset,
+  });
+  remediationRunbookHandoffDraft.value = next.draft;
+  remediationRunbookState.message = next.message;
+  if (next.didFullReset) {
+    remediationRunbookComposerOpen.value = false;
+  }
+}
+
+function clearRemediationRunbookHandoffPackWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears the active runbook handoff draft. Continue?')) {
+    return;
+  }
+  clearRemediationRunbookHandoffPack(true);
+}
+
+function isRemediationRunbookHandoffFieldMissing(fieldKey: string): boolean {
+  return remediationRunbookHandoffMissingFields.value.has(fieldKey);
 }
 
 function isRemediationPlaybookFieldMissing(fieldKey: string): boolean {
@@ -2723,6 +2891,46 @@ function onReviewQueueLedgerKeydown(event: KeyboardEvent) {
     return;
   }
   validateReviewQueueHandoffPacket();
+}
+
+function onRemediationRunbookKeydown(event: KeyboardEvent) {
+  const shortcut = resolveRemediationRunbookShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_handoff_pack'
+    && shortcut !== 'validate_active_pack') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_timeline_board') {
+    focusRemediationRunbookTimelineBoard();
+    return;
+  }
+  if (shortcut === 'next_step' || shortcut === 'prev_step') {
+    const nextId = moveRemediationRunbookTimelineSelection({
+      rows: remediationRunbookTimelineBoard.value.rows,
+      activeRowId: activeRemediationRunbookStepId.value,
+      direction: shortcut === 'next_step' ? 'next' : 'prev',
+    });
+    if (nextId) {
+      setActiveRemediationRunbookStep(nextId);
+    }
+    return;
+  }
+  if (shortcut === 'open_handoff_pack') {
+    openRemediationRunbookComposer();
+    return;
+  }
+  validateRemediationRunbookHandoffPack();
 }
 
 function onAnomalyTriageKeydown(event: KeyboardEvent) {
@@ -4840,6 +5048,128 @@ onMounted(() => {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+            <div
+              ref="remediationRunbookTimelinePanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onRemediationRunbookKeydown"
+            >
+              <h4>Remediation Runbook Timeline Board</h4>
+              <p class="state" :class="{ error: remediationRunbookState.error }">
+                {{ remediationRunbookState.error
+                  || remediationRunbookState.message
+                  || 'Deterministic order: severityWeight, etaDriftMinutes, issueIdentifier, stepIndex. Keyboard: Alt+T focus, Alt+Shift+J next step, Alt+Shift+K previous step, Ctrl+Shift+H open handoff pack, Ctrl+Shift+Enter validate pack.' }}
+              </p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>ETA Drift</th>
+                      <th>Issue</th>
+                      <th>Step</th>
+                      <th>Owner</th>
+                      <th>Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!remediationRunbookTimelineBoard.rows.length">
+                      <td colspan="6">No runbook timeline steps available in current fixture set.</td>
+                    </tr>
+                    <tr
+                      v-for="row in remediationRunbookTimelineBoard.rows"
+                      :key="row.id"
+                      :class="{ 'queue-row-active': activeRemediationRunbookStepId === row.id }"
+                      @click="setActiveRemediationRunbookStep(row.id)"
+                    >
+                      <td>{{ row.severityWeight }}</td>
+                      <td>{{ row.etaDriftMinutes }}m</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.stepIndex }}</td>
+                      <td>{{ row.owner }}</td>
+                      <td>{{ row.summary }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="openRemediationRunbookComposer">Open Handoff Pack Composer</button>
+                <button type="button" class="link" @click="validateRemediationRunbookHandoffPack">Validate Active Pack</button>
+                <button type="button" class="link" @click="clearRemediationRunbookHandoffPack(false)">Clear Draft Only</button>
+                <button type="button" class="link" @click="clearRemediationRunbookHandoffPackWithConfirm">Full Reset</button>
+              </div>
+              <div v-if="remediationRunbookComposerOpen">
+                <h5>Publish-Readiness Handoff Pack Composer</h5>
+                <div class="triage-grid">
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('branch') }">
+                    Branch
+                    <input
+                      ref="remediationRunbookBranchInputRef"
+                      v-model="remediationRunbookHandoffDraft.branch"
+                      placeholder="feature/one-266-runbook-timeline"
+                    />
+                  </label>
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('fullSha') }">
+                    Full SHA
+                    <input v-model="remediationRunbookHandoffDraft.fullSha" placeholder="40-char commit SHA" />
+                  </label>
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('prMode') }">
+                    PR Mode
+                    <select
+                      :value="remediationRunbookHandoffDraft.prMode"
+                      @change="updateRemediationRunbookHandoffPrMode(($event.target as HTMLSelectElement).value as 'pr_link' | 'no_pr_yet')"
+                    >
+                      <option value="pr_link">pr_link</option>
+                      <option value="no_pr_yet">no_pr_yet</option>
+                    </select>
+                  </label>
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('testCommand') }">
+                    Test Command
+                    <input v-model="remediationRunbookHandoffDraft.testCommand" placeholder="npm run test -- test/frontend.wave1.spec.ts" />
+                  </label>
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('artifactPath') }">
+                    Artifact Path
+                    <input v-model="remediationRunbookHandoffDraft.artifactPath" placeholder="artifacts/one-266/remediation-runbook-pack.md" />
+                  </label>
+                </div>
+                <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('dependencyIssueLinks') }">
+                  Dependency Issue Links (one per line)
+                  <textarea v-model="remediationRunbookHandoffDraft.dependencyIssueLinksText" rows="3" placeholder="/issues/ONE-265"></textarea>
+                </label>
+                <div class="triage-grid" v-if="remediationRunbookHandoffDraft.prMode === 'no_pr_yet'">
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('blockerOwner') }">
+                    Blocker Owner
+                    <input v-model="remediationRunbookHandoffDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                  </label>
+                  <label :class="{ 'field-missing': isRemediationRunbookHandoffFieldMissing('blockerEta') }">
+                    Blocker ETA
+                    <input v-model="remediationRunbookHandoffDraft.blockerEta" placeholder="2026-03-21T12:00:00.000Z" />
+                  </label>
+                </div>
+                <h5>Canonical Link Autofix Preview</h5>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Original</th>
+                        <th>Normalized</th>
+                        <th>Changed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!remediationRunbookCanonicalPreview.rows.length">
+                        <td colspan="3">Add dependency links to preview canonical normalized output.</td>
+                      </tr>
+                      <tr v-for="row in remediationRunbookCanonicalPreview.rows" :key="`runbook-autofix-${row.id}`">
+                        <td><code>{{ row.original }}</code></td>
+                        <td><code>{{ row.normalized }}</code></td>
+                        <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
             <div

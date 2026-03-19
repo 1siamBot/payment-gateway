@@ -85,6 +85,7 @@ import {
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
   buildAnomalyTriageBoard,
+  buildRemediationRunbookTimelineBoard,
   buildBlockerAwareDispatchCockpit,
   buildReleaseReadinessSimulator,
   buildReleaseReadinessEvidenceBadges,
@@ -96,9 +97,11 @@ import {
   moveReplayDiffInspectorSelection,
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
+  moveRemediationRunbookTimelineSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
   resolveAnomalyTriageShortcut,
+  resolveRemediationRunbookShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
@@ -107,6 +110,10 @@ import {
   getDefaultDispatchEvidenceDraft,
   applyEvidencePacketLintChecklistPrMode,
   applyDispatchEvidenceDraftPrMode,
+  getDefaultRemediationRunbookHandoffPackDraft,
+  applyRemediationRunbookHandoffPackPrMode,
+  validateRemediationRunbookHandoffPackDraft,
+  resetRemediationRunbookHandoffPackDraft,
   validateEvidencePacketLintChecklistDraft,
   validateDispatchEvidenceDraft,
   resetEvidencePacketLintChecklistDraftSafe,
@@ -1524,6 +1531,122 @@ describe('frontend wave1 helpers', () => {
       activeRowId: 'anom-b',
       direction: 'prev',
     })).toBe('anom-a');
+  });
+
+  it('builds remediation runbook timeline rows in deterministic order by severityWeight, etaDriftMinutes, issueIdentifier, stepIndex', () => {
+    const board = buildRemediationRunbookTimelineBoard({
+      rows: [
+        {
+          id: 'runbook-c',
+          issueIdentifier: 'ONE-266',
+          stepIndex: 2,
+          severityWeight: 80,
+          etaDriftMinutes: 45,
+        },
+        {
+          id: 'runbook-a',
+          issueIdentifier: 'ONE-265',
+          stepIndex: 1,
+          severityWeight: 100,
+          etaDriftMinutes: 30,
+        },
+        {
+          id: 'runbook-b',
+          issueIdentifier: 'ONE-264',
+          stepIndex: 1,
+          severityWeight: 100,
+          etaDriftMinutes: 60,
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(board.contract).toBe('settlement-remediation-runbook-timeline-board.v1');
+    expect(board.rows.map((row) => row.id)).toEqual(['runbook-b', 'runbook-a', 'runbook-c']);
+    expect(board.activeRowId).toBe('runbook-b');
+    expect(moveRemediationRunbookTimelineSelection({
+      rows: board.rows,
+      activeRowId: 'runbook-b',
+      direction: 'next',
+    })).toBe('runbook-a');
+  });
+
+  it('supports remediation runbook keyboard shortcuts and canonical autofix preview links', () => {
+    expect(resolveRemediationRunbookShortcut({ key: 't', altKey: true })).toBe('focus_timeline_board');
+    expect(resolveRemediationRunbookShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_step');
+    expect(resolveRemediationRunbookShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_step');
+    expect(resolveRemediationRunbookShortcut({ key: 'h', shiftKey: true, ctrlKey: true })).toBe('open_handoff_pack');
+    expect(resolveRemediationRunbookShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true })).toBe('validate_active_pack');
+
+    const preview = buildCanonicalLinkAutofixPreview({
+      linksText: '/issues/ONE-265\n/ONE/issues/ONE-262#comment-12\nhttps://paperclip.dev/issues/ONE-241#document-plan',
+    });
+    expect(preview.correctedOutput).toBe([
+      '/ONE/issues/ONE-265',
+      '/ONE/issues/ONE-262#comment-12',
+      '/ONE/issues/ONE-241#document-plan',
+    ].join('\n'));
+  });
+
+  it('validates remediation runbook handoff pack draft and supports safe/full reset behavior', () => {
+    const incomplete = validateRemediationRunbookHandoffPackDraft(getDefaultRemediationRunbookHandoffPackDraft({
+      stepId: 'runbook-step-1',
+      issueIdentifier: 'ONE-266',
+    }));
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'testCommand',
+      'artifactPath',
+      'dependencyIssueLinks',
+      'blockerOwner',
+      'blockerEta',
+    ]);
+
+    const completeDraft = {
+      stepId: 'runbook-step-1',
+      issueIdentifier: 'ONE-266',
+      branch: 'feature/one-266-runbook-timeline',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet' as const,
+      testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-266/remediation-runbook-pack.md',
+      dependencyIssueLinksText: '/issues/ONE-265\n/ONE/issues/ONE-262#comment-12\n/ONE/issues/ONE-241',
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-21T12:00:00.000Z',
+      updatedAt: '2026-03-19T07:20:00.000Z',
+    };
+    const complete = validateRemediationRunbookHandoffPackDraft(completeDraft);
+    expect(complete.isComplete).toBe(true);
+    expect(complete.dependencyIssueLinks).toEqual([
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-262#comment-12',
+      '/ONE/issues/ONE-265',
+    ]);
+
+    const switchedMode = applyRemediationRunbookHandoffPackPrMode({
+      draft: completeDraft,
+      prMode: 'pr_link',
+    });
+    expect(switchedMode.blockerOwner).toBe('');
+    expect(switchedMode.blockerEta).toBe('');
+
+    const safeReset = resetRemediationRunbookHandoffPackDraft({
+      stepId: 'runbook-step-1',
+      issueIdentifier: 'ONE-266',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.message).toContain('selection preserved');
+
+    const fullReset = resetRemediationRunbookHandoffPackDraft({
+      stepId: 'runbook-step-1',
+      issueIdentifier: 'ONE-266',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.message).toContain('fully reset');
   });
 
   it('validates remediation playbook drafts and supports safe/full reset behavior', () => {

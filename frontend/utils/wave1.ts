@@ -470,6 +470,51 @@ export type AnomalyTriageBoard = {
   activeRowId: string;
 };
 
+export type RemediationRunbookTimelineShortcut =
+  | 'focus_timeline_board'
+  | 'next_step'
+  | 'prev_step'
+  | 'open_handoff_pack'
+  | 'validate_active_pack';
+export type RemediationRunbookHandoffPrMode = 'pr_link' | 'no_pr_yet';
+
+export type RemediationRunbookTimelineRow = {
+  id: string;
+  issueIdentifier: string;
+  stepIndex: number;
+  severityWeight: number;
+  etaDriftMinutes: number;
+  summary: string;
+  owner: string;
+};
+
+export type RemediationRunbookTimelineBoard = {
+  contract: 'settlement-remediation-runbook-timeline-board.v1';
+  rows: RemediationRunbookTimelineRow[];
+  activeRowId: string;
+};
+
+export type RemediationRunbookHandoffPackDraft = {
+  stepId: string;
+  issueIdentifier: string;
+  branch: string;
+  fullSha: string;
+  prMode: RemediationRunbookHandoffPrMode;
+  testCommand: string;
+  artifactPath: string;
+  dependencyIssueLinksText: string;
+  blockerOwner: string;
+  blockerEta: string;
+  updatedAt: string;
+};
+
+export type RemediationRunbookHandoffPackValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type RemediationPlaybookDraft = {
   anomalyId: string;
   issueIdentifier: string;
@@ -3118,6 +3163,242 @@ export function resolveAnomalyTriageShortcut(input: {
     return 'validate_active_playbook';
   }
   return null;
+}
+
+function parseRemediationRunbookTimelineRow(row: unknown): RemediationRunbookTimelineRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const raw = row as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier.toUpperCase()
+      : String(raw.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const stepIndex = Math.max(0, Math.trunc(parseFiniteNumber(raw.stepIndex) ?? 0));
+  const severityWeight = Math.max(0, Math.trunc(parseFiniteNumber(raw.severityWeight) ?? 0));
+  const etaDriftMinutes = Math.max(0, Math.trunc(parseFiniteNumber(raw.etaDriftMinutes) ?? 0));
+  const summary = normalizeOptional(
+    typeof raw.summary === 'string'
+      ? raw.summary
+      : String(raw.summary ?? ''),
+  ) ?? `${issueIdentifier} step ${stepIndex} requires remediation sequencing.`;
+  const owner = normalizeOptional(
+    typeof raw.owner === 'string'
+      ? raw.owner
+      : String(raw.owner ?? ''),
+  ) ?? 'unassigned';
+  const id = normalizeOptional(
+    typeof raw.id === 'string'
+      ? raw.id
+      : `${issueIdentifier}|${stepIndex}|${severityWeight}|${etaDriftMinutes}`,
+  ) ?? `${issueIdentifier}|${stepIndex}|${severityWeight}|${etaDriftMinutes}`;
+  return {
+    id,
+    issueIdentifier,
+    stepIndex,
+    severityWeight,
+    etaDriftMinutes,
+    summary,
+    owner,
+  };
+}
+
+export function buildRemediationRunbookTimelineBoard(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): RemediationRunbookTimelineBoard {
+  const rows = input.rows
+    .map((row) => parseRemediationRunbookTimelineRow(row))
+    .filter((row): row is RemediationRunbookTimelineRow => Boolean(row))
+    .sort((left, right) => (
+      right.severityWeight - left.severityWeight
+      || right.etaDriftMinutes - left.etaDriftMinutes
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.stepIndex - right.stepIndex
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeRowId = idSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-runbook-timeline-board.v1',
+    rows,
+    activeRowId,
+  };
+}
+
+export function moveRemediationRunbookTimelineSelection(input: {
+  rows: RemediationRunbookTimelineRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (!input.rows.length) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationRunbookShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationRunbookTimelineShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 't') {
+    return 'focus_timeline_board';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_step';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_step';
+  }
+  if (normalizedKey === 'h' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_pack';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_pack';
+  }
+  return null;
+}
+
+export function getDefaultRemediationRunbookHandoffPackDraft(input: {
+  stepId: string;
+  issueIdentifier: string;
+}): RemediationRunbookHandoffPackDraft {
+  return {
+    stepId: input.stepId,
+    issueIdentifier: input.issueIdentifier,
+    branch: '',
+    fullSha: EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER,
+    prMode: 'no_pr_yet',
+    testCommand: '',
+    artifactPath: '',
+    dependencyIssueLinksText: '',
+    blockerOwner: '',
+    blockerEta: '',
+    updatedAt: '',
+  };
+}
+
+export function applyRemediationRunbookHandoffPackPrMode(input: {
+  draft: RemediationRunbookHandoffPackDraft;
+  prMode: RemediationRunbookHandoffPrMode;
+}): RemediationRunbookHandoffPackDraft {
+  if (input.prMode === 'no_pr_yet') {
+    return {
+      ...input.draft,
+      prMode: input.prMode,
+    };
+  }
+  return {
+    ...input.draft,
+    prMode: input.prMode,
+    blockerOwner: '',
+    blockerEta: '',
+  };
+}
+
+export function validateRemediationRunbookHandoffPackDraft(
+  draft: RemediationRunbookHandoffPackDraft,
+): RemediationRunbookHandoffPackValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const testCommand = draft.testCommand.trim();
+  const artifactPath = draft.artifactPath.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const blockerEta = draft.blockerEta.trim();
+  const dependencyIssueLinks = normalizeMultilineEntries(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before handoff.');
+  }
+  if (!draft.prMode) {
+    missingFields.push('prMode');
+  }
+  if (!testCommand) {
+    missingFields.push('testCommand');
+  }
+  if (!artifactPath) {
+    missingFields.push('artifactPath');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!canonicalizePaperclipIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+  if (draft.prMode === 'no_pr_yet') {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!blockerEta) {
+      missingFields.push('blockerEta');
+    } else if (!Number.isFinite(new Date(blockerEta).getTime())) {
+      errors.push('Blocker ETA must be a valid date-time string.');
+    }
+  }
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks: dependencyIssueLinks
+      .map((link) => canonicalizePaperclipIssueLink(link))
+      .filter((link): link is string => Boolean(link))
+      .sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+export function resetRemediationRunbookHandoffPackDraft(input: {
+  stepId: string;
+  issueIdentifier: string;
+  confirmFullReset: boolean;
+}): {
+  draft: RemediationRunbookHandoffPackDraft;
+  didFullReset: boolean;
+  message: string;
+} {
+  const draft = getDefaultRemediationRunbookHandoffPackDraft({
+    stepId: input.stepId,
+    issueIdentifier: input.issueIdentifier,
+  });
+  if (input.confirmFullReset) {
+    return {
+      draft,
+      didFullReset: true,
+      message: 'Runbook handoff draft fully reset. Active step selection should be rechecked.',
+    };
+  }
+  return {
+    draft,
+    didFullReset: false,
+    message: 'Runbook handoff draft cleared for active step. Timeline selection preserved.',
+  };
 }
 
 export function getDefaultRemediationPlaybookDraft(input: {
