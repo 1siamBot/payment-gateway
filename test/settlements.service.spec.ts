@@ -554,6 +554,107 @@ describe('SettlementsService', () => {
     });
   });
 
+  it('returns settlement exception activity timeline with deterministic cursor pagination', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_alpha',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 500,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_alpha', providerName: 'mock-a', providerTotal: 100 }],
+    }, 'ops');
+    const exceptionId = detected.exceptions[0].id;
+
+    const acknowledged = await service.commandSettlementException(exceptionId, {
+      command: 'acknowledge',
+      reason: 'triage_started',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    await service.commandSettlementException(exceptionId, {
+      command: 'markResolved',
+      reason: 'resolved_after_review',
+      expectedVersion: acknowledged.version,
+    }, 'ops');
+
+    const firstPage = await service.getSettlementExceptionActivityTimeline(exceptionId, { limit: 2 });
+    expect(firstPage.contract).toBe('settlement-exception-activity-timeline.v1');
+    expect(firstPage.data).toHaveLength(2);
+    expect(firstPage.data.map((event) => event.eventType)).toEqual([
+      'exception_mark_resolved',
+      'exception_acknowledged',
+    ]);
+    expect(firstPage.pageInfo.hasNext).toBe(true);
+    expect(firstPage.pageInfo.nextCursor).toBeTruthy();
+
+    const secondPage = await service.getSettlementExceptionActivityTimeline(exceptionId, {
+      limit: 2,
+      cursor: firstPage.pageInfo.nextCursor!,
+    });
+
+    expect(secondPage.data).toHaveLength(1);
+    expect(secondPage.data[0].eventType).toBe('exception_opened');
+    expect(secondPage.pageInfo.hasNext).toBe(false);
+    expect(secondPage.pageInfo.nextCursor).toBeNull();
+  });
+
+  it('returns deterministic empty fixture timeline response', async () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const timeline = await service.getSettlementExceptionActivityTimeline('se_fixture_empty', {
+      mode: 'fixture',
+      scenario: 'empty',
+      limit: 10,
+    });
+
+    expect(timeline.mode).toBe('fixture');
+    expect(timeline.data).toEqual([]);
+    expect(timeline.pageInfo).toEqual({
+      limit: 10,
+      hasNext: false,
+      nextCursor: null,
+    });
+  });
+
+  it('rejects invalid settlement exception activity cursor payload', async () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    await expect(service.getSettlementExceptionActivityTimeline('se_fixture_invalid', {
+      mode: 'fixture',
+      scenario: 'normal',
+      cursor: 'not-a-valid-cursor',
+    })).rejects.toMatchObject({
+      response: {
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_INVALID',
+        reasonCode: 'INVALID_CURSOR',
+      },
+    });
+  });
+
+  it('rejects stale settlement exception activity cursor', async () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    await expect(service.getSettlementExceptionActivityTimeline('se_fixture_stale', {
+      mode: 'fixture',
+      scenario: 'stale_cursor',
+      cursor: Buffer.from(JSON.stringify({ version: 'v1', anchor: 'fx_missing' }), 'utf8').toString('base64url'),
+    })).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('orders list rows deterministically by severity then createdAt then id', async () => {
     const prismaMock = createPrismaMock([
       {

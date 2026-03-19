@@ -167,6 +167,7 @@ import type {
   DetectSettlementRecord,
 } from './dto/detect-settlement-exceptions.dto';
 import { ListReconciliationDiscrepanciesDto } from './dto/list-reconciliation-discrepancies.dto';
+import { ListSettlementExceptionActivityDto } from './dto/list-settlement-exception-activity.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
 import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
@@ -274,6 +275,46 @@ type ExceptionDetail = ExceptionListItem & {
   audits: ExceptionAuditItem[];
 };
 
+type SettlementExceptionActivityActorType = 'system' | 'operator' | 'merchant';
+
+type SettlementExceptionActivityEvent = {
+  id: string;
+  eventType: string;
+  actorType: SettlementExceptionActivityActorType;
+  reasonCode: string;
+  fromStatus: SettlementExceptionStatus | null;
+  toStatus: SettlementExceptionStatus;
+  occurredAt: string;
+};
+
+type SettlementExceptionActivityCursorReasonCode = 'INVALID_CURSOR' | 'STALE_CURSOR';
+
+type SettlementExceptionActivityResponse = {
+  contract: 'settlement-exception-activity-timeline.v1';
+  exceptionId: string;
+  mode: 'live' | 'fixture';
+  data: SettlementExceptionActivityEvent[];
+  pageInfo: {
+    limit: number;
+    hasNext: boolean;
+    nextCursor: string | null;
+  };
+  metadata: {
+    reasonCodeMap: Array<{
+      reasonCode: SettlementExceptionActivityCursorReasonCode;
+      httpStatus: number;
+      description: string;
+    }>;
+  };
+};
+
+type SettlementExceptionActivityFixtureScenario = 'normal' | 'empty' | 'stale_cursor';
+
+type SettlementExceptionActivityCursorPayload = {
+  version: 'v1';
+  anchor: string;
+};
+
 type ExceptionActionIdempotencyEnvelope = {
   status: 'pending' | 'completed';
   fingerprint: string;
@@ -297,6 +338,68 @@ const EXCEPTION_SEVERITY_WEIGHT: Record<ExceptionSeverity, number> = {
   high: 3,
   medium: 2,
   low: 1,
+};
+
+const SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_VERSION = 'v1';
+
+const SETTLEMENT_EXCEPTION_ACTIVITY_REASON_CODE_MAP: SettlementExceptionActivityResponse['metadata']['reasonCodeMap'] = [
+  {
+    reasonCode: 'INVALID_CURSOR',
+    httpStatus: 400,
+    description: 'Cursor payload is malformed or unsupported.',
+  },
+  {
+    reasonCode: 'STALE_CURSOR',
+    httpStatus: 409,
+    description: 'Cursor anchor no longer exists in the latest timeline projection.',
+  },
+];
+
+const SETTLEMENT_EXCEPTION_ACTIVITY_FIXTURE_EVENTS: Record<
+SettlementExceptionActivityFixtureScenario,
+SettlementExceptionActivityEvent[]
+> = {
+  normal: [
+    {
+      id: 'fx_evt_003',
+      eventType: 'exception_mark_resolved',
+      actorType: 'operator',
+      reasonCode: 'resolved_after_manual_review',
+      fromStatus: SettlementExceptionStatus.INVESTIGATING,
+      toStatus: SettlementExceptionStatus.RESOLVED,
+      occurredAt: '2026-03-19T09:20:00.000Z',
+    },
+    {
+      id: 'fx_evt_002',
+      eventType: 'exception_acknowledged',
+      actorType: 'operator',
+      reasonCode: 'investigation_started',
+      fromStatus: SettlementExceptionStatus.OPEN,
+      toStatus: SettlementExceptionStatus.INVESTIGATING,
+      occurredAt: '2026-03-19T09:10:00.000Z',
+    },
+    {
+      id: 'fx_evt_001',
+      eventType: 'exception_opened',
+      actorType: 'system',
+      reasonCode: 'ledger_provider_delta_detected',
+      fromStatus: null,
+      toStatus: SettlementExceptionStatus.OPEN,
+      occurredAt: '2026-03-19T09:00:00.000Z',
+    },
+  ],
+  empty: [],
+  stale_cursor: [
+    {
+      id: 'fx_stale_evt_001',
+      eventType: 'exception_opened',
+      actorType: 'system',
+      reasonCode: 'ledger_provider_delta_detected',
+      fromStatus: null,
+      toStatus: SettlementExceptionStatus.OPEN,
+      occurredAt: '2026-03-19T09:00:00.000Z',
+    },
+  ],
 };
 
 type ExceptionActionConflictReason =
@@ -697,6 +800,44 @@ export class SettlementsService {
       })),
       total: fixtures.length,
     };
+  }
+
+  async getSettlementExceptionActivityTimeline(
+    exceptionId: string,
+    query: ListSettlementExceptionActivityDto,
+  ): Promise<SettlementExceptionActivityResponse> {
+    const limit = this.clampTake(query.limit);
+    const mode = query.mode ?? 'live';
+    const scenario = (query.scenario ?? 'normal') as SettlementExceptionActivityFixtureScenario;
+
+    if (mode === 'fixture') {
+      if (scenario === 'stale_cursor' && query.cursor) {
+        throw new ConflictException({
+          code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_STALE',
+          reasonCode: 'STALE_CURSOR',
+          message: 'cursor is stale; request the timeline from the first page',
+        });
+      }
+
+      const events = SETTLEMENT_EXCEPTION_ACTIVITY_FIXTURE_EVENTS[scenario] ?? [];
+      return this.buildSettlementExceptionActivityResponse(exceptionId, events, limit, query.cursor, mode);
+    }
+
+    const exception = await this.prisma.settlementException.findUnique({
+      where: { id: exceptionId },
+      include: {
+        audits: {
+          orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        },
+      },
+    });
+
+    if (!exception) {
+      throw new NotFoundException('Settlement exception not found');
+    }
+
+    const events = this.toSettlementExceptionActivityEvents(exception);
+    return this.buildSettlementExceptionActivityResponse(exceptionId, events, limit, query.cursor, mode);
   }
 
   buildSettlementExceptionBulkActionPreview(
@@ -1646,6 +1787,185 @@ export class SettlementsService {
         actor: audit.actor,
         createdAt: audit.createdAt.toISOString(),
       })),
+    };
+  }
+
+  private toSettlementExceptionActivityEvents(exception: {
+    id: string;
+    status: SettlementExceptionStatus;
+    openedReason: string;
+    createdAt: Date;
+    audits: Array<{
+      id: string;
+      fromStatus: SettlementExceptionStatus | null;
+      toStatus: SettlementExceptionStatus;
+      reason: string;
+      actor: string;
+      createdAt: Date;
+    }>;
+  }): SettlementExceptionActivityEvent[] {
+    const fromAudits = exception.audits.map((audit) => ({
+      id: audit.id,
+      eventType: this.resolveAuditEventType(audit.toStatus),
+      actorType: this.resolveActivityActorType(audit.actor),
+      reasonCode: audit.reason,
+      fromStatus: audit.fromStatus,
+      toStatus: audit.toStatus,
+      occurredAt: audit.createdAt.toISOString(),
+    }));
+
+    const hasOpenedAudit = exception.audits.some(
+      (audit) => audit.fromStatus === null && audit.toStatus === SettlementExceptionStatus.OPEN,
+    );
+    const openedEvent: SettlementExceptionActivityEvent = {
+      id: `${exception.id}_opened`,
+      eventType: 'exception_opened',
+      actorType: 'system',
+      reasonCode: exception.openedReason,
+      fromStatus: null,
+      toStatus: SettlementExceptionStatus.OPEN,
+      occurredAt: exception.createdAt.toISOString(),
+    };
+
+    return [
+      ...fromAudits,
+      ...(hasOpenedAudit ? [] : [openedEvent]),
+    ].sort((left, right) => {
+      const byTime = new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return right.id.localeCompare(left.id);
+    });
+  }
+
+  private resolveAuditEventType(toStatus: SettlementExceptionStatus): string {
+    if (toStatus === SettlementExceptionStatus.OPEN) {
+      return 'exception_opened';
+    }
+    if (toStatus === SettlementExceptionStatus.INVESTIGATING) {
+      return 'exception_acknowledged';
+    }
+    if (toStatus === SettlementExceptionStatus.RESOLVED) {
+      return 'exception_mark_resolved';
+    }
+    if (toStatus === SettlementExceptionStatus.IGNORED) {
+      return 'exception_ignored';
+    }
+    return 'exception_status_updated';
+  }
+
+  private resolveActivityActorType(actor: string): SettlementExceptionActivityActorType {
+    const normalized = actor.trim().toLowerCase();
+    if (normalized === 'system') {
+      return 'system';
+    }
+    if (normalized.startsWith('merchant')) {
+      return 'merchant';
+    }
+    return 'operator';
+  }
+
+  private buildSettlementExceptionActivityResponse(
+    exceptionId: string,
+    events: SettlementExceptionActivityEvent[],
+    limit: number,
+    cursor: string | undefined,
+    mode: 'live' | 'fixture',
+  ): SettlementExceptionActivityResponse {
+    const startIndex = this.resolveActivityPageStart(events, cursor);
+    const page = events.slice(startIndex, startIndex + limit);
+    const hasNext = startIndex + limit < events.length;
+    const nextCursor = hasNext && page.length > 0
+      ? this.encodeSettlementExceptionActivityCursor(page[page.length - 1].id)
+      : null;
+
+    return {
+      contract: 'settlement-exception-activity-timeline.v1',
+      exceptionId,
+      mode,
+      data: page,
+      pageInfo: {
+        limit,
+        hasNext,
+        nextCursor,
+      },
+      metadata: {
+        reasonCodeMap: SETTLEMENT_EXCEPTION_ACTIVITY_REASON_CODE_MAP,
+      },
+    };
+  }
+
+  private resolveActivityPageStart(events: SettlementExceptionActivityEvent[], cursor?: string): number {
+    if (!cursor) {
+      return 0;
+    }
+
+    const parsed = this.parseSettlementExceptionActivityCursor(cursor);
+    const anchorIndex = events.findIndex((row) => row.id === parsed.anchor);
+
+    if (anchorIndex < 0) {
+      throw new ConflictException({
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_STALE',
+        reasonCode: 'STALE_CURSOR',
+        message: 'cursor is stale; request the timeline from the first page',
+      });
+    }
+
+    return anchorIndex + 1;
+  }
+
+  private encodeSettlementExceptionActivityCursor(anchor: string): string {
+    const payload: SettlementExceptionActivityCursorPayload = {
+      version: SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_VERSION,
+      anchor,
+    };
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  }
+
+  private parseSettlementExceptionActivityCursor(cursor: string): SettlementExceptionActivityCursorPayload {
+    let decoded: string;
+    try {
+      decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    } catch {
+      throw new BadRequestException({
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_INVALID',
+        reasonCode: 'INVALID_CURSOR',
+        message: 'cursor must be a valid base64url payload',
+      });
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(decoded);
+    } catch {
+      throw new BadRequestException({
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_INVALID',
+        reasonCode: 'INVALID_CURSOR',
+        message: 'cursor must decode into a valid JSON payload',
+      });
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new BadRequestException({
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_INVALID',
+        reasonCode: 'INVALID_CURSOR',
+        message: 'cursor payload must be an object',
+      });
+    }
+
+    const maybeCursor = parsed as Partial<SettlementExceptionActivityCursorPayload>;
+    if (maybeCursor.version !== SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_VERSION || !maybeCursor.anchor?.trim()) {
+      throw new BadRequestException({
+        code: 'SETTLEMENT_EXCEPTION_ACTIVITY_CURSOR_INVALID',
+        reasonCode: 'INVALID_CURSOR',
+        message: 'cursor payload has unsupported version or missing anchor',
+      });
+    }
+
+    return {
+      version: maybeCursor.version,
+      anchor: maybeCursor.anchor.trim(),
     };
   }
 
