@@ -14,6 +14,7 @@ import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-pac
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
 import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/build-settlement-publication-diagnostics-contract-snapshot.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
+import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -123,6 +124,11 @@ export class SettlementsController {
   @Post('exceptions/publication-diagnostics-fixture-export')
   publicationDiagnosticsFixtureExport(@Body() body: BuildSettlementPublicationDiagnosticsFixtureExportDto) {
     return this.settlements.buildSettlementExceptionPublicationDiagnosticsFixtureExport(body);
+  }
+
+  @Post('exceptions/publication-diagnostics-trend-digest')
+  publicationDiagnosticsTrendDigest(@Body() body: BuildSettlementPublicationDiagnosticsTrendDigestDto) {
+    return this.settlements.buildSettlementExceptionPublicationDiagnosticsTrendDigest(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')

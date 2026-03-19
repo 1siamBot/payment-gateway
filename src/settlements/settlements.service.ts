@@ -44,6 +44,7 @@ import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-pac
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
 import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/build-settlement-publication-diagnostics-contract-snapshot.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
+import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -70,6 +71,10 @@ import {
   buildSettlementPublicationDiagnosticsFixtureExport,
   SettlementPublicationDiagnosticsFixtureExport,
 } from './publication-diagnostics-fixture-export';
+import {
+  buildSettlementPublicationDiagnosticsTrendDigest,
+  SettlementPublicationDiagnosticsTrendDigest,
+} from './publication-diagnostics-trend-digest';
 import {
   buildSettlementPublicationWindowPlan,
   SettlementPublicationWindowPlan,
@@ -269,6 +274,7 @@ type SettlementPublicationWindowDiagnosticsContractResponse = SettlementPublicat
 type SettlementPublicationDiagnosticsContractSnapshotContractResponse =
   SettlementPublicationDiagnosticsContractSnapshot;
 type SettlementPublicationDiagnosticsFixtureExportContractResponse = SettlementPublicationDiagnosticsFixtureExport;
+type SettlementPublicationDiagnosticsTrendDigestContractResponse = SettlementPublicationDiagnosticsTrendDigest;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -661,6 +667,12 @@ export class SettlementsService {
     input: BuildSettlementPublicationDiagnosticsFixtureExportDto,
   ): SettlementPublicationDiagnosticsFixtureExportContractResponse {
     return buildSettlementPublicationDiagnosticsFixtureExport(input);
+  }
+
+  buildSettlementExceptionPublicationDiagnosticsTrendDigest(
+    input: BuildSettlementPublicationDiagnosticsTrendDigestDto,
+  ): SettlementPublicationDiagnosticsTrendDigestContractResponse {
+    return buildSettlementPublicationDiagnosticsTrendDigest(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(
