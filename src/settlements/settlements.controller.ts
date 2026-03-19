@@ -25,6 +25,7 @@ import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/bui
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
 import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
+import { BuildSettlementRemediationPublicationHandoffBundleDto } from './dto/build-settlement-remediation-publication-handoff-bundle.dto';
 import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto/build-settlement-remediation-publication-readiness-envelope.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
@@ -197,6 +198,11 @@ export class SettlementsController {
   @Post('exceptions/remediation-publication-readiness-envelope')
   remediationPublicationReadinessEnvelope(@Body() body: BuildSettlementRemediationPublicationReadinessEnvelopeDto) {
     return this.settlements.buildSettlementExceptionRemediationPublicationReadinessEnvelope(body);
+  }
+
+  @Post('exceptions/remediation-publication-handoff-bundle')
+  remediationPublicationHandoffBundle(@Body() body: BuildSettlementRemediationPublicationHandoffBundleDto) {
+    return this.settlements.buildSettlementExceptionRemediationPublicationHandoffBundle(body);
   }
 
   @Post('exceptions/release-ready-dependency-graph-snapshot')

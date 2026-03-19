@@ -1,0 +1,134 @@
+
+> payment-gateway@0.1.0 test
+> jest test/frontend.wave1.spec.ts
+
+PASS test/frontend.wave1.spec.ts
+  frontend wave1 helpers
+    ✓ allows refund only for PAID rows (1 ms)
+    ✓ updates row status to REFUNDED after refund action
+    ✓ filters settlement rows by merchant when merchant id is provided (1 ms)
+    ✓ validates settlement exception action reason input
+    ✓ normalizes optional filter inputs
+    ✓ applies optimistic status update for resolve/ignore actions
+    ✓ prepends latest exception audit event
+    ✓ classifies stale version conflicts as retryable (1 ms)
+    ✓ classifies canonical stale_version conflicts using machine fields
+    ✓ classifies transient action failures as retryable
+    ✓ classifies canonical idempotency_in_progress as transient
+    ✓ normalizes uppercase backend exception statuses (3 ms)
+    ✓ builds deterministic idempotency keys for same exception action payload (1 ms)
+    ✓ applies deterministic exception preset filters and marks active preset
+    ✓ builds deterministic explainability chip order for identical input
+    ✓ resolves keyboard shortcuts for explainability apply and overwrite
+    ✓ keeps applied chips stable after reset-safe draft reset (1 ms)
+    ✓ serializes and restores exception query state from URL params
+    ✓ falls back to default query state for invalid or expired URL params
+    ✓ builds deterministic bulk preview status and risk counts (4 ms)
+    ✓ returns empty-selection fallback copy for bulk preview (1 ms)
+    ✓ adds malformed warning row to deterministic export preview
+    ✓ builds simulation outcome buckets for success/conflict/rollback projections
+    ✓ filters rollback drilldown rows by reason code deterministically
+    ✓ returns missing/malformed simulation fallback with deterministic reset label
+    ✓ builds deterministic scenario compare matrix ordering for identical fixture input (1 ms)
+    ✓ keeps operator decision queue ordering stable and supports keyboard focus movement
+    ✓ builds deterministic release digest ordering by lanePriority/updatedAt/id
+    ✓ supports release digest keyboard shortcuts for row navigation and packet actions
+    ✓ autofills publish packet from active digest row and validates required guardrails
+    ✓ clears handoff packet draft safely while preserving queue filter/selection unless fully reset
+    ✓ builds lineage replay navigator rows in deterministic tuple order with stable window metadata
+    ✓ supports lineage navigator keyboard workflow for focus, next, previous, and packet validate (1 ms)
+    ✓ validates QA evidence packet composer fields and preserves lineage state on safe draft reset
+    ✓ builds replay diff inspector rows in deterministic tuple order by changeTypePriority, lineageDepth, sourceIssueId, artifactPath
+    ✓ supports replay diff inspector keyboard workflow for focus, next, previous, and checklist validate (1 ms)
+    ✓ builds evidence timeline heatmap rows in deterministic tuple order by lanePriority, missingFieldPriority, issueIdentifier, updatedAt
+    ✓ supports evidence timeline heatmap keyboard workflow for focus, next, previous, and checklist validate
+    ✓ builds blocker-aware dispatch cockpit rows in deterministic tuple order by blockerSeverity, updatedAt, issueIdentifier, laneType
+    ✓ validates dispatch draft required fields and resets blocker fields when prMode changes (1 ms)
+    ✓ supports dispatch cockpit keyboard workflow for focus, blocked lane navigation, save draft, and validate draft
+    ✓ builds release readiness simulator lanes with deterministic ordering by readinessScore, blockerRisk, etaDriftMinutes, issueIdentifier (1 ms)
+    ✓ classifies blocker ETA drift using deterministic on_track/minor_drift/major_drift thresholds
+    ✓ supports release readiness keyboard workflow and evidence badge validation for no-pr packets (1 ms)
+    ✓ builds publication-window board rows in deterministic tuple order
+    ✓ resolves publication score-band boundaries and keyboard shortcuts
+    ✓ normalizes and validates dependency-gate links for publication-window rows (1 ms)
+    ✓ builds publication readiness board rows in deterministic lane tuple order
+    ✓ keeps publication gap resolver output byte-stable for identical lane data
+    ✓ builds publication readiness canonical-link autofix preview with patched markdown output
+    ✓ supports publication readiness keyboard workflow and deterministic next/prev lane selection (1 ms)
+    ✓ builds diagnostics trend digest rows in deterministic tuple order
+    ✓ maps regression gate rationale chips and canonical dependency links for active digest row
+    ✓ keeps diagnostics trend digest summary cards stable for fixed fixtures (1 ms)
+    ✓ builds diagnostics baseline compare workspace rows in deterministic tuple order
+    ✓ builds regression gate override simulator outcomes with deterministic machine reason handling
+    ✓ resolves diagnostics contract-bundle explorer shortcuts for explorer/composer workflow
+    ✓ builds deterministic diagnostics drift-summary chips in canonical reason-code order
+    ✓ keeps canonical-link autofix and checklist validation stable for diagnostics handoff packet inputs (1 ms)
+    ✓ builds delta-bundle contract safety rows in deterministic tuple order
+    ✓ keeps validator drill state stable across reruns and resolves keyboard shortcuts
+    ✓ builds delta-bundle link-quality panel with canonical autofix preview before scenario save (1 ms)
+    ✓ builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation
+    ✓ builds canonical link autofix preview with copy-ready normalized output
+    ✓ builds deterministic anomaly timeline workspace groups in tuple order
+    ✓ builds remediation playbook composer output deterministically for semantically identical inputs
+    ✓ verifies canonical issue/comment/document links with autofix preview before export
+    ✓ resolves anomaly timeline keyboard workflow for timeline navigation and playbook export
+    ✓ builds anomaly triage board rows in deterministic order by severityWeight, stalenessMinutes, issueIdentifier, fieldPath
+    ✓ supports anomaly triage keyboard workflow and deterministic next/prev selection
+    ✓ builds remediation runbook timeline rows in deterministic order by severityWeight, etaDriftMinutes, issueIdentifier, stepIndex
+    ✓ supports remediation runbook keyboard shortcuts and canonical autofix preview links
+    ✓ validates remediation runbook handoff pack draft and supports safe/full reset behavior
+    ✓ builds manifest diff viewer rows in deterministic order by severityWeight, deltaClassWeight, issueIdentifier, fieldPath
+    ✓ supports manifest diff keyboard workflow and deterministic next/prev selection
+    ✓ validates blocked-lane handoff drill draft and supports safe/full reset behavior with canonical link normalization (2 ms)
+    ✓ validates remediation playbook drafts and supports safe/full reset behavior
+    ✓ validates evidence packet checklist required fields and resets blocker fields when prMode changes
+    ✓ validates evidence-gap checklist fields and preserves diff filter + selected pair on safe reset (1 ms)
+    ✓ builds deterministic evidence diff rail ordering by sectionPriority/fieldKey/id
+    ✓ supports evidence diff keyboard workflow for navigation and blocker register actions
+    ✓ validates blocker register required fields and preserves diff state on safe reset (1 ms)
+    ✓ builds deterministic bookmark shelf ordering by severity, updatedAt, and id
+    ✓ supports replay checklist drawer keyboard navigation and step toggle behavior
+    ✓ clears replay checklist draft safely while preserving bookmark filter unless full reset is confirmed
+    ✓ builds deterministic replay bookmark compare strip state for identical fixture payloads (1 ms)
+    ✓ supports replay compare keyboard shortcuts for previous/next selection, swap, and clear draft
+    ✓ preserves bookmark filter on safe replay compare reset unless full reset is confirmed
+    ✓ builds operator timeline ticks in deterministic eventAt/severity/id order with stable snapshots
+    ✓ resolves operator timeline keyboard shortcuts and supports preset cycle + override pinning (1 ms)
+    ✓ clears operator timeline compare draft safely without dropping severity filter
+    ✓ builds replay delta inspector rows in deterministic field order
+    ✓ resets queue draft safely while preserving matrix filter until explicit confirmation
+    ✓ builds deterministic bulk confirmation summary for render state
+    ✓ emits deterministic rollback hint when malformed rows are in preview
+    ✓ returns explicit stale/no-selection fallback for safe reset UX
+    ✓ builds deterministic diff inspector row order and field order (1 ms)
+    ✓ computes stable drilldown counts and filtering for conflict reasons
+    ✓ moves keyboard focus deterministically across filtered diff rows
+    ✓ maps keyboard reason shortcuts to deterministic drilldown buckets
+    ✓ returns explicit empty drilldown fallback copy for safe reset path
+    ✓ creates, renames, pins, applies, and deletes saved triage views deterministically (1 ms)
+    ✓ restores saved triage view state from URL payload first, with local storage fallback
+    ✓ falls back safely when saved-view payload is corrupted or unsupported (1 ms)
+    ✓ builds remediation manifest drillboard rows in deterministic tuple order
+    ✓ builds dependency graph inspector with canonical class grouping and deterministic sorting
+    ✓ keeps remediation-manifest shortcut mapping and export packet output deterministic across reruns
+    ✓ normalizes offline publication evidence rows in deterministic tuple order and remains byte-stable (1 ms)
+    ✓ emits stable machine fields and dispatch-ready packet markdown for offline publication evidence
+    ✓ builds canonical patch preview and keyboard workflow for offline publication evidence normalizer
+    ✓ builds remediation queue triage workspace in deterministic tuple order (1 ms)
+    ✓ emits stable remediation queue machine fields and handoff output
+    ✓ builds remediation canonical autofix preview and keyboard workflow deterministically
+    ✓ builds release-gate verdict explorer rows in deterministic ordering-key order (1 ms)
+    ✓ emits release-gate matrix machine fields with deterministic readiness and canonical checks
+    ✓ builds release-gate canonical autofix preview and shortcut workflow deterministically
+    ✓ builds publication handoff bundle viewer rows in deterministic section order (1 ms)
+    ✓ emits export validator machine fields with stable fingerprint and readiness flags
+    ✓ builds publication handoff canonical autofix preview and keyboard workflow deterministically (1 ms)
+    ✓ builds publication blocker dependency graph board with deterministic node and edge ordering (1 ms)
+    ✓ emits stable publication blocker evidence digest machine fields
+    ✓ builds publication blocker canonical autofix preview and keyboard workflow deterministically (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       122 passed, 122 total
+Snapshots:   0 total
+Time:        0.682 s, estimated 2 s
+Ran all test suites matching /test\/frontend.wave1.spec.ts/i.
