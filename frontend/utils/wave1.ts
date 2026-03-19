@@ -491,6 +491,57 @@ export type DiagnosticsBaselineCompareWorkspace = {
   activeDeltaId: string;
 };
 
+export type DeltaBundleContractSafetyShortcut =
+  | 'focus_validator_drill_panel'
+  | 'next_validation_issue'
+  | 'prev_validation_issue'
+  | 'open_link_quality_panel'
+  | 'run_deterministic_validation_pass';
+
+export type DeltaBundleContractValidationState = {
+  requiredFieldCoverage: number;
+  missingFieldPaths: string[];
+  enumDriftCodes: string[];
+  isContractSafe: boolean;
+};
+
+export type DeltaBundleContractSafetyRow = {
+  id: string;
+  deltaSeverityWeight: number;
+  scoreBandShiftWeight: number;
+  issueIdentifier: string;
+  bundleCode: string;
+  fieldPath: string;
+  baselineValue: string;
+  candidateValue: string;
+  changed: boolean;
+  contractValidation: DeltaBundleContractValidationState;
+};
+
+export type DeltaBundleValidatorDrillPanel = {
+  activeIssueId: string;
+  issueIds: string[];
+  unsafeIssueCount: number;
+  safeIssueCount: number;
+  averageRequiredFieldCoverage: number;
+};
+
+export type DeltaBundleContractSafetyConsole = {
+  contract: 'settlement-delta-bundle-contract-safety-console.v1';
+  rows: DeltaBundleContractSafetyRow[];
+  activeEntryId: string;
+  validatorDrillPanel: DeltaBundleValidatorDrillPanel;
+};
+
+export type DeltaBundleLinkQualityPanel = {
+  contract: 'settlement-delta-bundle-link-quality-panel.v1';
+  rows: CanonicalLinkAutofixRow[];
+  correctedOutput: string;
+  changedCount: number;
+  invalidCount: number;
+  canSaveScenario: boolean;
+};
+
 export type DiagnosticsDriftSummaryChip = {
   code: DiagnosticsCanonicalReasonCode;
   label: string;
@@ -3568,6 +3619,134 @@ function normalizeDiagnosticsCompareValue(input: unknown): string {
   return String(input);
 }
 
+function normalizeDeltaBundleStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      input
+        .map((value) => (typeof value === 'string' ? value.trim() : ''))
+        .filter((value) => Boolean(value)),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeDeltaBundleRequiredFieldCoverage(input: unknown): number {
+  const parsed = parseFiniteNumber(input);
+  if (parsed === null) {
+    return 0;
+  }
+  const bounded = Math.max(0, Math.min(100, parsed));
+  return Math.round(bounded * 100) / 100;
+}
+
+function parseDeltaBundleContractSafetyRow(raw: unknown, index: number): DeltaBundleContractSafetyRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.sourceIssueIdentifier === 'string'
+        ? row.sourceIssueIdentifier
+        : '',
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const bundleCode = normalizeOptional(
+    typeof row.bundleCode === 'string'
+      ? row.bundleCode
+      : typeof row.bundle === 'string'
+        ? row.bundle
+        : '',
+  ) ?? 'core';
+  const fieldPath = normalizeOptional(
+    typeof row.fieldPath === 'string'
+      ? row.fieldPath
+      : '',
+  ) ?? `deltaBundle.entries[${index}]`;
+  const deltaSeverityWeight = parseDiagnosticsCompareNumber(
+    row.deltaSeverityWeight ?? row.sectionWeight ?? row.severityWeight,
+    99,
+  );
+  const scoreBandShiftWeight = parseDiagnosticsCompareNumber(
+    row.scoreBandShiftWeight ?? row.fieldTypeWeight ?? row.bandShiftWeight ?? row.scoreBandShift,
+    99,
+  );
+  const baselineValue = normalizeDiagnosticsCompareValue(row.baselineValue ?? row.previousValue ?? row.baseline);
+  const candidateValue = normalizeDiagnosticsCompareValue(row.candidateValue ?? row.currentValue ?? row.value);
+
+  const validationRaw = row.contractValidation && typeof row.contractValidation === 'object'
+    ? row.contractValidation as Record<string, unknown>
+    : {};
+  const requiredFieldCoverage = normalizeDeltaBundleRequiredFieldCoverage(
+    validationRaw.requiredFieldCoverage ?? row.requiredFieldCoverage,
+  );
+  const missingFieldPaths = normalizeDeltaBundleStringArray(
+    validationRaw.missingFieldPaths ?? row.missingFieldPaths,
+  );
+  const enumDriftCodes = normalizeDeltaBundleStringArray(
+    validationRaw.enumDriftCodes ?? row.enumDriftCodes,
+  ).map((code) => code.toUpperCase());
+  const isContractSafe = typeof validationRaw.isContractSafe === 'boolean'
+    ? validationRaw.isContractSafe
+    : (missingFieldPaths.length === 0 && enumDriftCodes.length === 0 && requiredFieldCoverage >= 100);
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}|${bundleCode}|${fieldPath}`,
+  ) ?? `${issueIdentifier}|${bundleCode}|${fieldPath}`;
+
+  return {
+    id,
+    deltaSeverityWeight,
+    scoreBandShiftWeight,
+    issueIdentifier,
+    bundleCode,
+    fieldPath,
+    baselineValue,
+    candidateValue,
+    changed: baselineValue !== candidateValue,
+    contractValidation: {
+      requiredFieldCoverage,
+      missingFieldPaths,
+      enumDriftCodes,
+      isContractSafe,
+    },
+  };
+}
+
+function buildDeltaBundleValidatorDrillPanel(input: {
+  rows: DeltaBundleContractSafetyRow[];
+  activeEntryId: string;
+}): DeltaBundleValidatorDrillPanel {
+  const issueIds = input.rows
+    .filter((row) => !row.contractValidation.isContractSafe)
+    .map((row) => row.id);
+  const resolvedIssueIds = issueIds.length ? issueIds : input.rows.map((row) => row.id);
+  const unsafeIssueCount = input.rows.filter((row) => !row.contractValidation.isContractSafe).length;
+  const safeIssueCount = input.rows.length - unsafeIssueCount;
+  const averageRequiredFieldCoverage = input.rows.length
+    ? Math.round(
+      (input.rows.reduce((total, row) => total + row.contractValidation.requiredFieldCoverage, 0) / input.rows.length)
+        * 100,
+    ) / 100
+    : 0;
+
+  return {
+    activeIssueId: resolvedIssueIds.includes(input.activeEntryId)
+      ? input.activeEntryId
+      : (resolvedIssueIds[0] ?? ''),
+    issueIds: resolvedIssueIds,
+    unsafeIssueCount,
+    safeIssueCount,
+    averageRequiredFieldCoverage,
+  };
+}
+
 type DiagnosticsCompareDigestEntry = {
   issueIdentifier: string;
   bundleCode: string;
@@ -3815,6 +3994,96 @@ export function resolveDiagnosticsBaselineCompareShortcut(input: {
     return 'validate_handoff_packet';
   }
   return null;
+}
+
+export function buildDeltaBundleContractSafetyConsole(input: {
+  entries: unknown[];
+  activeEntryId: string;
+}): DeltaBundleContractSafetyConsole {
+  const rows = input.entries
+    .map((entry, index) => parseDeltaBundleContractSafetyRow(entry, index))
+    .filter((entry): entry is DeltaBundleContractSafetyRow => Boolean(entry))
+    .sort((left, right) => (
+      left.deltaSeverityWeight - right.deltaSeverityWeight
+      || left.scoreBandShiftWeight - right.scoreBandShiftWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
+      || left.fieldPath.localeCompare(right.fieldPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIdSet = new Set(rows.map((row) => row.id));
+  const activeEntryId = rowIdSet.has(input.activeEntryId)
+    ? input.activeEntryId
+    : (rows[0]?.id ?? '');
+
+  return {
+    contract: 'settlement-delta-bundle-contract-safety-console.v1',
+    rows,
+    activeEntryId,
+    validatorDrillPanel: buildDeltaBundleValidatorDrillPanel({
+      rows,
+      activeEntryId,
+    }),
+  };
+}
+
+export function moveDeltaBundleValidationIssueSelection(input: {
+  issueIds: string[];
+  activeIssueId: string;
+  direction: 'next_validation_issue' | 'prev_validation_issue';
+}): string {
+  if (!input.issueIds.length) {
+    return '';
+  }
+  const currentIndex = input.issueIds.findIndex((issueId) => issueId === input.activeIssueId);
+  if (currentIndex < 0) {
+    return input.issueIds[0];
+  }
+  if (input.direction === 'next_validation_issue') {
+    return input.issueIds[Math.min(currentIndex + 1, input.issueIds.length - 1)];
+  }
+  return input.issueIds[Math.max(currentIndex - 1, 0)];
+}
+
+export function resolveDeltaBundleContractSafetyShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): DeltaBundleContractSafetyShortcut | null {
+  const key = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && key === 'v') {
+    return 'focus_validator_drill_panel';
+  }
+  if (input.altKey && input.shiftKey && key === 'n') {
+    return 'next_validation_issue';
+  }
+  if (input.altKey && input.shiftKey && key === 'p') {
+    return 'prev_validation_issue';
+  }
+  if (key === 'l' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_link_quality_panel';
+  }
+  if (key === 'enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_validation_pass';
+  }
+  return null;
+}
+
+export function buildDeltaBundleLinkQualityPanel(input: {
+  linksText: string;
+}): DeltaBundleLinkQualityPanel {
+  const preview = buildCanonicalLinkAutofixPreview({ linksText: input.linksText });
+  const invalidCount = preview.rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-delta-bundle-link-quality-panel.v1',
+    rows: preview.rows,
+    correctedOutput: preview.correctedOutput,
+    changedCount: preview.changedCount,
+    invalidCount,
+    canSaveScenario: invalidCount === 0,
+  };
 }
 
 function normalizeRemediationDependencyBlockerClass(input: unknown): RemediationDependencyBlockerClass {

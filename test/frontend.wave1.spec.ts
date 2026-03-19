@@ -92,6 +92,8 @@ import {
   buildPublicationWindowPlanBoard,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
+  buildDeltaBundleContractSafetyConsole,
+  buildDeltaBundleLinkQualityPanel,
   buildDiagnosticsDriftSummaryChips,
   buildRemediationManifestDrillboard,
   buildRemediationDependencyGraphInspector,
@@ -109,6 +111,7 @@ import {
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
   moveDiagnosticsBaselineDeltaSelection,
+  moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
@@ -120,6 +123,7 @@ import {
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
+  resolveDeltaBundleContractSafetyShortcut,
   resolveRemediationManifestShortcut,
   resolvePublicationWindowScoreBandFromFinalScore,
   getDefaultEvidencePacketLintChecklistDraft,
@@ -1795,6 +1799,187 @@ describe('frontend wave1 helpers', () => {
     });
     expect(firstValidation).toEqual(secondValidation);
     expect(firstValidation.isComplete).toBe(true);
+  });
+
+  it('builds delta-bundle contract safety rows in deterministic tuple order', () => {
+    const consoleData = buildDeltaBundleContractSafetyConsole({
+      entries: [
+        {
+          id: 'row-c',
+          issueIdentifier: 'one-282',
+          bundleCode: 'bundle-z',
+          fieldPath: 'payload.enum',
+          deltaSeverityWeight: 2,
+          scoreBandShiftWeight: 4,
+          baselineValue: 'A',
+          candidateValue: 'B',
+          contractValidation: {
+            requiredFieldCoverage: 96.5,
+            missingFieldPaths: ['payload.required'],
+            enumDriftCodes: ['enum_new_value'],
+            isContractSafe: false,
+          },
+        },
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-279',
+          bundleCode: 'bundle-a',
+          fieldPath: 'payload.type',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 3,
+          baselineValue: 'string',
+          candidateValue: 'string',
+          contractValidation: {
+            requiredFieldCoverage: 100,
+            missingFieldPaths: [],
+            enumDriftCodes: [],
+            isContractSafe: true,
+          },
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-281',
+          bundleCode: 'bundle-b',
+          fieldPath: 'payload.order',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 3,
+          baselineValue: '2',
+          candidateValue: '3',
+          contractValidation: {
+            requiredFieldCoverage: 90,
+            missingFieldPaths: ['payload.order'],
+            enumDriftCodes: [],
+            isContractSafe: false,
+          },
+        },
+      ],
+      activeEntryId: '',
+    });
+
+    expect(consoleData.rows.map((row) => `${row.deltaSeverityWeight}|${row.scoreBandShiftWeight}|${row.issueIdentifier}|${row.bundleCode}|${row.fieldPath}`)).toEqual([
+      '1|3|ONE-279|bundle-a|payload.type',
+      '1|3|ONE-281|bundle-b|payload.order',
+      '2|4|ONE-282|bundle-z|payload.enum',
+    ]);
+    expect(consoleData.validatorDrillPanel.issueIds).toEqual(['row-b', 'row-c']);
+    expect(consoleData.validatorDrillPanel.unsafeIssueCount).toBe(2);
+    expect(consoleData.validatorDrillPanel.safeIssueCount).toBe(1);
+  });
+
+  it('keeps validator drill state stable across reruns and resolves keyboard shortcuts', () => {
+    const first = buildDeltaBundleContractSafetyConsole({
+      entries: [
+        {
+          id: 'unsafe-b',
+          issueIdentifier: 'ONE-282',
+          bundleCode: 'bundle-b',
+          fieldPath: 'payload.required',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 2,
+          baselineValue: 'present',
+          candidateValue: '',
+          contractValidation: {
+            requiredFieldCoverage: 75,
+            missingFieldPaths: ['payload.required', 'payload.required'],
+            enumDriftCodes: ['enum_drift', 'enum_drift'],
+            isContractSafe: false,
+          },
+        },
+        {
+          id: 'unsafe-a',
+          issueIdentifier: 'ONE-281',
+          bundleCode: 'bundle-a',
+          fieldPath: 'payload.enum',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 1,
+          baselineValue: 'A',
+          candidateValue: 'B',
+          contractValidation: {
+            requiredFieldCoverage: 88,
+            missingFieldPaths: [],
+            enumDriftCodes: ['enum-new-value'],
+            isContractSafe: false,
+          },
+        },
+      ],
+      activeEntryId: 'unsafe-b',
+    });
+    const second = buildDeltaBundleContractSafetyConsole({
+      entries: [
+        {
+          id: 'unsafe-a',
+          issueIdentifier: 'ONE-281',
+          bundleCode: 'bundle-a',
+          fieldPath: 'payload.enum',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 1,
+          baselineValue: 'A',
+          candidateValue: 'B',
+          contractValidation: {
+            requiredFieldCoverage: 88,
+            missingFieldPaths: [],
+            enumDriftCodes: ['enum-new-value'],
+            isContractSafe: false,
+          },
+        },
+        {
+          id: 'unsafe-b',
+          issueIdentifier: 'ONE-282',
+          bundleCode: 'bundle-b',
+          fieldPath: 'payload.required',
+          deltaSeverityWeight: 1,
+          scoreBandShiftWeight: 2,
+          baselineValue: 'present',
+          candidateValue: '',
+          contractValidation: {
+            requiredFieldCoverage: 75,
+            missingFieldPaths: ['payload.required'],
+            enumDriftCodes: ['enum_drift'],
+            isContractSafe: false,
+          },
+        },
+      ],
+      activeEntryId: 'unsafe-b',
+    });
+
+    expect(first.rows).toEqual(second.rows);
+    expect(first.validatorDrillPanel).toEqual(second.validatorDrillPanel);
+    expect(moveDeltaBundleValidationIssueSelection({
+      issueIds: first.validatorDrillPanel.issueIds,
+      activeIssueId: 'unsafe-a',
+      direction: 'next_validation_issue',
+    })).toBe('unsafe-b');
+    expect(moveDeltaBundleValidationIssueSelection({
+      issueIds: first.validatorDrillPanel.issueIds,
+      activeIssueId: 'unsafe-b',
+      direction: 'prev_validation_issue',
+    })).toBe('unsafe-a');
+
+    expect(resolveDeltaBundleContractSafetyShortcut({ key: 'v', altKey: true })).toBe('focus_validator_drill_panel');
+    expect(resolveDeltaBundleContractSafetyShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_validation_issue');
+    expect(resolveDeltaBundleContractSafetyShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_validation_issue');
+    expect(resolveDeltaBundleContractSafetyShortcut({ key: 'l', ctrlKey: true, shiftKey: true })).toBe('open_link_quality_panel');
+    expect(resolveDeltaBundleContractSafetyShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true })).toBe('run_deterministic_validation_pass');
+  });
+
+  it('builds delta-bundle link-quality panel with canonical autofix preview before scenario save', () => {
+    const panel = buildDeltaBundleLinkQualityPanel({
+      linksText: [
+        '/issues/ONE-282',
+        '/ONE/issues/ONE-279#comment-7',
+        'not-a-paperclip-link',
+      ].join('\n'),
+    });
+
+    expect(panel.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-282',
+      '/ONE/issues/ONE-279#comment-7',
+      'not-a-paperclip-link',
+    ]);
+    expect(panel.changedCount).toBe(1);
+    expect(panel.invalidCount).toBe(1);
+    expect(panel.canSaveScenario).toBe(false);
+    expect(panel.correctedOutput).toContain('/ONE/issues/ONE-282');
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {
