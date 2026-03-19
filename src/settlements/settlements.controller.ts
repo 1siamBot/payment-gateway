@@ -69,6 +69,11 @@ export class SettlementsController {
     return this.settlements.getReconciliationDiscrepancy(discrepancyId);
   }
 
+  @Get('reconciliation/mismatch-details/:mismatchId')
+  getMismatchDetail(@Param('mismatchId') mismatchId: string) {
+    return this.settlements.getReconciliationMismatchDetail(mismatchId);
+  }
+
   @Get('daily-summary')
   summary(@Query('date') date?: string, @Query('merchantId') merchantId?: string) {
     return this.settlements.getDailySummary(date, merchantId);

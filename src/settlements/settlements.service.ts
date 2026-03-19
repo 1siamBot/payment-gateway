@@ -71,6 +71,13 @@ import {
   type ReconciliationDiscrepancyPath,
   type ReconciliationDiscrepancyState,
 } from './reconciliation-discrepancy-fixtures';
+import {
+  RECONCILIATION_MISMATCH_CATEGORIES,
+  RECONCILIATION_MISMATCH_DETAIL_CONTRACT_VERSION,
+  RECONCILIATION_MISMATCH_DETAIL_FIXTURES,
+  RECONCILIATION_MISMATCH_DETAIL_FIXTURE_TIMESTAMP,
+  type ReconciliationMismatchCategory,
+} from './reconciliation-mismatch-detail-fixtures';
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
 import { buildSettlementEvidenceLineage, SettlementEvidenceLineageContract } from './evidence-lineage';
 import { buildSettlementEvidenceGapSummary, SettlementEvidenceGapSummary } from './evidence-gap-summary';
@@ -457,6 +464,46 @@ type ReconciliationDiscrepancyDetail = ReconciliationDiscrepancyListItem & {
   }>;
 };
 
+type ReconciliationMismatchDetailDiff = {
+  path: string;
+  reasonCode: string;
+  expected: string | number | boolean | null;
+  actual: string | number | boolean | null;
+};
+
+type ReconciliationMismatchDetailContract = {
+  contract: string;
+  generatedAt: string;
+  mismatch: {
+    id: string;
+    category: ReconciliationMismatchCategory;
+    transactionReference: string;
+    merchantId: string;
+    reasonCode: string;
+    summary: {
+      mismatchCount: number;
+      normalizedFieldPaths: string[];
+      fallbackApplied: boolean;
+    };
+    expected: {
+      source: 'ledger';
+      payload: Record<string, unknown>;
+    };
+    actual: {
+      source: 'provider';
+      payload: Record<string, unknown>;
+    };
+    diffs: ReconciliationMismatchDetailDiff[];
+  };
+  metadata: {
+    categoryMap: Array<{
+      category: ReconciliationMismatchCategory;
+      reasonCode: string;
+      label: string;
+    }>;
+  };
+};
+
 type SettlementBulkActionPreviewContractWarning = {
   code: BulkSettlementPreviewWarningCode;
   message: string;
@@ -618,6 +665,59 @@ export class SettlementsService {
       contract: `${RECONCILIATION_DISCREPANCY_CONTRACT_VERSION}.detail`,
       generatedAt: RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP,
       discrepancy: this.toReconciliationDiscrepancyDetail(fixture),
+    };
+  }
+
+  getReconciliationMismatchDetail(mismatchId: string): ReconciliationMismatchDetailContract {
+    const fixture = RECONCILIATION_MISMATCH_DETAIL_FIXTURES.find(
+      (row): row is Record<string, unknown> => typeof row === 'object' && row !== null && row.id === mismatchId,
+    );
+
+    if (!fixture) {
+      throw new NotFoundException('Reconciliation mismatch detail not found');
+    }
+
+    const fallbackApplied = !this.isValidMismatchFixture(fixture);
+    const category = this.normalizeMismatchCategory(fixture.category);
+    const reasonCode = this.reasonCodeForMismatchCategory(category);
+    const expectedPayload = this.normalizeMismatchPayload(fixture.expectedPayload);
+    const actualPayload = this.normalizeMismatchPayload(fixture.actualPayload);
+    const diffs = this.normalizeMismatchDiffs(fixture.diffs, reasonCode, fallbackApplied);
+
+    return {
+      contract: RECONCILIATION_MISMATCH_DETAIL_CONTRACT_VERSION,
+      generatedAt: RECONCILIATION_MISMATCH_DETAIL_FIXTURE_TIMESTAMP,
+      mismatch: {
+        id: String(fixture.id),
+        category,
+        transactionReference:
+          typeof fixture.transactionReference === 'string'
+            ? fixture.transactionReference
+            : 'fixture_unknown_transaction_reference',
+        merchantId: typeof fixture.merchantId === 'string' ? fixture.merchantId : 'fixture_unknown_merchant',
+        reasonCode: diffs[0]?.reasonCode ?? reasonCode,
+        summary: {
+          mismatchCount: diffs.length,
+          normalizedFieldPaths: diffs.map((row) => row.path),
+          fallbackApplied,
+        },
+        expected: {
+          source: 'ledger',
+          payload: expectedPayload,
+        },
+        actual: {
+          source: 'provider',
+          payload: actualPayload,
+        },
+        diffs,
+      },
+      metadata: {
+        categoryMap: RECONCILIATION_MISMATCH_CATEGORIES.map((row) => ({
+          category: row,
+          reasonCode: this.reasonCodeForMismatchCategory(row),
+          label: this.labelForMismatchCategory(row),
+        })),
+      },
     };
   }
 
@@ -2080,6 +2180,161 @@ export class SettlementsService {
         reason,
       },
     };
+  }
+
+  private isValidMismatchFixture(
+    fixture: Record<string, unknown>,
+  ): fixture is {
+    id: string;
+    category: ReconciliationMismatchCategory;
+    transactionReference: string;
+    merchantId: string;
+    expectedPayload: Record<string, unknown>;
+    actualPayload: Record<string, unknown>;
+    diffs: Array<{
+      path: string;
+      expected: string | number | boolean | null;
+      actual: string | number | boolean | null;
+    }>;
+  } {
+    if (!this.isMismatchCategory(fixture.category)) {
+      return false;
+    }
+    if (typeof fixture.id !== 'string' || typeof fixture.transactionReference !== 'string' || typeof fixture.merchantId !== 'string') {
+      return false;
+    }
+    if (!this.isPlainObject(fixture.expectedPayload) || !this.isPlainObject(fixture.actualPayload)) {
+      return false;
+    }
+    if (!Array.isArray(fixture.diffs)) {
+      return false;
+    }
+
+    return fixture.diffs.every((row) => (
+      typeof row === 'object'
+      && row !== null
+      && typeof (row as { path?: unknown }).path === 'string'
+      && Object.prototype.hasOwnProperty.call(row, 'expected')
+      && Object.prototype.hasOwnProperty.call(row, 'actual')
+    ));
+  }
+
+  private isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private isMismatchCategory(value: unknown): value is ReconciliationMismatchCategory {
+    return typeof value === 'string'
+      && (RECONCILIATION_MISMATCH_CATEGORIES as readonly string[]).includes(value);
+  }
+
+  private normalizeMismatchCategory(value: unknown): ReconciliationMismatchCategory {
+    if (this.isMismatchCategory(value)) {
+      return value;
+    }
+    return 'stale_status';
+  }
+
+  private normalizeMismatchPayload(value: unknown): Record<string, unknown> {
+    if (this.isPlainObject(value)) {
+      return value;
+    }
+    return {};
+  }
+
+  private normalizeMismatchDiffs(
+    value: unknown,
+    defaultReasonCode: string,
+    forceFallback: boolean,
+  ): ReconciliationMismatchDetailDiff[] {
+    if (forceFallback || !Array.isArray(value)) {
+      return [
+        {
+          path: 'payload',
+          reasonCode: 'RECON_FIXTURE_MALFORMED_FALLBACK',
+          expected: 'unavailable',
+          actual: 'unavailable',
+        },
+      ];
+    }
+
+    const normalized = value
+      .filter((row): row is { path: unknown; expected: unknown; actual: unknown } => typeof row === 'object' && row !== null)
+      .map((row) => ({
+        path: this.normalizeMismatchFieldPath(row.path),
+        reasonCode: defaultReasonCode,
+        expected: this.normalizeDiffValue(row.expected),
+        actual: this.normalizeDiffValue(row.actual),
+      }));
+
+    if (!normalized.length) {
+      return [
+        {
+          path: 'payload',
+          reasonCode: 'RECON_FIXTURE_MALFORMED_FALLBACK',
+          expected: 'unavailable',
+          actual: 'unavailable',
+        },
+      ];
+    }
+
+    return normalized;
+  }
+
+  private normalizeDiffValue(value: unknown): string | number | boolean | null {
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return value;
+    }
+    if (value === undefined) {
+      return null;
+    }
+    return JSON.stringify(value);
+  }
+
+  private normalizeMismatchFieldPath(path: unknown): string {
+    if (typeof path !== 'string' || !path.trim()) {
+      return 'payload';
+    }
+
+    const trimmed = path.trim();
+    if (trimmed.startsWith('/')) {
+      return trimmed.slice(1).replace(/\//g, '.');
+    }
+    return trimmed;
+  }
+
+  private reasonCodeForMismatchCategory(category: ReconciliationMismatchCategory): string {
+    switch (category) {
+      case 'amount':
+        return 'RECON_AMOUNT_MISMATCH';
+      case 'currency':
+        return 'RECON_CURRENCY_MISMATCH';
+      case 'missing_event':
+        return 'RECON_MISSING_EVENT';
+      case 'duplicate_event':
+        return 'RECON_DUPLICATE_EVENT';
+      case 'stale_status':
+        return 'RECON_STALE_STATUS';
+      default:
+        return 'RECON_MISMATCH_UNSPECIFIED';
+    }
+  }
+
+  private labelForMismatchCategory(category: ReconciliationMismatchCategory): string {
+    switch (category) {
+      case 'amount':
+        return 'Amount mismatch';
+      case 'currency':
+        return 'Currency mismatch';
+      case 'missing_event':
+        return 'Missing event';
+      case 'duplicate_event':
+        return 'Duplicate event';
+      case 'stale_status':
+        return 'Stale status';
+      default:
+        return 'Unknown mismatch';
+    }
   }
 
   private sortExceptionRowsDeterministic(rows: ExceptionListItem[]): ExceptionListItem[] {
