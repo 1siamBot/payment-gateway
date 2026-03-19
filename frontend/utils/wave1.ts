@@ -229,6 +229,52 @@ export type OperatorDecisionQueue = {
   items: OperatorDecisionQueueItem[];
 };
 
+export type ReviewQueuePriority = 'critical' | 'high' | 'medium' | 'low';
+export type ReviewQueueLedgerFilterKey = 'all' | ReviewQueuePriority;
+export type ReviewQueueLedgerShortcut =
+  | 'next_row'
+  | 'prev_row'
+  | 'focus_handoff_packet'
+  | 'validate_handoff_packet';
+
+export type ReviewQueueLedgerRow = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  priority: ReviewQueuePriority;
+  eventTime: string;
+  title: string;
+  sourceRowId: string;
+};
+
+export type ReviewQueueLedger = {
+  contract: 'settlement-review-queue-ledger.v1';
+  rows: ReviewQueueLedgerRow[];
+  priorityCounts: Record<ReviewQueuePriority, number>;
+  activeRowId: string;
+};
+
+export type ReviewQueueHandoffMode = 'pr' | 'no_pr';
+
+export type ReviewQueueHandoffPacketDraft = {
+  branch: string;
+  fullSha: string;
+  mode: ReviewQueueHandoffMode;
+  prLink: string;
+  blockerOwner: string;
+  eta: string;
+  artifactPathsText: string;
+  dependentIssueLinksText: string;
+};
+
+export type ReviewQueueHandoffPacketValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  artifactPaths: string[];
+  dependentIssueLinks: string[];
+};
+
 export type IncidentBookmarkSeverity = 'critical' | 'high' | 'medium' | 'low';
 export type IncidentBookmarkFilterKey = 'all' | IncidentBookmarkSeverity;
 
@@ -421,6 +467,7 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
   },
 };
 const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
+const REVIEW_QUEUE_PRIORITY_ORDER: ReviewQueuePriority[] = ['critical', 'high', 'medium', 'low'];
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
 const DEFAULT_REPLAY_CHECKLIST_STEPS = [
@@ -1493,6 +1540,277 @@ export function resetReplayChecklistDrawerDraftSafe(input: {
     noteDraft: '',
     activeBookmarkFilter: input.activeBookmarkFilter,
     message: 'Replay checklist draft cleared. Bookmark filter preserved until explicit reset confirm.',
+  };
+}
+
+function normalizeReviewQueuePriority(input: unknown): ReviewQueuePriority {
+  if (input === 'critical' || input === 'high' || input === 'medium' || input === 'low') {
+    return input;
+  }
+  if (input === 'CRITICAL') return 'critical';
+  if (input === 'HIGH') return 'high';
+  if (input === 'MEDIUM') return 'medium';
+  if (input === 'LOW') return 'low';
+  return 'medium';
+}
+
+function parseReviewQueueLedgerRow(raw: unknown): ReviewQueueLedgerRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : String(row.id ?? ''));
+  const merchantId = normalizeOptional(typeof row.merchantId === 'string' ? row.merchantId : String(row.merchantId ?? ''));
+  const provider = normalizeOptional(typeof row.provider === 'string' ? row.provider : String(row.provider ?? ''));
+  if (!id || !merchantId || !provider) {
+    return null;
+  }
+  const eventTime = resolveDateString(row.eventTime ?? row.updatedAt, DIFF_FALLBACK_TIMESTAMP);
+  const title = normalizeOptional(typeof row.title === 'string' ? row.title : String(row.title ?? ''))
+    ?? 'Deterministic review queue row';
+  return {
+    id,
+    merchantId,
+    provider,
+    priority: normalizeReviewQueuePriority(row.priority ?? row.severity),
+    eventTime,
+    title,
+    sourceRowId: id,
+  };
+}
+
+export function buildReviewQueueLedger(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): ReviewQueueLedger {
+  const priorityRank = new Map(REVIEW_QUEUE_PRIORITY_ORDER.map((priority, index) => [priority, index]));
+  const priorityCounts: Record<ReviewQueuePriority, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+  };
+  const rows = input.rows
+    .map((row) => parseReviewQueueLedgerRow(row))
+    .filter((row): row is ReviewQueueLedgerRow => Boolean(row))
+    .sort((left, right) => {
+      const prioritySort = (priorityRank.get(left.priority) ?? Number.MAX_SAFE_INTEGER)
+        - (priorityRank.get(right.priority) ?? Number.MAX_SAFE_INTEGER);
+      if (prioritySort !== 0) {
+        return prioritySort;
+      }
+      const eventSort = left.eventTime.localeCompare(right.eventTime);
+      if (eventSort !== 0) {
+        return eventSort;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  for (const row of rows) {
+    priorityCounts[row.priority] += 1;
+  }
+  const rowIdSet = new Set(rows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-review-queue-ledger.v1',
+    rows,
+    priorityCounts,
+    activeRowId,
+  };
+}
+
+export function filterReviewQueueLedgerRows(
+  rows: ReviewQueueLedgerRow[],
+  filter: ReviewQueueLedgerFilterKey,
+): ReviewQueueLedgerRow[] {
+  if (filter === 'all') {
+    return [...rows];
+  }
+  return rows.filter((row) => row.priority === filter);
+}
+
+export function moveReviewQueueLedgerSelection(input: {
+  rows: ReviewQueueLedgerRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveReviewQueueLedgerShortcut(input: {
+  key: string;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): ReviewQueueLedgerShortcut | null {
+  if (input.key === ']') {
+    return 'next_row';
+  }
+  if (input.key === '[') {
+    return 'prev_row';
+  }
+  if (input.key.toLowerCase() === 'h' && input.shiftKey) {
+    return 'focus_handoff_packet';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_handoff_packet';
+  }
+  return null;
+}
+
+export function getDefaultReviewQueueHandoffPacketDraft(): ReviewQueueHandoffPacketDraft {
+  return {
+    branch: '',
+    fullSha: '',
+    mode: 'no_pr',
+    prLink: '',
+    blockerOwner: '',
+    eta: '',
+    artifactPathsText: '',
+    dependentIssueLinksText: '',
+  };
+}
+
+function normalizeMultilineEntries(input: string): string[] {
+  return input
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function formatUtcEta(inputIso: string): string {
+  const parsed = new Date(inputIso);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '';
+  }
+  const nextDay = new Date(parsed.getTime() + (24 * 60 * 60 * 1000));
+  return `${nextDay.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+export function buildReviewQueueHandoffPacketDraftFromLedgerRow(input: {
+  activeRow: ReviewQueueLedgerRow | null;
+  dependentIssueLinks?: string[];
+  branchPrefix?: string;
+}): ReviewQueueHandoffPacketDraft {
+  if (!input.activeRow) {
+    return getDefaultReviewQueueHandoffPacketDraft();
+  }
+  const branchPrefix = normalizeOptional(input.branchPrefix) ?? 'feature';
+  const dependentIssueLinks = (input.dependentIssueLinks ?? [
+    '/ONE/issues/ONE-247',
+    '/ONE/issues/ONE-245',
+    '/ONE/issues/ONE-242',
+    '/ONE/issues/ONE-241',
+  ])
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return {
+    branch: `${branchPrefix}/${input.activeRow.id.toLowerCase()}-handoff-packet`,
+    fullSha: '0000000000000000000000000000000000000000',
+    mode: 'no_pr',
+    prLink: '',
+    blockerOwner: 'GitHub Admin / DevOps',
+    eta: formatUtcEta(input.activeRow.eventTime),
+    artifactPathsText: [
+      `artifacts/one-248/review-queue/${input.activeRow.id}.json`,
+      `artifacts/one-248/handoff-packets/${input.activeRow.id}.md`,
+    ].join('\n'),
+    dependentIssueLinksText: dependentIssueLinks.join('\n'),
+  };
+}
+
+export function validateReviewQueueHandoffPacketDraft(
+  draft: ReviewQueueHandoffPacketDraft,
+): ReviewQueueHandoffPacketValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const prLink = draft.prLink.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const eta = draft.eta.trim();
+  const artifactPaths = normalizeMultilineEntries(draft.artifactPathsText);
+  const dependentIssueLinks = normalizeMultilineEntries(draft.dependentIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  }
+  if (fullSha && !/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  }
+  if (fullSha === '0000000000000000000000000000000000000000') {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before handoff.');
+  }
+  if (draft.mode === 'pr') {
+    if (!prLink) {
+      missingFields.push('prLink');
+    } else if (!/^https:\/\/github\.com\/.+\/pull\/\d+$/i.test(prLink)) {
+      errors.push('PR link must be a GitHub pull request URL.');
+    }
+  } else {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!eta) {
+      missingFields.push('eta');
+    }
+  }
+  if (artifactPaths.length === 0) {
+    missingFields.push('artifactPaths');
+  }
+  if (dependentIssueLinks.length === 0) {
+    missingFields.push('dependentIssueLinks');
+  }
+
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    artifactPaths,
+    dependentIssueLinks,
+  };
+}
+
+export function resetReviewQueueHandoffPacketDraftSafe(input: {
+  activeFilter: ReviewQueueLedgerFilterKey;
+  activeRowId: string;
+  confirmFullReset: boolean;
+}): {
+  draft: ReviewQueueHandoffPacketDraft;
+  activeFilter: ReviewQueueLedgerFilterKey;
+  activeRowId: string;
+  didFullReset: boolean;
+  message: string;
+} {
+  if (input.confirmFullReset) {
+    return {
+      draft: getDefaultReviewQueueHandoffPacketDraft(),
+      activeFilter: 'all',
+      activeRowId: '',
+      didFullReset: true,
+      message: 'Handoff packet draft cleared. Queue filter and active selection reset to default.',
+    };
+  }
+  return {
+    draft: getDefaultReviewQueueHandoffPacketDraft(),
+    activeFilter: input.activeFilter,
+    activeRowId: input.activeRowId,
+    didFullReset: false,
+    message: 'Handoff packet draft cleared. Queue filter and active selection preserved.',
   };
 }
 

@@ -61,9 +61,16 @@ import {
   resolveOperatorTimelineShortcut,
   resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
+  resolveReviewQueueLedgerShortcut,
   resetOperatorDecisionQueueDraftSafe,
+  resetReviewQueueHandoffPacketDraftSafe,
   swapReplayBookmarkCompareSlots,
   validateExceptionActionInput,
+  buildReviewQueueLedger,
+  filterReviewQueueLedgerRows,
+  moveReviewQueueLedgerSelection,
+  buildReviewQueueHandoffPacketDraftFromLedgerRow,
+  validateReviewQueueHandoffPacketDraft,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
@@ -71,6 +78,7 @@ import type { ScenarioCompareMatrixFilterKey } from '../utils/wave1';
 import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../utils/wave1';
 import type { IncidentBookmarkFilterKey } from '../utils/wave1';
 import type { OperatorTimelinePresetKey } from '../utils/wave1';
+import type { ReviewQueueLedgerFilterKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -449,12 +457,58 @@ const decisionQueueState = reactive({
   message: '',
   error: '',
 });
+const reviewQueueLedgerState = reactive({
+  message: '',
+  error: '',
+});
+const activeReviewQueueFilter = ref<ReviewQueueLedgerFilterKey>('all');
+const activeReviewQueueRowId = ref('');
+const reviewQueueHandoffDraft = ref(buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null }));
+const reviewQueueHandoffValidation = reactive({
+  message: '',
+  error: '',
+});
+const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
+const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
 const queueDraftRowIds = ref<string[]>([]);
 const activeDecisionQueueItemId = ref('');
 const operatorDecisionQueue = computed(() => buildOperatorDecisionQueue({
   matrixRows: scenarioCompareMatrix.value.rows,
   stagedRowIds: queueDraftRowIds.value,
 }));
+const reviewQueueLedger = computed(() => buildReviewQueueLedger({
+  rows: selectedExceptionRows.value.map((row) => {
+    const priority = row.mismatchCount >= 4
+      ? 'critical'
+      : row.mismatchCount >= 2
+        ? 'high'
+        : row.status === 'investigating'
+          ? 'medium'
+          : 'low';
+    return {
+      id: row.id,
+      merchantId: row.merchantId,
+      provider: row.provider,
+      priority,
+      eventTime: row.updatedAt,
+      title: `Exception ${row.id} (${row.status})`,
+    };
+  }),
+  activeRowId: activeReviewQueueRowId.value,
+}));
+const reviewQueueFilterOptions = computed(() => ([
+  { key: 'all' as ReviewQueueLedgerFilterKey, label: 'all', count: reviewQueueLedger.value.rows.length },
+  { key: 'critical' as ReviewQueueLedgerFilterKey, label: 'critical', count: reviewQueueLedger.value.priorityCounts.critical },
+  { key: 'high' as ReviewQueueLedgerFilterKey, label: 'high', count: reviewQueueLedger.value.priorityCounts.high },
+  { key: 'medium' as ReviewQueueLedgerFilterKey, label: 'medium', count: reviewQueueLedger.value.priorityCounts.medium },
+  { key: 'low' as ReviewQueueLedgerFilterKey, label: 'low', count: reviewQueueLedger.value.priorityCounts.low },
+]));
+const filteredReviewQueueLedgerRows = computed(() => filterReviewQueueLedgerRows(
+  reviewQueueLedger.value.rows,
+  activeReviewQueueFilter.value,
+));
+const activeReviewQueueRow = computed(() => reviewQueueLedger.value.rows
+  .find((row) => row.id === activeReviewQueueRowId.value) ?? null);
 const activeConflictDrilldown = ref<ExceptionConflictDrilldownKey>('all');
 const activeRollbackPlanReason = ref<ExceptionSimulationReasonDrilldownKey>('all');
 const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; label: string }> = [
@@ -1224,6 +1278,16 @@ function resetDecisionQueueState() {
   decisionQueueState.error = '';
 }
 
+function resetReviewQueueLedgerState() {
+  reviewQueueLedgerState.message = '';
+  reviewQueueLedgerState.error = '';
+}
+
+function resetReviewQueueHandoffValidation() {
+  reviewQueueHandoffValidation.message = '';
+  reviewQueueHandoffValidation.error = '';
+}
+
 watch(filteredBulkDiffRows, (rows) => {
   if (!rows.length) {
     activeBulkDiffRowId.value = '';
@@ -1270,6 +1334,19 @@ watch(operatorDecisionQueue, (queue) => {
   }
   if (!queue.items.some((item) => item.id === activeDecisionQueueItemId.value)) {
     activeDecisionQueueItemId.value = queue.items[0].id;
+  }
+}, { deep: true, immediate: true });
+
+watch(reviewQueueLedger, (ledger) => {
+  if (!ledger.rows.length) {
+    activeReviewQueueRowId.value = '';
+    reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
+    return;
+  }
+  if (!ledger.rows.some((row) => row.id === activeReviewQueueRowId.value)) {
+    activeReviewQueueRowId.value = ledger.activeRowId;
+    const activeRow = ledger.rows.find((row) => row.id === ledger.activeRowId) ?? null;
+    reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow });
   }
 }, { deep: true, immediate: true });
 
@@ -1346,6 +1423,78 @@ function resetDecisionQueueDraftWithFilterConfirm() {
   queueDraftRowIds.value = confirmed.stagedRowIds;
   activeScenarioMatrixFilter.value = confirmed.activeMatrixFilter;
   decisionQueueState.message = confirmed.message;
+}
+
+function setActiveReviewQueueFilter(filter: ReviewQueueLedgerFilterKey) {
+  resetReviewQueueLedgerState();
+  activeReviewQueueFilter.value = filter;
+  const nextRows = filterReviewQueueLedgerRows(reviewQueueLedger.value.rows, filter);
+  if (!nextRows.some((row) => row.id === activeReviewQueueRowId.value)) {
+    activeReviewQueueRowId.value = nextRows[0]?.id ?? '';
+  }
+}
+
+function selectReviewQueueLedgerRow(rowId: string) {
+  resetReviewQueueLedgerState();
+  activeReviewQueueRowId.value = rowId;
+  reviewQueueLedgerState.message = `Selected review queue row ${rowId}.`;
+}
+
+function autofillReviewQueueHandoffPacketFromActiveRow() {
+  resetReviewQueueLedgerState();
+  resetReviewQueueHandoffValidation();
+  const activeRow = activeReviewQueueRow.value;
+  if (!activeRow) {
+    reviewQueueLedgerState.error = 'Select a review queue row before autofill.';
+    return;
+  }
+  reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({
+    activeRow,
+  });
+  reviewQueueLedgerState.message = `Autofilled handoff packet for ${activeRow.id}.`;
+}
+
+function validateReviewQueueHandoffPacket() {
+  resetReviewQueueHandoffValidation();
+  const validation = validateReviewQueueHandoffPacketDraft(reviewQueueHandoffDraft.value);
+  if (validation.isComplete) {
+    reviewQueueHandoffValidation.message = `Handoff packet validated. Artifacts: ${validation.artifactPaths.length}, dependencies: ${validation.dependentIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  reviewQueueHandoffValidation.error = errorParts.join(' | ') || 'Handoff packet is incomplete.';
+}
+
+function clearReviewQueueHandoffPacketDraft(confirmFullReset: boolean) {
+  resetReviewQueueLedgerState();
+  resetReviewQueueHandoffValidation();
+  const next = resetReviewQueueHandoffPacketDraftSafe({
+    activeFilter: activeReviewQueueFilter.value,
+    activeRowId: activeReviewQueueRowId.value,
+    confirmFullReset,
+  });
+  reviewQueueHandoffDraft.value = next.draft;
+  activeReviewQueueFilter.value = next.activeFilter;
+  activeReviewQueueRowId.value = next.activeRowId;
+  reviewQueueLedgerState.message = next.message;
+}
+
+function clearReviewQueueHandoffPacketDraftWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears packet draft, queue filter, and active selection. Continue?')) {
+    return;
+  }
+  clearReviewQueueHandoffPacketDraft(true);
+}
+
+function focusReviewQueueHandoffPacket() {
+  reviewQueueHandoffPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  reviewQueueHandoffBranchInputRef.value?.focus();
 }
 
 function resetReplayCompareState() {
@@ -1551,6 +1700,37 @@ function onDecisionQueueKeydown(event: KeyboardEvent) {
   if (shortcut === 'unstage' && activeDecisionQueueItemId.value) {
     unstageDecisionQueueItem(activeDecisionQueueItemId.value);
   }
+}
+
+function onReviewQueueLedgerKeydown(event: KeyboardEvent) {
+  const shortcut = resolveReviewQueueLedgerShortcut({
+    key: event.key,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'validate_handoff_packet') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'next_row' || shortcut === 'prev_row') {
+    activeReviewQueueRowId.value = moveReviewQueueLedgerSelection({
+      rows: filteredReviewQueueLedgerRows.value,
+      activeRowId: activeReviewQueueRowId.value,
+      direction: shortcut === 'next_row' ? 'next' : 'prev',
+    });
+    return;
+  }
+  if (shortcut === 'focus_handoff_packet') {
+    focusReviewQueueHandoffPacket();
+    return;
+  }
+  validateReviewQueueHandoffPacket();
 }
 
 function resolveExplainabilityReasonCounts() {
@@ -1778,12 +1958,23 @@ function resetBulkSelectionSafe() {
     activeMatrixFilter: activeScenarioMatrixFilter.value,
     confirmFilterReset: false,
   });
+  const safeReviewQueueReset = resetReviewQueueHandoffPacketDraftSafe({
+    activeFilter: activeReviewQueueFilter.value,
+    activeRowId: activeReviewQueueRowId.value,
+    confirmFullReset: false,
+  });
   queueDraftRowIds.value = safeQueueReset.stagedRowIds;
   activeScenarioMatrixFilter.value = safeQueueReset.activeMatrixFilter;
+  reviewQueueHandoffDraft.value = safeReviewQueueReset.draft;
+  activeReviewQueueFilter.value = safeReviewQueueReset.activeFilter;
+  activeReviewQueueRowId.value = safeReviewQueueReset.activeRowId;
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
   decisionQueueState.error = '';
   decisionQueueState.message = safeQueueReset.message;
+  reviewQueueLedgerState.error = '';
+  reviewQueueLedgerState.message = safeReviewQueueReset.message;
+  resetReviewQueueHandoffValidation();
   bulkPreviewConfirmState.message = 'Selection safely reset. Reselect rows, then reopen confirmation preview.';
 }
 
@@ -1821,9 +2012,14 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   resetBulkPreviewConfirmState();
   resetBulkPreviewDrawer();
   resetDecisionQueueState();
+  resetReviewQueueLedgerState();
+  resetReviewQueueHandoffValidation();
   resetTimelineScrubberState();
   queueDraftRowIds.value = [];
   activeScenarioMatrixFilter.value = 'all';
+  activeReviewQueueFilter.value = 'all';
+  activeReviewQueueRowId.value = '';
+  reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
 
   if (mode === 'loading') {
     exceptionState.loading = true;
@@ -3201,6 +3397,120 @@ onMounted(() => {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            <div class="simulation-outcome-panel">
+              <h4>Review Queue Ledger</h4>
+              <p class="state" :class="{ error: reviewQueueLedgerState.error }">
+                {{ reviewQueueLedgerState.error
+                  || reviewQueueLedgerState.message
+                  || 'Deterministic order: priority, eventTime, id. Keyboard: [ previous, ] next, Shift+H focus packet, Ctrl+Shift+Enter validate packet.' }}
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in reviewQueueFilterOptions"
+                  :key="`review-queue-filter-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeReviewQueueFilter === option.key }"
+                  @click="setActiveReviewQueueFilter(option.key)"
+                >
+                  {{ option.label }} ({{ option.count }})
+                </button>
+              </div>
+              <div class="queue-table-wrap" tabindex="0" @keydown="onReviewQueueLedgerKeydown">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Row</th>
+                      <th>Priority</th>
+                      <th>Event Time</th>
+                      <th>Title</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!filteredReviewQueueLedgerRows.length">
+                      <td colspan="4">No rows in current review queue filter.</td>
+                    </tr>
+                    <tr
+                      v-for="row in filteredReviewQueueLedgerRows"
+                      :key="`review-ledger-${row.id}`"
+                      :class="{ 'queue-row-active': activeReviewQueueRowId === row.id }"
+                      @click="selectReviewQueueLedgerRow(row.id)"
+                    >
+                      <td>
+                        <strong>{{ row.id }}</strong>
+                        <small>{{ row.merchantId }} / {{ row.provider }}</small>
+                      </td>
+                      <td>{{ row.priority }}</td>
+                      <td>{{ row.eventTime }}</td>
+                      <td>{{ row.title }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div ref="reviewQueueHandoffPanelRef" class="simulation-outcome-panel">
+                <h4>Handoff Packet Autofill</h4>
+                <p class="state" :class="{ error: reviewQueueHandoffValidation.error }">
+                  {{ reviewQueueHandoffValidation.error
+                    || reviewQueueHandoffValidation.message
+                    || 'Autofill derives branch, SHA placeholder, mode, blocker owner, ETA, artifact paths, and dependent issue links from active queue row.' }}
+                </p>
+                <div class="inline-actions">
+                  <button type="button" @click="autofillReviewQueueHandoffPacketFromActiveRow">Autofill From Active Row</button>
+                  <button type="button" class="link" @click="validateReviewQueueHandoffPacket">Validate Packet</button>
+                  <button type="button" class="link" @click="clearReviewQueueHandoffPacketDraft(false)">Clear Draft Only</button>
+                  <button
+                    type="button"
+                    class="link"
+                    @click="clearReviewQueueHandoffPacketDraftWithConfirm"
+                  >
+                    Full Reset
+                  </button>
+                </div>
+                <div class="triage-grid">
+                  <label>
+                    Branch
+                    <input
+                      ref="reviewQueueHandoffBranchInputRef"
+                      v-model="reviewQueueHandoffDraft.branch"
+                      placeholder="feature/one-248-handoff-packet"
+                    />
+                  </label>
+                  <label>
+                    Full SHA
+                    <input v-model="reviewQueueHandoffDraft.fullSha" placeholder="40-char commit SHA" />
+                  </label>
+                  <label>
+                    Mode
+                    <select v-model="reviewQueueHandoffDraft.mode">
+                      <option value="pr">PR</option>
+                      <option value="no_pr">No PR</option>
+                    </select>
+                  </label>
+                  <label>
+                    PR Link
+                    <input v-model="reviewQueueHandoffDraft.prLink" placeholder="https://github.com/org/repo/pull/123" />
+                  </label>
+                  <label>
+                    Blocker Owner
+                    <input v-model="reviewQueueHandoffDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                  </label>
+                  <label>
+                    ETA
+                    <input v-model="reviewQueueHandoffDraft.eta" placeholder="2026-03-20 18:00 UTC" />
+                  </label>
+                </div>
+                <label>
+                  Artifact Paths (one per line)
+                  <textarea v-model="reviewQueueHandoffDraft.artifactPathsText" rows="4" placeholder="artifacts/one-248/review-queue/inc-1.json"></textarea>
+                </label>
+                <label>
+                  Dependent Issue Links (one per line)
+                  <textarea v-model="reviewQueueHandoffDraft.dependentIssueLinksText" rows="4" placeholder="/ONE/issues/ONE-247"></textarea>
+                </label>
               </div>
             </div>
           </div>

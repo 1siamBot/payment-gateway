@@ -65,6 +65,13 @@ import {
   resetReplayChecklistDrawerDraftSafe,
   swapReplayBookmarkCompareSlots,
   toggleReplayChecklistStep,
+  buildReviewQueueLedger,
+  filterReviewQueueLedgerRows,
+  moveReviewQueueLedgerSelection,
+  resolveReviewQueueLedgerShortcut,
+  buildReviewQueueHandoffPacketDraftFromLedgerRow,
+  validateReviewQueueHandoffPacketDraft,
+  resetReviewQueueHandoffPacketDraftSafe,
 } from '../frontend/utils/wave1';
 
 describe('frontend wave1 helpers', () => {
@@ -573,6 +580,126 @@ describe('frontend wave1 helpers', () => {
     expect(nextFocused).toBe(queue.items[1].id);
     expect(resolveOperatorDecisionQueueShortcut('ArrowDown')).toBe('next');
     expect(resolveOperatorDecisionQueueShortcut('Backspace')).toBe('unstage');
+  });
+
+  it('builds deterministic review queue ledger ordering by priority/eventTime/id', () => {
+    const ledger = buildReviewQueueLedger({
+      rows: [
+        {
+          id: 'inc-3',
+          merchantId: 'm-3',
+          provider: 'mock-c',
+          priority: 'high',
+          eventTime: '2026-03-18T10:00:00.000Z',
+        },
+        {
+          id: 'inc-1',
+          merchantId: 'm-1',
+          provider: 'mock-a',
+          priority: 'critical',
+          eventTime: '2026-03-18T10:05:00.000Z',
+        },
+        {
+          id: 'inc-2',
+          merchantId: 'm-2',
+          provider: 'mock-b',
+          priority: 'high',
+          eventTime: '2026-03-18T10:00:00.000Z',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(ledger.contract).toBe('settlement-review-queue-ledger.v1');
+    expect(ledger.rows.map((row) => row.id)).toEqual(['inc-1', 'inc-2', 'inc-3']);
+    expect(ledger.priorityCounts.critical).toBe(1);
+    expect(ledger.priorityCounts.high).toBe(2);
+    expect(filterReviewQueueLedgerRows(ledger.rows, 'high').map((row) => row.id)).toEqual(['inc-2', 'inc-3']);
+  });
+
+  it('supports review queue keyboard shortcuts for ledger navigation and packet actions', () => {
+    expect(resolveReviewQueueLedgerShortcut({ key: ']' })).toBe('next_row');
+    expect(resolveReviewQueueLedgerShortcut({ key: '[' })).toBe('prev_row');
+    expect(resolveReviewQueueLedgerShortcut({ key: 'H', shiftKey: true })).toBe('focus_handoff_packet');
+    expect(resolveReviewQueueLedgerShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_handoff_packet');
+
+    const ledger = buildReviewQueueLedger({
+      rows: [
+        { id: 'inc-1', merchantId: 'm-1', provider: 'mock-a', priority: 'critical', eventTime: '2026-03-18T10:00:00.000Z' },
+        { id: 'inc-2', merchantId: 'm-2', provider: 'mock-b', priority: 'high', eventTime: '2026-03-18T10:01:00.000Z' },
+      ],
+      activeRowId: 'inc-1',
+    });
+    expect(moveReviewQueueLedgerSelection({
+      rows: ledger.rows,
+      activeRowId: 'inc-1',
+      direction: 'next',
+    })).toBe('inc-2');
+    expect(moveReviewQueueLedgerSelection({
+      rows: ledger.rows,
+      activeRowId: 'inc-2',
+      direction: 'prev',
+    })).toBe('inc-1');
+  });
+
+  it('autofills handoff packet from active review queue row and validates completeness', () => {
+    const ledger = buildReviewQueueLedger({
+      rows: [
+        {
+          id: 'ONE-248-inc-1',
+          merchantId: 'm-1',
+          provider: 'mock-a',
+          priority: 'critical',
+          eventTime: '2026-03-19T01:00:00.000Z',
+          title: 'Critical deterministic queue item',
+        },
+      ],
+      activeRowId: '',
+    });
+    const activeRow = ledger.rows[0] ?? null;
+    const draft = buildReviewQueueHandoffPacketDraftFromLedgerRow({
+      activeRow,
+    });
+    const incomplete = validateReviewQueueHandoffPacketDraft(draft);
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(draft.dependentIssueLinksText).toContain('/ONE/issues/ONE-247');
+    expect(draft.dependentIssueLinksText).toContain('/ONE/issues/ONE-241');
+
+    const complete = validateReviewQueueHandoffPacketDraft({
+      ...draft,
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      blockerOwner: 'DevOps Team',
+      eta: '2026-03-20 18:00 UTC',
+    });
+    expect(complete.isComplete).toBe(true);
+    expect(complete.errors).toEqual([]);
+    expect(complete.missingFields).toEqual([]);
+  });
+
+  it('clears handoff packet draft safely while preserving queue filter/selection unless fully reset', () => {
+    const safe = resetReviewQueueHandoffPacketDraftSafe({
+      activeFilter: 'high',
+      activeRowId: 'inc-2',
+      confirmFullReset: false,
+    });
+    expect(safe.didFullReset).toBe(false);
+    expect(safe.activeFilter).toBe('high');
+    expect(safe.activeRowId).toBe('inc-2');
+    expect(safe.message).toContain('preserved');
+
+    const full = resetReviewQueueHandoffPacketDraftSafe({
+      activeFilter: 'high',
+      activeRowId: 'inc-2',
+      confirmFullReset: true,
+    });
+    expect(full.didFullReset).toBe(true);
+    expect(full.activeFilter).toBe('all');
+    expect(full.activeRowId).toBe('');
   });
 
   it('builds deterministic bookmark shelf ordering by severity, updatedAt, and id', () => {
