@@ -1,6 +1,10 @@
 import { ConflictException } from '@nestjs/common';
 import { SettlementExceptionStatus, TransactionStatus, TransactionType } from '@prisma/client';
 import { SettlementsService } from '../src/settlements/settlements.service';
+import {
+  RECONCILIATION_DISCREPANCY_FIXTURES,
+  RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP,
+} from '../src/settlements/reconciliation-discrepancy-fixtures';
 
 type TransactionRow = {
   id: string;
@@ -327,6 +331,86 @@ describe('SettlementsService', () => {
       transactionReference: 'ref-b',
       reason: 'stuck_non_terminal',
     });
+  });
+
+  it('returns deterministic reconciliation discrepancy fixtures for all non-empty paths', () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const response = service.listReconciliationDiscrepancies({});
+
+    expect(response.contract).toBe('reconciliation-discrepancy.v1.list');
+    expect(response.generatedAt).toBe(RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP);
+    expect(response.total).toBe(RECONCILIATION_DISCREPANCY_FIXTURES.length);
+    expect(response.data.map((row) => row.path)).toEqual([
+      'duplicate-event',
+      'matched',
+      'mismatched-amount',
+      'missing-capture',
+    ]);
+  });
+
+  it('supports empty and path-specific discrepancy views', () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const empty = service.listReconciliationDiscrepancies({ path: 'empty' });
+    expect(empty.total).toBe(0);
+    expect(empty.data).toEqual([]);
+
+    const matched = service.listReconciliationDiscrepancies({ path: 'matched' });
+    expect(matched.total).toBe(1);
+    expect(matched.data[0]).toEqual(expect.objectContaining({
+      id: 'recon_disc_matched_001',
+      state: 'matched',
+      deltaAmount: 0,
+      captureReference: 'cap_1001',
+    }));
+
+    const mismatchedAmount = service.listReconciliationDiscrepancies({ path: 'mismatched-amount' });
+    expect(mismatchedAmount.total).toBe(1);
+    expect(mismatchedAmount.data[0]).toEqual(expect.objectContaining({
+      id: 'recon_disc_mismatched_amount_001',
+      state: 'mismatched_amount',
+      deltaAmount: 20,
+    }));
+
+    const missingCapture = service.listReconciliationDiscrepancies({ path: 'missing-capture' });
+    expect(missingCapture.total).toBe(1);
+    expect(missingCapture.data[0]).toEqual(expect.objectContaining({
+      id: 'recon_disc_missing_capture_001',
+      state: 'missing_capture',
+      captureReference: null,
+    }));
+
+    const duplicateEvent = service.listReconciliationDiscrepancies({ path: 'duplicate-event' });
+    expect(duplicateEvent.total).toBe(1);
+    expect(duplicateEvent.data[0]).toEqual(expect.objectContaining({
+      id: 'recon_disc_duplicate_event_001',
+      state: 'duplicate_event',
+      duplicateEventCount: 2,
+    }));
+  });
+
+  it('returns discrepancy detail and throws when discrepancy does not exist', () => {
+    const prismaMock = createPrismaMock([]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detail = service.getReconciliationDiscrepancy('recon_disc_missing_capture_001');
+    expect(detail.contract).toBe('reconciliation-discrepancy.v1.detail');
+    expect(detail.generatedAt).toBe(RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP);
+    expect(detail.discrepancy).toEqual(expect.objectContaining({
+      id: 'recon_disc_missing_capture_001',
+      state: 'missing_capture',
+      captureReference: null,
+    }));
+    expect(detail.discrepancy.timeline).toHaveLength(4);
+    expect(detail.discrepancy.timeline[2]).toEqual(expect.objectContaining({
+      stage: 'provider_captured',
+      status: 'warning',
+    }));
+
+    expect(() => service.getReconciliationDiscrepancy('recon_disc_missing')).toThrow('Reconciliation discrepancy not found');
   });
 
   it('returns daily summary aggregates', async () => {
