@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk-action-preview.dto';
+import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
@@ -59,6 +60,11 @@ export class SettlementsController {
   @Post('exceptions/bulk-action-simulation')
   bulkActionSimulation(@Body() body: BuildSettlementBulkActionPreviewDto) {
     return this.settlements.buildSettlementExceptionBulkActionSimulation(body);
+  }
+
+  @Post('exceptions/explainability-preset-profile')
+  explainabilityPresetProfile(@Body() body: BuildSettlementExplainabilityPresetProfileDto) {
+    return this.settlements.buildSettlementExceptionExplainabilityPresetProfile(body);
   }
 
   @Get('exceptions/qa-fixtures')

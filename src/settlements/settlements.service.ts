@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   BULK_SETTLEMENT_PREVIEW_WARNING_HINTS,
   BulkSettlementActionSimulation,
+  SettlementExplainabilityPresetProfile,
   BulkSettlementRollbackReasonCode,
   BulkSettlementRollbackReasonSeverity,
   BulkSettlementTriageSnapshot,
@@ -24,10 +25,12 @@ import {
   buildBulkSettlementActionSimulation,
   buildBulkSettlementRollbackRecommendation,
   buildBulkSettlementTriageSnapshot,
+  buildSettlementExplainabilityPresetProfile,
 } from './bulk-settlement-preview';
 import {
   BuildSettlementBulkActionPreviewDto,
 } from './dto/build-settlement-bulk-action-preview.dto';
+import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import {
   ExceptionQaScenario,
   SETTLEMENT_EXCEPTION_QA_FIXTURES,
@@ -198,6 +201,7 @@ type SettlementBulkActionPreviewContractResponse = {
 };
 
 type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimulation;
+type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainabilityPresetProfile;
 
 @Injectable()
 export class SettlementsService {
@@ -473,6 +477,12 @@ export class SettlementsService {
     input: BuildSettlementBulkActionPreviewDto,
   ): SettlementBulkActionSimulationContractResponse {
     return buildBulkSettlementActionSimulation(input);
+  }
+
+  buildSettlementExceptionExplainabilityPresetProfile(
+    input: BuildSettlementExplainabilityPresetProfileDto,
+  ): SettlementExplainabilityPresetProfileContractResponse {
+    return buildSettlementExplainabilityPresetProfile(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {

@@ -207,6 +207,54 @@ export type BulkSettlementTriageSnapshot = {
   };
 };
 
+export const SETTLEMENT_EXPLAINABILITY_SEVERITY_WINDOWS = ['warning', 'critical'] as const;
+export type SettlementExplainabilitySeverityWindow =
+  (typeof SETTLEMENT_EXPLAINABILITY_SEVERITY_WINDOWS)[number];
+
+export const SETTLEMENT_EXPLAINABILITY_PROFILE_VALIDATION_REASON_CODES = [
+  'BEP-001_INVALID_PRESET_SLOTS',
+  'BEP-002_INVALID_PRESET_KEY',
+  'BEP-003_DUPLICATE_PRESET_KEY',
+  'BEP-004_INVALID_REASON_BUCKET',
+  'BEP-005_INVALID_SEVERITY_WINDOW',
+  'BEP-006_INVALID_DEFAULT_SELECTION',
+  'BEP-007_PARTIAL_PRESET_SELECTION',
+] as const;
+
+export type SettlementExplainabilityProfileValidationReasonCode =
+  (typeof SETTLEMENT_EXPLAINABILITY_PROFILE_VALIDATION_REASON_CODES)[number];
+
+export type SettlementExplainabilityPresetSlot = {
+  key: string;
+  label: string;
+  reasonBuckets: Record<BulkSettlementRollbackReasonCode, boolean>;
+  severityWindows: Record<SettlementExplainabilitySeverityWindow, boolean>;
+  isDefault: boolean;
+};
+
+export type SettlementExplainabilityPresetProfile = {
+  contract: 'settlement-explainability-preset-profile.v1';
+  presetSlots: SettlementExplainabilityPresetSlot[];
+  reasonBuckets: Array<{
+    code: BulkSettlementRollbackReasonCode;
+    severity: BulkSettlementRollbackReasonSeverity;
+    description: string;
+  }>;
+  severityWindows: Array<{
+    code: SettlementExplainabilitySeverityWindow;
+    label: string;
+    description: string;
+  }>;
+  defaultSelection: {
+    presetSlotKey: string;
+    reasonBuckets: Record<BulkSettlementRollbackReasonCode, boolean>;
+    severityWindows: Record<SettlementExplainabilitySeverityWindow, boolean>;
+  };
+  metadata: {
+    validationReasonCodes: SettlementExplainabilityProfileValidationReasonCode[];
+  };
+};
+
 export function buildBulkSettlementActionPreviewSummary(
   input: BulkSettlementPreviewInput,
 ): BulkSettlementPreviewSummary {
@@ -456,6 +504,125 @@ export function buildBulkSettlementTriageSnapshot(
   };
 }
 
+export function buildSettlementExplainabilityPresetProfile(input: {
+  presetSlots?: unknown;
+  defaultSelection?: unknown;
+}): SettlementExplainabilityPresetProfile {
+  const validationReasonCodes = new Set<SettlementExplainabilityProfileValidationReasonCode>();
+  const defaultPresetSlots = createDefaultExplainabilityPresetSlots();
+  const normalizedPresetSlots = new Map(defaultPresetSlots.map((slot) => [slot.key, slot]));
+
+  if (input.presetSlots !== undefined) {
+    if (!Array.isArray(input.presetSlots)) {
+      validationReasonCodes.add('BEP-001_INVALID_PRESET_SLOTS');
+    } else {
+      input.presetSlots.forEach((rawSlot, slotIndex) => {
+        if (!rawSlot || typeof rawSlot !== 'object' || Array.isArray(rawSlot)) {
+          validationReasonCodes.add('BEP-002_INVALID_PRESET_KEY');
+          return;
+        }
+
+        const slot = rawSlot as Record<string, unknown>;
+        const keyInput = normalizeNonEmptyString(slot.key);
+        const labelInput = normalizeNonEmptyString(slot.label);
+        const key = keyInput?.toLowerCase().replace(/[^a-z0-9_-]/g, '_') ?? null;
+
+        if (!key) {
+          validationReasonCodes.add('BEP-002_INVALID_PRESET_KEY');
+          return;
+        }
+
+        if (normalizedPresetSlots.has(key) && !isBuiltInExplainabilityPreset(key)) {
+          validationReasonCodes.add('BEP-003_DUPLICATE_PRESET_KEY');
+          return;
+        }
+
+        const normalizedReasonBuckets = createZeroPresetReasonMap();
+        const normalizedSeverityWindows = createZeroPresetSeverityMap();
+        let hasPresetShapeIssue = false;
+
+        if (!Array.isArray(slot.reasonCodes)) {
+          hasPresetShapeIssue = true;
+        } else {
+          for (const rawReasonCode of slot.reasonCodes) {
+            if (!isRollbackReasonCode(rawReasonCode)) {
+              validationReasonCodes.add('BEP-004_INVALID_REASON_BUCKET');
+              continue;
+            }
+            normalizedReasonBuckets[rawReasonCode] = true;
+          }
+        }
+
+        if (!Array.isArray(slot.severityWindows)) {
+          hasPresetShapeIssue = true;
+        } else {
+          for (const rawSeverityWindow of slot.severityWindows) {
+            if (!isExplainabilitySeverityWindow(rawSeverityWindow)) {
+              validationReasonCodes.add('BEP-005_INVALID_SEVERITY_WINDOW');
+              continue;
+            }
+            normalizedSeverityWindows[rawSeverityWindow] = true;
+          }
+        }
+
+        if (hasPresetShapeIssue) {
+          validationReasonCodes.add('BEP-007_PARTIAL_PRESET_SELECTION');
+        }
+
+        normalizedPresetSlots.set(key, {
+          key,
+          label: labelInput ?? `Preset ${slotIndex + 1}`,
+          reasonBuckets: normalizedReasonBuckets,
+          severityWindows: normalizedSeverityWindows,
+          isDefault: false,
+        });
+      });
+    }
+  }
+
+  const presetSlots = [...normalizedPresetSlots.values()].sort((left, right) => {
+    const leftRank = rankExplainabilityPreset(left.key);
+    const rightRank = rankExplainabilityPreset(right.key);
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return left.key.localeCompare(right.key);
+  });
+
+  const defaultSelection = normalizeDefaultSelection(
+    input.defaultSelection,
+    presetSlots,
+    validationReasonCodes,
+  );
+
+  presetSlots.forEach((slot) => {
+    slot.isDefault = slot.key === defaultSelection.presetSlotKey;
+  });
+
+  return {
+    contract: 'settlement-explainability-preset-profile.v1',
+    presetSlots,
+    reasonBuckets: BULK_SETTLEMENT_ROLLBACK_REASON_CODES.map((code) => ({
+      code,
+      severity: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].severity,
+      description: BULK_SETTLEMENT_ROLLBACK_REASON_MAP[code].description,
+    })),
+    severityWindows: SETTLEMENT_EXPLAINABILITY_SEVERITY_WINDOWS.map((code) => ({
+      code,
+      label: code === 'warning' ? 'Warning anomalies' : 'Critical anomalies',
+      description: code === 'warning'
+        ? 'Include anomaly reasons classified as warning.'
+        : 'Include anomaly reasons classified as critical.',
+    })),
+    defaultSelection,
+    metadata: {
+      validationReasonCodes: SETTLEMENT_EXPLAINABILITY_PROFILE_VALIDATION_REASON_CODES.filter((code) => (
+        validationReasonCodes.has(code)
+      )),
+    },
+  };
+}
+
 function buildPreviewArtifacts(input: BulkSettlementPreviewInput): {
   summary: BulkSettlementPreviewSummary;
   selectedRows: BulkSettlementPreviewNormalizedRow[];
@@ -681,6 +848,198 @@ function createZeroSnapshotSeverityBuckets(): Record<BulkSettlementTriageSnapsho
     warning: 0,
     critical: 0,
   };
+}
+
+function createZeroPresetReasonMap(): Record<BulkSettlementRollbackReasonCode, boolean> {
+  return {
+    MALFORMED_ROW: false,
+    STALE_VERSION_RISK: false,
+    MIXED_STATUS_SELECTION: false,
+    HIGH_DELTA_ANOMALY: false,
+  };
+}
+
+function createZeroPresetSeverityMap(): Record<SettlementExplainabilitySeverityWindow, boolean> {
+  return {
+    warning: false,
+    critical: false,
+  };
+}
+
+function createPresetReasonMap(
+  reasonCodes: BulkSettlementRollbackReasonCode[],
+): Record<BulkSettlementRollbackReasonCode, boolean> {
+  const map = createZeroPresetReasonMap();
+  reasonCodes.forEach((code) => {
+    map[code] = true;
+  });
+  return map;
+}
+
+function createPresetSeverityMap(
+  severityWindows: SettlementExplainabilitySeverityWindow[],
+): Record<SettlementExplainabilitySeverityWindow, boolean> {
+  const map = createZeroPresetSeverityMap();
+  severityWindows.forEach((code) => {
+    map[code] = true;
+  });
+  return map;
+}
+
+function createDefaultExplainabilityPresetSlots(): SettlementExplainabilityPresetSlot[] {
+  return [
+    {
+      key: 'all_anomalies',
+      label: 'All anomalies',
+      reasonBuckets: createPresetReasonMap([...BULK_SETTLEMENT_ROLLBACK_REASON_CODES]),
+      severityWindows: createPresetSeverityMap([...SETTLEMENT_EXPLAINABILITY_SEVERITY_WINDOWS]),
+      isDefault: true,
+    },
+    {
+      key: 'critical_guardrails',
+      label: 'Critical guardrails',
+      reasonBuckets: createPresetReasonMap(['MALFORMED_ROW', 'HIGH_DELTA_ANOMALY']),
+      severityWindows: createPresetSeverityMap(['critical']),
+      isDefault: false,
+    },
+    {
+      key: 'stale_and_mixed',
+      label: 'Stale and mixed selection',
+      reasonBuckets: createPresetReasonMap(['STALE_VERSION_RISK', 'MIXED_STATUS_SELECTION']),
+      severityWindows: createPresetSeverityMap(['warning']),
+      isDefault: false,
+    },
+  ];
+}
+
+function normalizeDefaultSelection(
+  rawDefaultSelection: unknown,
+  presetSlots: SettlementExplainabilityPresetSlot[],
+  validationReasonCodes: Set<SettlementExplainabilityProfileValidationReasonCode>,
+): SettlementExplainabilityPresetProfile['defaultSelection'] {
+  const fallback = presetSlots.find((slot) => slot.key === 'all_anomalies') ?? presetSlots[0];
+  if (!fallback) {
+    return {
+      presetSlotKey: 'all_anomalies',
+      reasonBuckets: createZeroPresetReasonMap(),
+      severityWindows: createZeroPresetSeverityMap(),
+    };
+  }
+
+  if (!rawDefaultSelection) {
+    return {
+      presetSlotKey: fallback.key,
+      reasonBuckets: { ...fallback.reasonBuckets },
+      severityWindows: { ...fallback.severityWindows },
+    };
+  }
+
+  if (typeof rawDefaultSelection !== 'object' || Array.isArray(rawDefaultSelection)) {
+    validationReasonCodes.add('BEP-006_INVALID_DEFAULT_SELECTION');
+    return {
+      presetSlotKey: fallback.key,
+      reasonBuckets: { ...fallback.reasonBuckets },
+      severityWindows: { ...fallback.severityWindows },
+    };
+  }
+
+  const selection = rawDefaultSelection as Record<string, unknown>;
+  const presetSlotKey = normalizeNonEmptyString(selection.presetSlotKey)?.toLowerCase() ?? null;
+  const presetSlot = presetSlotKey
+    ? presetSlots.find((slot) => slot.key === presetSlotKey) ?? null
+    : null;
+
+  if (presetSlotKey && !presetSlot) {
+    validationReasonCodes.add('BEP-006_INVALID_DEFAULT_SELECTION');
+  }
+
+  const reasonBuckets = createZeroPresetReasonMap();
+  const severityWindows = createZeroPresetSeverityMap();
+  let parsedReasonCodes = false;
+  let parsedSeverityWindows = false;
+
+  if (selection.reasonCodes !== undefined) {
+    if (!Array.isArray(selection.reasonCodes)) {
+      validationReasonCodes.add('BEP-006_INVALID_DEFAULT_SELECTION');
+    } else {
+      parsedReasonCodes = true;
+      selection.reasonCodes.forEach((value) => {
+        if (!isRollbackReasonCode(value)) {
+          validationReasonCodes.add('BEP-004_INVALID_REASON_BUCKET');
+          return;
+        }
+        reasonBuckets[value] = true;
+      });
+    }
+  }
+
+  if (selection.severityWindows !== undefined) {
+    if (!Array.isArray(selection.severityWindows)) {
+      validationReasonCodes.add('BEP-006_INVALID_DEFAULT_SELECTION');
+    } else {
+      parsedSeverityWindows = true;
+      selection.severityWindows.forEach((value) => {
+        if (!isExplainabilitySeverityWindow(value)) {
+          validationReasonCodes.add('BEP-005_INVALID_SEVERITY_WINDOW');
+          return;
+        }
+        severityWindows[value] = true;
+      });
+    }
+  }
+
+  if ((parsedReasonCodes && !parsedSeverityWindows) || (!parsedReasonCodes && parsedSeverityWindows)) {
+    validationReasonCodes.add('BEP-007_PARTIAL_PRESET_SELECTION');
+  }
+
+  if (parsedReasonCodes || parsedSeverityWindows) {
+    return {
+      presetSlotKey: presetSlot?.key ?? fallback.key,
+      reasonBuckets,
+      severityWindows,
+    };
+  }
+
+  if (presetSlot) {
+    return {
+      presetSlotKey: presetSlot.key,
+      reasonBuckets: { ...presetSlot.reasonBuckets },
+      severityWindows: { ...presetSlot.severityWindows },
+    };
+  }
+
+  return {
+    presetSlotKey: fallback.key,
+    reasonBuckets: { ...fallback.reasonBuckets },
+    severityWindows: { ...fallback.severityWindows },
+  };
+}
+
+function rankExplainabilityPreset(key: string): number {
+  if (key === 'all_anomalies') {
+    return 0;
+  }
+  if (key === 'critical_guardrails') {
+    return 1;
+  }
+  if (key === 'stale_and_mixed') {
+    return 2;
+  }
+  return 100;
+}
+
+function isBuiltInExplainabilityPreset(key: string): boolean {
+  return key === 'all_anomalies' || key === 'critical_guardrails' || key === 'stale_and_mixed';
+}
+
+function isRollbackReasonCode(value: unknown): value is BulkSettlementRollbackReasonCode {
+  return typeof value === 'string'
+    && BULK_SETTLEMENT_ROLLBACK_REASON_CODES.includes(value as BulkSettlementRollbackReasonCode);
+}
+
+function isExplainabilitySeverityWindow(value: unknown): value is SettlementExplainabilitySeverityWindow {
+  return typeof value === 'string'
+    && SETTLEMENT_EXPLAINABILITY_SEVERITY_WINDOWS.includes(value as SettlementExplainabilitySeverityWindow);
 }
 
 const BULK_SETTLEMENT_ROLLBACK_STEP_HINTS: Record<BulkSettlementRollbackReasonCode, string> = {
