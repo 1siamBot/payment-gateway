@@ -295,6 +295,47 @@ export type ReplayDeltaInspector = {
   emptyMessage: string | null;
 };
 
+export type OperatorTimelinePresetKey = 'baseline' | 'candidate' | 'override';
+export type OperatorTimelineShortcut =
+  | 'tick_prev'
+  | 'tick_next'
+  | 'cycle_preset'
+  | 'pin_override'
+  | 'clear_draft';
+
+export type OperatorTimelineTick = {
+  id: string;
+  eventAt: string;
+  severity: IncidentBookmarkSeverity;
+  title: string;
+  bookmark: IncidentBookmarkShelfItem;
+};
+
+export type OperatorTimelineSnapshot = {
+  id: string;
+  eventAt: string;
+  severity: IncidentBookmarkSeverity;
+  status: ExceptionStatus;
+  amount: string;
+  riskFlags: string[];
+  title: string;
+};
+
+export type OperatorTimelineComparePresetSlot = {
+  key: OperatorTimelinePresetKey;
+  tickId: string;
+  snapshot: OperatorTimelineSnapshot | null;
+  serializedSnapshot: string;
+};
+
+export type OperatorTimelineScrubber = {
+  contract: 'settlement-operator-timeline-scrubber.v1';
+  ticks: OperatorTimelineTick[];
+  activeTickId: string;
+  activePreset: OperatorTimelinePresetKey;
+  compareSlots: OperatorTimelineComparePresetSlot[];
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -381,6 +422,7 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
 };
 const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
+const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
 const DEFAULT_REPLAY_CHECKLIST_STEPS = [
   { id: 'load_context', label: 'Load bookmark context into replay scope.' },
   { id: 'verify_determinism', label: 'Verify deterministic ordering and incident grouping.' },
@@ -1063,6 +1105,212 @@ export function resetReplayBookmarkCompareDraftSafe(input: {
     secondaryBookmarkId: '',
     activeBookmarkFilter: input.activeBookmarkFilter,
     message: 'Replay compare draft cleared. Bookmark filter preserved until explicit reset confirm.',
+  };
+}
+
+function buildOperatorTimelineSnapshot(item: IncidentBookmarkShelfItem): OperatorTimelineSnapshot {
+  return {
+    id: item.id,
+    eventAt: item.updatedAt,
+    severity: item.severity,
+    status: item.status,
+    amount: item.amount.toFixed(2),
+    riskFlags: [...item.riskFlags].sort((a, b) => a.localeCompare(b)),
+    title: item.title,
+  };
+}
+
+function serializeOperatorTimelineSnapshot(snapshot: OperatorTimelineSnapshot | null): string {
+  if (!snapshot) {
+    return '';
+  }
+  return JSON.stringify({
+    id: snapshot.id,
+    eventAt: snapshot.eventAt,
+    severity: snapshot.severity,
+    status: snapshot.status,
+    amount: snapshot.amount,
+    riskFlags: snapshot.riskFlags,
+    title: snapshot.title,
+  });
+}
+
+function buildOperatorTimelineComparePresetSlot(
+  key: OperatorTimelinePresetKey,
+  tickId: string,
+  tickById: Map<string, OperatorTimelineTick>,
+): OperatorTimelineComparePresetSlot {
+  const tick = tickById.get(tickId) ?? null;
+  const snapshot = tick ? buildOperatorTimelineSnapshot(tick.bookmark) : null;
+  return {
+    key,
+    tickId: tick?.id ?? '',
+    snapshot,
+    serializedSnapshot: serializeOperatorTimelineSnapshot(snapshot),
+  };
+}
+
+export function cycleOperatorTimelinePreset(current: OperatorTimelinePresetKey): OperatorTimelinePresetKey {
+  const currentIndex = OPERATOR_TIMELINE_PRESET_ORDER.indexOf(current);
+  if (currentIndex < 0) {
+    return OPERATOR_TIMELINE_PRESET_ORDER[0];
+  }
+  return OPERATOR_TIMELINE_PRESET_ORDER[(currentIndex + 1) % OPERATOR_TIMELINE_PRESET_ORDER.length];
+}
+
+export function resolveOperatorTimelineShortcut(input: {
+  key: string;
+  shiftKey?: boolean;
+}): OperatorTimelineShortcut | null {
+  if (input.key === ',') {
+    return 'tick_prev';
+  }
+  if (input.key === '.') {
+    return 'tick_next';
+  }
+  if (input.key.toLowerCase() === 'p') {
+    return input.shiftKey ? 'pin_override' : 'cycle_preset';
+  }
+  if (input.key === 'Escape') {
+    return 'clear_draft';
+  }
+  return null;
+}
+
+export function moveOperatorTimelineTickSelection(input: {
+  ticks: OperatorTimelineTick[];
+  activeTickId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.ticks.length === 0) {
+    return '';
+  }
+  const currentIndex = input.ticks.findIndex((tick) => tick.id === input.activeTickId);
+  if (currentIndex < 0) {
+    return input.ticks[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.ticks[Math.min(currentIndex + 1, input.ticks.length - 1)].id;
+  }
+  return input.ticks[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function pinOperatorTimelinePresetSlot(input: {
+  activePreset: OperatorTimelinePresetKey;
+  activeTickId: string;
+  baselineTickId: string;
+  candidateTickId: string;
+  overrideTickId: string;
+}): { baselineTickId: string; candidateTickId: string; overrideTickId: string } {
+  if (input.activePreset === 'baseline') {
+    return {
+      baselineTickId: input.activeTickId,
+      candidateTickId: input.candidateTickId,
+      overrideTickId: input.overrideTickId,
+    };
+  }
+  if (input.activePreset === 'candidate') {
+    return {
+      baselineTickId: input.baselineTickId,
+      candidateTickId: input.activeTickId,
+      overrideTickId: input.overrideTickId,
+    };
+  }
+  return {
+    baselineTickId: input.baselineTickId,
+    candidateTickId: input.candidateTickId,
+    overrideTickId: input.activeTickId,
+  };
+}
+
+export function resetOperatorTimelineCompareDraftSafe(input: {
+  activeSeverityFilter: IncidentBookmarkFilterKey;
+  baselineTickId: string;
+  confirmFilterReset: boolean;
+}): {
+  baselineTickId: string;
+  candidateTickId: string;
+  overrideTickId: string;
+  activeSeverityFilter: IncidentBookmarkFilterKey;
+  message: string;
+} {
+  if (input.confirmFilterReset) {
+    return {
+      baselineTickId: input.baselineTickId,
+      candidateTickId: '',
+      overrideTickId: '',
+      activeSeverityFilter: 'all',
+      message: 'Timeline compare draft cleared. Severity filter reset to all.',
+    };
+  }
+  return {
+    baselineTickId: input.baselineTickId,
+    candidateTickId: '',
+    overrideTickId: '',
+    activeSeverityFilter: input.activeSeverityFilter,
+    message: 'Timeline compare draft cleared. Active severity filter preserved until full reset confirmation.',
+  };
+}
+
+export function buildOperatorTimelineScrubber(input: {
+  items: IncidentBookmarkShelfItem[];
+  activeTickId: string;
+  activePreset: OperatorTimelinePresetKey;
+  baselineTickId: string;
+  candidateTickId: string;
+  overrideTickId: string;
+}): OperatorTimelineScrubber {
+  const severityRank = new Map(INCIDENT_SEVERITY_ORDER.map((severity, index) => [severity, index]));
+  const ticks = input.items
+    .map((item): OperatorTimelineTick => ({
+      id: item.id,
+      eventAt: item.updatedAt,
+      severity: item.severity,
+      title: item.title,
+      bookmark: item,
+    }))
+    .sort((left, right) => {
+      const eventSort = left.eventAt.localeCompare(right.eventAt);
+      if (eventSort !== 0) {
+        return eventSort;
+      }
+      const severitySort = (severityRank.get(left.severity) ?? Number.MAX_SAFE_INTEGER)
+        - (severityRank.get(right.severity) ?? Number.MAX_SAFE_INTEGER);
+      if (severitySort !== 0) {
+        return severitySort;
+      }
+      return left.id.localeCompare(right.id);
+    });
+  const tickById = new Map(ticks.map((tick) => [tick.id, tick]));
+  const activeTickId = tickById.has(input.activeTickId)
+    ? input.activeTickId
+    : (ticks[0]?.id ?? '');
+  const baselineTickId = tickById.has(input.baselineTickId)
+    ? input.baselineTickId
+    : activeTickId;
+  const candidateTickId = tickById.has(input.candidateTickId)
+    ? input.candidateTickId
+    : '';
+  const overrideTickId = tickById.has(input.overrideTickId)
+    ? input.overrideTickId
+    : '';
+  const activePreset = OPERATOR_TIMELINE_PRESET_ORDER.includes(input.activePreset)
+    ? input.activePreset
+    : 'baseline';
+
+  return {
+    contract: 'settlement-operator-timeline-scrubber.v1',
+    ticks,
+    activeTickId,
+    activePreset,
+    compareSlots: OPERATOR_TIMELINE_PRESET_ORDER.map((key) => {
+      const tickId = key === 'baseline'
+        ? baselineTickId
+        : key === 'candidate'
+          ? candidateTickId
+          : overrideTickId;
+      return buildOperatorTimelineComparePresetSlot(key, tickId, tickById);
+    }),
   };
 }
 

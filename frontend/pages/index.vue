@@ -43,16 +43,22 @@ import {
   buildExceptionSimulationOutcomePanel,
   buildReplayBookmarkCompareStrip,
   buildReplayDeltaInspector,
+  buildOperatorTimelineScrubber,
+  cycleOperatorTimelinePreset,
   restoreExceptionSavedViewState,
   serializeExceptionSavedViewState,
   serializeExceptionQueryState,
   filterIncidentBookmarkShelfItems,
   filterExceptionDiffInspectorRows,
+  moveOperatorTimelineTickSelection,
   moveReplayBookmarkSelection,
   moveExceptionDiffInspectorFocus,
   moveOperatorDecisionQueueFocus,
+  pinOperatorTimelinePresetSlot,
   reconcileReplayBookmarkCompareState,
+  resetOperatorTimelineCompareDraftSafe,
   resetReplayBookmarkCompareDraftSafe,
+  resolveOperatorTimelineShortcut,
   resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
   resetOperatorDecisionQueueDraftSafe,
@@ -64,6 +70,7 @@ import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
 import type { ScenarioCompareMatrixFilterKey } from '../utils/wave1';
 import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../utils/wave1';
 import type { IncidentBookmarkFilterKey } from '../utils/wave1';
+import type { OperatorTimelinePresetKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -381,6 +388,15 @@ const replayCompareState = reactive({
   message: '',
   error: '',
 });
+const activeTimelineTickId = ref('');
+const activeTimelinePreset = ref<OperatorTimelinePresetKey>('baseline');
+const timelineBaselineTickId = ref('');
+const timelineCandidateTickId = ref('');
+const timelineOverrideTickId = ref('');
+const timelineScrubberState = reactive({
+  message: '',
+  error: '',
+});
 const replayBookmarkFilterOptions: Array<{ key: IncidentBookmarkFilterKey; label: string }> = [
   { key: 'all', label: 'all' },
   { key: 'critical', label: 'critical' },
@@ -403,6 +419,14 @@ const replayDeltaInspector = computed(() => buildReplayDeltaInspector({
   items: filteredIncidentBookmarkItems.value,
   primaryBookmarkId: replayComparePrimaryBookmarkId.value,
   secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+}));
+const operatorTimelineScrubber = computed(() => buildOperatorTimelineScrubber({
+  items: filteredIncidentBookmarkItems.value,
+  activeTickId: activeTimelineTickId.value,
+  activePreset: activeTimelinePreset.value,
+  baselineTickId: timelineBaselineTickId.value,
+  candidateTickId: timelineCandidateTickId.value,
+  overrideTickId: timelineOverrideTickId.value,
 }));
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
 const bulkDiffInspector = computed(() => buildExceptionBulkDiffInspector(selectedExceptionRows.value));
@@ -1225,6 +1249,18 @@ watch(filteredIncidentBookmarkItems, (items) => {
   activeReplayBookmarkId.value = reconciled.activeBookmarkId;
   replayComparePrimaryBookmarkId.value = reconciled.primaryBookmarkId;
   replayCompareSecondaryBookmarkId.value = reconciled.secondaryBookmarkId;
+  const scrubber = buildOperatorTimelineScrubber({
+    items,
+    activeTickId: activeTimelineTickId.value,
+    activePreset: activeTimelinePreset.value,
+    baselineTickId: timelineBaselineTickId.value,
+    candidateTickId: timelineCandidateTickId.value,
+    overrideTickId: timelineOverrideTickId.value,
+  });
+  activeTimelineTickId.value = scrubber.activeTickId;
+  timelineBaselineTickId.value = scrubber.compareSlots.find((slot) => slot.key === 'baseline')?.tickId ?? '';
+  timelineCandidateTickId.value = scrubber.compareSlots.find((slot) => slot.key === 'candidate')?.tickId ?? '';
+  timelineOverrideTickId.value = scrubber.compareSlots.find((slot) => slot.key === 'override')?.tickId ?? '';
 }, { immediate: true, deep: true });
 
 watch(operatorDecisionQueue, (queue) => {
@@ -1317,6 +1353,11 @@ function resetReplayCompareState() {
   replayCompareState.message = '';
 }
 
+function resetTimelineScrubberState() {
+  timelineScrubberState.error = '';
+  timelineScrubberState.message = '';
+}
+
 function setActiveBookmarkFilter(filter: IncidentBookmarkFilterKey) {
   resetReplayCompareState();
   activeBookmarkFilter.value = filter;
@@ -1382,6 +1423,50 @@ function clearReplayCompareDraftWithFilterConfirm() {
   replayCompareState.message = confirmed.message;
 }
 
+function pinActiveTimelineTickToPreset() {
+  resetTimelineScrubberState();
+  const pinned = pinOperatorTimelinePresetSlot({
+    activePreset: activeTimelinePreset.value,
+    activeTickId: activeTimelineTickId.value,
+    baselineTickId: timelineBaselineTickId.value,
+    candidateTickId: timelineCandidateTickId.value,
+    overrideTickId: timelineOverrideTickId.value,
+  });
+  timelineBaselineTickId.value = pinned.baselineTickId;
+  timelineCandidateTickId.value = pinned.candidateTickId;
+  timelineOverrideTickId.value = pinned.overrideTickId;
+  timelineScrubberState.message = `Pinned ${activeTimelineTickId.value || 'none'} to ${activeTimelinePreset.value}.`;
+}
+
+function pinActiveTimelineTickToOverride() {
+  resetTimelineScrubberState();
+  const pinned = pinOperatorTimelinePresetSlot({
+    activePreset: 'override',
+    activeTickId: activeTimelineTickId.value,
+    baselineTickId: timelineBaselineTickId.value,
+    candidateTickId: timelineCandidateTickId.value,
+    overrideTickId: timelineOverrideTickId.value,
+  });
+  timelineBaselineTickId.value = pinned.baselineTickId;
+  timelineCandidateTickId.value = pinned.candidateTickId;
+  timelineOverrideTickId.value = pinned.overrideTickId;
+  timelineScrubberState.message = `Pinned ${activeTimelineTickId.value || 'none'} to override slot.`;
+}
+
+function clearTimelineCompareDraftSafe() {
+  resetTimelineScrubberState();
+  const safe = resetOperatorTimelineCompareDraftSafe({
+    activeSeverityFilter: activeBookmarkFilter.value,
+    baselineTickId: timelineBaselineTickId.value,
+    confirmFilterReset: false,
+  });
+  timelineBaselineTickId.value = safe.baselineTickId;
+  timelineCandidateTickId.value = safe.candidateTickId;
+  timelineOverrideTickId.value = safe.overrideTickId;
+  activeBookmarkFilter.value = safe.activeSeverityFilter;
+  timelineScrubberState.message = safe.message;
+}
+
 function onReplayCompareKeydown(event: KeyboardEvent) {
   const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
   if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
@@ -1407,6 +1492,42 @@ function onReplayCompareKeydown(event: KeyboardEvent) {
     return;
   }
   clearReplayCompareDraftSafe();
+}
+
+function onOperatorTimelineKeydown(event: KeyboardEvent) {
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
+    return;
+  }
+  const shortcut = resolveOperatorTimelineShortcut({
+    key: event.key,
+    shiftKey: event.shiftKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'tick_prev' || shortcut === 'tick_next') {
+    activeTimelineTickId.value = moveOperatorTimelineTickSelection({
+      ticks: operatorTimelineScrubber.value.ticks,
+      activeTickId: activeTimelineTickId.value,
+      direction: shortcut === 'tick_prev' ? 'prev' : 'next',
+    });
+    timelineScrubberState.message = `Selected timeline tick ${activeTimelineTickId.value || 'none'}.`;
+    timelineScrubberState.error = '';
+    return;
+  }
+  if (shortcut === 'cycle_preset') {
+    activeTimelinePreset.value = cycleOperatorTimelinePreset(activeTimelinePreset.value);
+    timelineScrubberState.message = `Active compare preset switched to ${activeTimelinePreset.value}.`;
+    timelineScrubberState.error = '';
+    return;
+  }
+  if (shortcut === 'pin_override') {
+    pinActiveTimelineTickToOverride();
+    return;
+  }
+  clearTimelineCompareDraftSafe();
 }
 
 function onDecisionQueueKeydown(event: KeyboardEvent) {
@@ -1651,6 +1772,7 @@ function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
   resetReplayCompareState();
+  resetTimelineScrubberState();
   resetBulkInspectorViewState();
   const safeQueueReset = resetOperatorDecisionQueueDraftSafe({
     activeMatrixFilter: activeScenarioMatrixFilter.value,
@@ -1699,6 +1821,7 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   resetBulkPreviewConfirmState();
   resetBulkPreviewDrawer();
   resetDecisionQueueState();
+  resetTimelineScrubberState();
   queueDraftRowIds.value = [];
   activeScenarioMatrixFilter.value = 'all';
 
@@ -2860,6 +2983,63 @@ onMounted(() => {
                 vs
                 {{ replayCompareStrip.secondaryBookmark?.id || '-' }}.
               </p>
+            </div>
+
+            <div class="simulation-outcome-panel">
+              <h4>Operator Timeline Scrubber</h4>
+              <p class="state" :class="{ error: timelineScrubberState.error }">
+                {{ timelineScrubberState.error || timelineScrubberState.message || 'Keyboard: , previous tick, . next tick, P cycle preset, Shift+P pin override, Esc clear compare draft safely.' }}
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="slot in operatorTimelineScrubber.compareSlots"
+                  :key="`timeline-slot-${slot.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeTimelinePreset === slot.key }"
+                  @click="activeTimelinePreset = slot.key"
+                >
+                  {{ slot.key }}
+                  <small>{{ slot.tickId || '-' }}</small>
+                </button>
+              </div>
+              <div class="replay-compare-strip-wrap" tabindex="0" @keydown="onOperatorTimelineKeydown">
+                <ul class="replay-bookmark-list">
+                  <li v-if="!operatorTimelineScrubber.ticks.length" class="state">No timeline ticks in current severity scope.</li>
+                  <li
+                    v-for="tick in operatorTimelineScrubber.ticks"
+                    :key="`timeline-tick-${tick.id}`"
+                    class="replay-bookmark-item"
+                    :class="{ active: operatorTimelineScrubber.activeTickId === tick.id }"
+                    @click="activeTimelineTickId = tick.id"
+                  >
+                    <div>
+                      <strong>{{ tick.id }}</strong>
+                      <small>{{ tick.eventAt }} / {{ tick.severity }}</small>
+                    </div>
+                    <p class="state">{{ tick.title }}</p>
+                  </li>
+                </ul>
+                <div class="replay-compare-slots">
+                  <article v-for="slot in operatorTimelineScrubber.compareSlots" :key="`timeline-compare-${slot.key}`">
+                    <h5>{{ slot.key }}</h5>
+                    <p><strong>{{ slot.tickId || '-' }}</strong></p>
+                    <p class="state">{{ slot.snapshot?.title || 'No timeline tick pinned.' }}</p>
+                    <small class="state">{{ slot.serializedSnapshot || 'empty snapshot' }}</small>
+                  </article>
+                </div>
+              </div>
+              <div class="inline-actions">
+                <button type="button" :disabled="!operatorTimelineScrubber.activeTickId" @click="pinActiveTimelineTickToPreset">
+                  Pin Active Tick To {{ activeTimelinePreset }}
+                </button>
+                <button type="button" class="link" :disabled="!operatorTimelineScrubber.activeTickId" @click="pinActiveTimelineTickToOverride">
+                  Pin Active Tick To Override
+                </button>
+                <button type="button" class="link" @click="clearTimelineCompareDraftSafe">
+                  Safe Clear Timeline Compare Draft
+                </button>
+              </div>
             </div>
 
             <div class="simulation-outcome-panel">

@@ -47,10 +47,16 @@ import {
   buildIncidentBookmarkShelf,
   buildReplayBookmarkCompareStrip,
   buildReplayDeltaInspector,
+  buildOperatorTimelineScrubber,
   buildReplayChecklistDrawer,
+  cycleOperatorTimelinePreset,
   filterIncidentBookmarkShelfItems,
+  moveOperatorTimelineTickSelection,
   moveReplayBookmarkSelection,
+  pinOperatorTimelinePresetSlot,
   reconcileReplayBookmarkCompareState,
+  resetOperatorTimelineCompareDraftSafe,
+  resolveOperatorTimelineShortcut,
   resolveReplayBookmarkCompareShortcut,
   resetReplayBookmarkCompareDraftSafe,
   validateExceptionActionInput,
@@ -797,6 +803,144 @@ describe('frontend wave1 helpers', () => {
     expect(confirmed.secondaryBookmarkId).toBe('');
     expect(confirmed.activeBookmarkFilter).toBe('all');
     expect(confirmed.message).toContain('reset to default');
+  });
+
+  it('builds operator timeline ticks in deterministic eventAt/severity/id order with stable snapshots', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-c',
+        merchantId: 'm-3',
+        provider: 'mock-a',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'C',
+        riskFlags: ['stale_version', 'high_delta'],
+      },
+      {
+        id: 'inc-a',
+        merchantId: 'm-1',
+        provider: 'mock-b',
+        severity: 'critical',
+        updatedAt: '2026-03-18T09:00:00.000Z',
+        title: 'A',
+        riskFlags: ['high_delta', 'stale_version'],
+      },
+      {
+        id: 'inc-b',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        severity: 'critical',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'B',
+      },
+    ]);
+
+    const first = buildOperatorTimelineScrubber({
+      items: shelf.items,
+      activeTickId: '',
+      activePreset: 'baseline',
+      baselineTickId: '',
+      candidateTickId: 'inc-c',
+      overrideTickId: '',
+    });
+    const second = buildOperatorTimelineScrubber({
+      items: shelf.items,
+      activeTickId: '',
+      activePreset: 'baseline',
+      baselineTickId: '',
+      candidateTickId: 'inc-c',
+      overrideTickId: '',
+    });
+
+    expect(first.ticks.map((tick) => tick.id)).toEqual(['inc-a', 'inc-b', 'inc-c']);
+    expect(first.compareSlots.find((slot) => slot.key === 'candidate')?.serializedSnapshot)
+      .toBe(second.compareSlots.find((slot) => slot.key === 'candidate')?.serializedSnapshot);
+  });
+
+  it('resolves operator timeline keyboard shortcuts and supports preset cycle + override pinning', () => {
+    expect(resolveOperatorTimelineShortcut({ key: ',' })).toBe('tick_prev');
+    expect(resolveOperatorTimelineShortcut({ key: '.' })).toBe('tick_next');
+    expect(resolveOperatorTimelineShortcut({ key: 'P', shiftKey: false })).toBe('cycle_preset');
+    expect(resolveOperatorTimelineShortcut({ key: 'P', shiftKey: true })).toBe('pin_override');
+    expect(resolveOperatorTimelineShortcut({ key: 'Escape' })).toBe('clear_draft');
+
+    expect(cycleOperatorTimelinePreset('baseline')).toBe('candidate');
+    expect(cycleOperatorTimelinePreset('candidate')).toBe('override');
+    expect(cycleOperatorTimelinePreset('override')).toBe('baseline');
+
+    expect(moveOperatorTimelineTickSelection({
+      ticks: [
+        {
+          id: 'inc-a',
+          eventAt: '2026-03-18T09:00:00.000Z',
+          severity: 'critical',
+          title: 'A',
+          bookmark: {
+            id: 'inc-a',
+            merchantId: 'm-1',
+            provider: 'mock-a',
+            severity: 'critical',
+            updatedAt: '2026-03-18T09:00:00.000Z',
+            title: 'A',
+            status: 'open',
+            amount: 100,
+            riskFlags: [],
+          },
+        },
+        {
+          id: 'inc-b',
+          eventAt: '2026-03-18T10:00:00.000Z',
+          severity: 'high',
+          title: 'B',
+          bookmark: {
+            id: 'inc-b',
+            merchantId: 'm-2',
+            provider: 'mock-a',
+            severity: 'high',
+            updatedAt: '2026-03-18T10:00:00.000Z',
+            title: 'B',
+            status: 'open',
+            amount: 120,
+            riskFlags: [],
+          },
+        },
+      ],
+      activeTickId: 'inc-a',
+      direction: 'next',
+    })).toBe('inc-b');
+
+    expect(pinOperatorTimelinePresetSlot({
+      activePreset: 'candidate',
+      activeTickId: 'inc-b',
+      baselineTickId: 'inc-a',
+      candidateTickId: '',
+      overrideTickId: '',
+    })).toEqual({
+      baselineTickId: 'inc-a',
+      candidateTickId: 'inc-b',
+      overrideTickId: '',
+    });
+  });
+
+  it('clears operator timeline compare draft safely without dropping severity filter', () => {
+    const safe = resetOperatorTimelineCompareDraftSafe({
+      activeSeverityFilter: 'high',
+      baselineTickId: 'inc-a',
+      confirmFilterReset: false,
+    });
+    expect(safe.baselineTickId).toBe('inc-a');
+    expect(safe.candidateTickId).toBe('');
+    expect(safe.overrideTickId).toBe('');
+    expect(safe.activeSeverityFilter).toBe('high');
+    expect(safe.message).toContain('preserved');
+
+    const confirmed = resetOperatorTimelineCompareDraftSafe({
+      activeSeverityFilter: 'high',
+      baselineTickId: 'inc-a',
+      confirmFilterReset: true,
+    });
+    expect(confirmed.activeSeverityFilter).toBe('all');
+    expect(confirmed.message).toContain('reset');
   });
 
   it('builds replay delta inspector rows in deterministic field order', () => {
