@@ -229,6 +229,40 @@ export type OperatorDecisionQueue = {
   items: OperatorDecisionQueueItem[];
 };
 
+export type IncidentBookmarkSeverity = 'critical' | 'high' | 'medium' | 'low';
+export type IncidentBookmarkFilterKey = 'all' | IncidentBookmarkSeverity;
+
+export type IncidentBookmarkShelfItem = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  severity: IncidentBookmarkSeverity;
+  updatedAt: string;
+  title: string;
+};
+
+export type IncidentBookmarkShelf = {
+  contract: 'settlement-incident-bookmark-shelf.v1';
+  totalCount: number;
+  severityCounts: Record<IncidentBookmarkSeverity, number>;
+  items: IncidentBookmarkShelfItem[];
+};
+
+export type ReplayChecklistStep = {
+  id: string;
+  label: string;
+  completed: boolean;
+};
+
+export type ReplayChecklistDrawer = {
+  contract: 'settlement-replay-checklist-drawer.v1';
+  bookmark: IncidentBookmarkShelfItem | null;
+  steps: ReplayChecklistStep[];
+  focusedStepId: string;
+  noteDraft: string;
+  emptyMessage: string | null;
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -313,6 +347,13 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
     description: 'Rows or payload signals that should route through rollback planning first.',
   },
 };
+const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
+const DEFAULT_REPLAY_CHECKLIST_STEPS = [
+  { id: 'load_context', label: 'Load bookmark context into replay scope.' },
+  { id: 'verify_determinism', label: 'Verify deterministic ordering and incident grouping.' },
+  { id: 'confirm_note', label: 'Confirm operator note for replay audit trail.' },
+  { id: 'stage_replay', label: 'Stage replay run with current checklist snapshot.' },
+] as const;
 
 function parseFiniteNumber(input: unknown): number | null {
   if (typeof input === 'number' && Number.isFinite(input)) {
@@ -754,6 +795,181 @@ export function buildOperatorDecisionQueue(input: {
     stagedCount: orderedUniqueRowIds.length,
     missingRowCount,
     items,
+  };
+}
+
+function normalizeIncidentSeverity(input: unknown): IncidentBookmarkSeverity {
+  if (input === 'critical' || input === 'high' || input === 'medium' || input === 'low') {
+    return input;
+  }
+  if (input === 'CRITICAL') return 'critical';
+  if (input === 'HIGH') return 'high';
+  if (input === 'MEDIUM') return 'medium';
+  if (input === 'LOW') return 'low';
+  return 'medium';
+}
+
+function parseIncidentBookmarkItem(raw: unknown): IncidentBookmarkShelfItem | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : String(row.id ?? ''));
+  const merchantId = normalizeOptional(typeof row.merchantId === 'string' ? row.merchantId : String(row.merchantId ?? ''));
+  const provider = normalizeOptional(typeof row.provider === 'string' ? row.provider : String(row.provider ?? ''));
+  const title = normalizeOptional(typeof row.title === 'string' ? row.title : String(row.title ?? '')) ?? 'Untitled fixture incident';
+  if (!id || !merchantId || !provider) {
+    return null;
+  }
+  return {
+    id,
+    merchantId,
+    provider,
+    severity: normalizeIncidentSeverity(row.severity),
+    updatedAt: resolveDateString(row.updatedAt, DIFF_FALLBACK_TIMESTAMP),
+    title,
+  };
+}
+
+export function buildIncidentBookmarkShelf(fixtures: unknown[]): IncidentBookmarkShelf {
+  const severityRank = new Map(INCIDENT_SEVERITY_ORDER.map((severity, index) => [severity, index]));
+  const severityCounts: Record<IncidentBookmarkSeverity, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+  };
+  const items = fixtures
+    .map((row) => parseIncidentBookmarkItem(row))
+    .filter((row): row is IncidentBookmarkShelfItem => Boolean(row))
+    .sort((a, b) => {
+      const severitySort = (severityRank.get(a.severity) ?? Number.MAX_SAFE_INTEGER)
+        - (severityRank.get(b.severity) ?? Number.MAX_SAFE_INTEGER);
+      if (severitySort !== 0) {
+        return severitySort;
+      }
+      const updatedSort = b.updatedAt.localeCompare(a.updatedAt);
+      if (updatedSort !== 0) {
+        return updatedSort;
+      }
+      return a.id.localeCompare(b.id);
+    });
+
+  for (const item of items) {
+    severityCounts[item.severity] += 1;
+  }
+
+  return {
+    contract: 'settlement-incident-bookmark-shelf.v1',
+    totalCount: items.length,
+    severityCounts,
+    items,
+  };
+}
+
+function buildReplayChecklistSteps(completedStepIds: string[]): ReplayChecklistStep[] {
+  const completed = new Set(completedStepIds);
+  return DEFAULT_REPLAY_CHECKLIST_STEPS.map((step) => ({
+    id: step.id,
+    label: step.label,
+    completed: completed.has(step.id),
+  }));
+}
+
+export function buildReplayChecklistDrawer(input: {
+  shelfItems: IncidentBookmarkShelfItem[];
+  activeBookmarkId: string;
+  completedStepIds?: string[];
+  focusedStepId?: string;
+  noteDraft?: string;
+}): ReplayChecklistDrawer {
+  const bookmark = input.shelfItems.find((item) => item.id === input.activeBookmarkId) ?? null;
+  const steps = buildReplayChecklistSteps(input.completedStepIds ?? []);
+  const stepIdSet = new Set(steps.map((step) => step.id));
+  const focusedStepId = input.focusedStepId && stepIdSet.has(input.focusedStepId)
+    ? input.focusedStepId
+    : (steps[0]?.id ?? '');
+
+  return {
+    contract: 'settlement-replay-checklist-drawer.v1',
+    bookmark,
+    steps,
+    focusedStepId,
+    noteDraft: input.noteDraft ?? '',
+    emptyMessage: bookmark
+      ? null
+      : 'Select an incident bookmark to open replay checklist context.',
+  };
+}
+
+export function resolveReplayChecklistShortcut(key: string): 'focus_next' | 'focus_prev' | 'toggle_step' | 'clear_note' | null {
+  const normalized = key.toLowerCase();
+  if (normalized === 'arrowdown') {
+    return 'focus_next';
+  }
+  if (normalized === 'arrowup') {
+    return 'focus_prev';
+  }
+  if (normalized === 'enter') {
+    return 'toggle_step';
+  }
+  if (normalized === 'backspace') {
+    return 'clear_note';
+  }
+  return null;
+}
+
+export function moveReplayChecklistFocus(input: {
+  steps: ReplayChecklistStep[];
+  activeStepId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.steps.length === 0) {
+    return '';
+  }
+  const currentIndex = input.steps.findIndex((step) => step.id === input.activeStepId);
+  if (currentIndex < 0) {
+    return input.steps[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.steps[Math.min(currentIndex + 1, input.steps.length - 1)].id;
+  }
+  return input.steps[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function toggleReplayChecklistStep(input: {
+  steps: ReplayChecklistStep[];
+  stepId: string;
+}): ReplayChecklistStep[] {
+  return input.steps.map((step) => (
+    step.id === input.stepId
+      ? { ...step, completed: !step.completed }
+      : step
+  ));
+}
+
+export function resetReplayChecklistDrawerDraftSafe(input: {
+  activeBookmarkFilter: IncidentBookmarkFilterKey;
+  confirmFilterReset: boolean;
+}): {
+  completedStepIds: string[];
+  noteDraft: string;
+  activeBookmarkFilter: IncidentBookmarkFilterKey;
+  message: string;
+} {
+  if (input.confirmFilterReset) {
+    return {
+      completedStepIds: [],
+      noteDraft: '',
+      activeBookmarkFilter: 'all',
+      message: 'Replay checklist draft and bookmark filter reset to default.',
+    };
+  }
+  return {
+    completedStepIds: [],
+    noteDraft: '',
+    activeBookmarkFilter: input.activeBookmarkFilter,
+    message: 'Replay checklist draft cleared. Bookmark filter preserved until explicit reset confirm.',
   };
 }
 

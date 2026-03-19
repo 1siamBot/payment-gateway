@@ -44,7 +44,13 @@ import {
   buildOperatorDecisionQueue,
   buildScenarioCompareMatrix,
   buildExceptionSimulationOutcomePanel,
+  buildIncidentBookmarkShelf,
+  buildReplayChecklistDrawer,
   validateExceptionActionInput,
+  moveReplayChecklistFocus,
+  resolveReplayChecklistShortcut,
+  resetReplayChecklistDrawerDraftSafe,
+  toggleReplayChecklistStep,
 } from '../frontend/utils/wave1';
 
 describe('frontend wave1 helpers', () => {
@@ -553,6 +559,106 @@ describe('frontend wave1 helpers', () => {
     expect(nextFocused).toBe(queue.items[1].id);
     expect(resolveOperatorDecisionQueueShortcut('ArrowDown')).toBe('next');
     expect(resolveOperatorDecisionQueueShortcut('Backspace')).toBe('unstage');
+  });
+
+  it('builds deterministic bookmark shelf ordering by severity, updatedAt, and id', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-03',
+        merchantId: 'm-3',
+        provider: 'mock-b',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'Batch latency spike',
+      },
+      {
+        id: 'inc-01',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        severity: 'critical',
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        title: 'Replay dead-letter queue pressure',
+      },
+      {
+        id: 'inc-02',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'Idempotency drift',
+      },
+      {
+        id: '',
+        merchantId: 'm-bad',
+        provider: 'mock-a',
+        severity: 'low',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+      },
+    ]);
+
+    expect(shelf.contract).toBe('settlement-incident-bookmark-shelf.v1');
+    expect(shelf.items.map((item) => item.id)).toEqual(['inc-01', 'inc-02', 'inc-03']);
+    expect(shelf.severityCounts.critical).toBe(1);
+    expect(shelf.severityCounts.high).toBe(2);
+    expect(shelf.totalCount).toBe(3);
+  });
+
+  it('supports replay checklist drawer keyboard navigation and step toggle behavior', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-01',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        severity: 'critical',
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        title: 'Replay dead-letter queue pressure',
+      },
+    ]);
+    const drawer = buildReplayChecklistDrawer({
+      shelfItems: shelf.items,
+      activeBookmarkId: 'inc-01',
+      completedStepIds: ['load_context'],
+      noteDraft: 'Confirm dry-run sample.',
+    });
+
+    expect(drawer.bookmark?.id).toBe('inc-01');
+    expect(drawer.steps[0].completed).toBe(true);
+    const focusedNext = moveReplayChecklistFocus({
+      steps: drawer.steps,
+      activeStepId: drawer.focusedStepId,
+      direction: 'next',
+    });
+    expect(focusedNext).toBe('verify_determinism');
+    expect(resolveReplayChecklistShortcut('ArrowDown')).toBe('focus_next');
+    expect(resolveReplayChecklistShortcut('ArrowUp')).toBe('focus_prev');
+    expect(resolveReplayChecklistShortcut('Enter')).toBe('toggle_step');
+    expect(resolveReplayChecklistShortcut('Backspace')).toBe('clear_note');
+
+    const toggled = toggleReplayChecklistStep({
+      steps: drawer.steps,
+      stepId: focusedNext,
+    });
+    expect(toggled.find((step) => step.id === 'verify_determinism')?.completed).toBe(true);
+  });
+
+  it('clears replay checklist draft safely while preserving bookmark filter unless full reset is confirmed', () => {
+    const safe = resetReplayChecklistDrawerDraftSafe({
+      activeBookmarkFilter: 'high',
+      confirmFilterReset: false,
+    });
+    expect(safe.completedStepIds).toEqual([]);
+    expect(safe.noteDraft).toBe('');
+    expect(safe.activeBookmarkFilter).toBe('high');
+    expect(safe.message).toContain('preserved');
+
+    const confirmed = resetReplayChecklistDrawerDraftSafe({
+      activeBookmarkFilter: 'high',
+      confirmFilterReset: true,
+    });
+    expect(confirmed.completedStepIds).toEqual([]);
+    expect(confirmed.noteDraft).toBe('');
+    expect(confirmed.activeBookmarkFilter).toBe('all');
+    expect(confirmed.message).toContain('reset to default');
   });
 
   it('resets queue draft safely while preserving matrix filter until explicit confirmation', () => {
