@@ -4635,6 +4635,9 @@ onMounted(() => {
     <section class="hero">
       <h1>Merchant Control Tower</h1>
       <p>Onboarding, routing controls, live provider health, and reconciliation/dispute operations.</p>
+      <div class="inline-actions">
+        <NuxtLink class="button-link" to="/payment-flow">Open Multi-Flow Payment Workspace</NuxtLink>
+      </div>
       <div class="auth-grid">
         <label>
           Internal token

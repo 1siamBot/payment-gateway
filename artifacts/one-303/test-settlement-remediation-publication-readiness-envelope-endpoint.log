@@ -1,0 +1,15 @@
+
+> payment-gateway@0.1.0 test
+> jest test/settlement-remediation-publication-readiness-envelope-endpoint.spec.ts
+
+PASS test/settlement-remediation-publication-readiness-envelope-endpoint.spec.ts
+  Settlement remediation publication readiness envelope endpoint
+    ✓ orders publication actions by executionReadinessWeight, blockerWeight, dependencyDepthWeight, issueIdentifier, evidenceTypeWeight, evidencePath (48 ms)
+    ✓ normalizes reason codes and emits canonical machine fields (5 ms)
+    ✓ keeps envelope payload and fingerprint byte-stable for semantically identical input (8 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       3 passed, 3 total
+Snapshots:   0 total
+Time:        1.097 s
+Ran all test suites matching /test\/settlement-remediation-publication-readiness-envelope-endpoint.spec.ts/i.

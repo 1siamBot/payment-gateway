@@ -1,4 +1,4 @@
-import { IsIn, IsString } from 'class-validator';
+import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator';
 
 export class CallbackDto {
   @IsString()
@@ -7,11 +7,19 @@ export class CallbackDto {
   @IsString()
   eventId!: string;
 
+  @IsOptional()
+  @IsString()
+  replayKey?: string;
+
   @IsString()
   transactionReference!: string;
 
   @IsIn(['succeeded', 'failed'])
   status!: 'succeeded' | 'failed';
+
+  @IsOptional()
+  @IsISO8601()
+  eventTimestamp?: string;
 
   @IsString()
   signature!: string;

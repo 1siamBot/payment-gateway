@@ -1,0 +1,5 @@
+Command: npm test -- test/frontend.wave1.spec.ts
+Date: 2026-03-19
+Result: PASS
+Tests: 116 passed, 0 failed
+Suite: frontend wave1 helpers

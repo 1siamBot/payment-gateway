@@ -16,6 +16,16 @@ import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/
 import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
+import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
+import { BuildSettlementQaReleaseGateVerdictPacketDto } from './dto/build-settlement-qa-release-gate-verdict-packet.dto';
+import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
+import { BuildSettlementReleaseCandidateRemediationQueueDto } from './dto/build-settlement-release-candidate-remediation-queue.dto';
+import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
+import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
+import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
+import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
+import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto/build-settlement-remediation-publication-readiness-envelope.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -135,6 +145,56 @@ export class SettlementsController {
   @Post('exceptions/publication-diagnostics-trend-digest')
   publicationDiagnosticsTrendDigest(@Body() body: BuildSettlementPublicationDiagnosticsTrendDigestDto) {
     return this.settlements.buildSettlementExceptionPublicationDiagnosticsTrendDigest(body);
+  }
+
+  @Post('exceptions/publication-evidence-manifest')
+  publicationEvidenceManifest(@Body() body: BuildSettlementPublicationEvidenceManifestDto) {
+    return this.settlements.buildSettlementExceptionPublicationEvidenceManifest(body);
+  }
+
+  @Post('exceptions/release-candidate-scorecard')
+  releaseCandidateScorecard(@Body() body: BuildSettlementReleaseCandidateScorecardDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateScorecard(body);
+  }
+
+  @Post('exceptions/release-candidate-handoff-packet')
+  releaseCandidateHandoffPacket(@Body() body: BuildSettlementReleaseCandidateHandoffPacketDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateHandoffPacket(body);
+  }
+
+  @Post('exceptions/release-evidence-adjudication-snapshot')
+  releaseEvidenceAdjudicationSnapshot(@Body() body: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto) {
+    return this.settlements.buildSettlementExceptionReleaseEvidenceAdjudicationSnapshot(body);
+  }
+
+  @Post('exceptions/release-candidate-remediation-queue')
+  releaseCandidateRemediationQueue(@Body() body: BuildSettlementReleaseCandidateRemediationQueueDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateRemediationQueue(body);
+  }
+
+  @Post('exceptions/remediation-execution-blueprint-packet')
+  remediationExecutionBlueprintPacket(@Body() body: BuildSettlementRemediationExecutionBlueprintPacketDto) {
+    return this.settlements.buildSettlementExceptionRemediationExecutionBlueprintPacket(body);
+  }
+
+  @Post('exceptions/remediation-publication-readiness-envelope')
+  remediationPublicationReadinessEnvelope(@Body() body: BuildSettlementRemediationPublicationReadinessEnvelopeDto) {
+    return this.settlements.buildSettlementExceptionRemediationPublicationReadinessEnvelope(body);
+  }
+
+  @Post('exceptions/release-ready-dependency-graph-snapshot')
+  releaseReadyDependencyGraphSnapshot(@Body() body: BuildSettlementReleaseReadyDependencyGraphSnapshotDto) {
+    return this.settlements.buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(body);
+  }
+
+  @Post('exceptions/qa-release-gate-verdict-packet')
+  qaReleaseGateVerdictPacket(@Body() body: BuildSettlementQaReleaseGateVerdictPacketDto) {
+    return this.settlements.buildSettlementExceptionQaReleaseGateVerdictPacket(body);
+  }
+
+  @Post('exceptions/adjudication-routing-manifest')
+  adjudicationRoutingManifest(@Body() body: BuildSettlementAdjudicationRoutingManifestDto) {
+    return this.settlements.buildSettlementExceptionAdjudicationRoutingManifest(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')

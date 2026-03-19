@@ -98,6 +98,22 @@ import {
   buildPublicationReadinessBoard,
   buildPublicationReadinessGapResolverPanel,
   buildPublicationReadinessCanonicalAutofixPreview,
+  buildOfflinePublicationEvidenceNormalizer,
+  buildOfflinePublicationEvidenceCanonicalPatchPreview,
+  buildRemediationQueueTriageWorkspace,
+  buildRemediationQueueHandoffPanel,
+  buildRemediationQueueCanonicalAutofixPreview,
+  buildReleaseGateVerdictExplorer,
+  buildReleaseGateRemediationActionMatrix,
+  buildReleaseGateCanonicalAutofixPreview,
+  buildRemediationPlanExplorer,
+  buildRemediationExecutionChecklistComposer,
+  buildRemediationPlanCanonicalAutofixPreview,
+  buildRemediationReadinessScoreboard,
+  buildRemediationDispatchBriefGenerator,
+  buildRemediationPlanDiffInspector,
+  buildRemediationPlanEvidenceExportComposer,
+  buildRemediationPlanDiffCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -119,6 +135,12 @@ import {
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
   movePublicationReadinessLaneSelection,
+  moveOfflinePublicationEvidenceLaneSelection,
+  moveRemediationQueueSelection,
+  moveReleaseGateVerdictSelection,
+  moveRemediationPlanSelection,
+  moveRemediationReadinessScoreboardSelection,
+  moveRemediationPlanDiffSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -131,6 +153,12 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolvePublicationReadinessShortcut,
+  resolveOfflinePublicationEvidenceShortcut,
+  resolveRemediationQueueShortcut,
+  resolveReleaseGateVerdictShortcut,
+  resolveRemediationPlanShortcut,
+  resolveRemediationReadinessShortcut,
+  resolveRemediationPlanDiffShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -3871,5 +3899,1156 @@ describe('frontend wave1 helpers', () => {
     expect(secondPacket).toBe(firstPacket);
     expect(firstPacket).toContain('/ONE/issues/ONE-281');
     expect(firstPacket).toContain('/ONE/issues/ONE-269#document-plan');
+  });
+
+  it('normalizes offline publication evidence rows in deterministic tuple order and remains byte-stable', () => {
+    const rows = [
+      {
+        id: 'lane-c',
+        issueIdentifier: 'ONE-294',
+        lanePriorityWeight: 2,
+        readinessWeight: 3,
+        evidenceTypeWeight: 2,
+        evidenceType: 'backend',
+        evidencePath: 'artifacts/one-294/test-settlement-release-candidate-scorecard-endpoint.log',
+        branch: 'feature/one-294',
+        fullSha: '1234567890abcdef1234567890abcdef12345678',
+        prUrl: 'https://github.com/1siamBot/payment-gateway/pull/294',
+        testCommand: 'npm test -- test/settlement-release-candidate-scorecard-endpoint.spec.ts',
+        artifactPath: 'artifacts/one-294/test-settlement-release-candidate-scorecard-endpoint.log',
+        credentialBlocked: false,
+        nextOwner: 'qa',
+      },
+      {
+        id: 'lane-a',
+        issueIdentifier: 'ONE-293',
+        lanePriorityWeight: 1,
+        readinessWeight: 2,
+        evidenceTypeWeight: 1,
+        evidenceType: 'frontend',
+        evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+        branch: 'feature/one-293',
+        fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        prUrl: 'https://github.com/1siamBot/payment-gateway/pull/293',
+        testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-293/publication-readiness-evidence.md',
+        credentialBlocked: false,
+        nextOwner: 'pm',
+      },
+      {
+        id: 'lane-b',
+        issueIdentifier: 'ONE-285',
+        lanePriorityWeight: 1,
+        readinessWeight: 2,
+        evidenceTypeWeight: 3,
+        evidenceType: 'frontend',
+        evidencePath: 'artifacts/one-285/frontend-handoff.md',
+        branch: 'feature/one-285',
+        fullSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        prUrl: '',
+        testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-285/frontend-handoff.md',
+        credentialBlocked: true,
+        nextOwner: 'ops',
+      },
+    ];
+
+    const first = buildOfflinePublicationEvidenceNormalizer({
+      rows,
+      activeLaneId: '',
+    });
+    const second = buildOfflinePublicationEvidenceNormalizer({
+      rows: [...rows].reverse(),
+      activeLaneId: '',
+    });
+
+    expect(first.rows.map((row) => row.issueIdentifier)).toEqual(['ONE-285', 'ONE-293', 'ONE-294']);
+    expect(first.rows[1]?.orderingKey).toEqual([1, 2, 'ONE-293', 1, 'artifacts/one-293/publication-readiness-evidence.md']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits stable machine fields and dispatch-ready packet markdown for offline publication evidence', () => {
+    const normalized = buildOfflinePublicationEvidenceNormalizer({
+      rows: [
+        {
+          id: 'lane-ready',
+          issueIdentifier: 'ONE-293',
+          lanePriorityWeight: 1,
+          readinessWeight: 1,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend',
+          evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+          branch: 'feature/one-293',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/293',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-293/publication-readiness-evidence.md',
+          blockedByCredential: false,
+          nextOwner: 'qa',
+        },
+        {
+          id: 'lane-blocked',
+          issueIdentifier: 'ONE-284',
+          lanePriorityWeight: 2,
+          readinessWeight: 2,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend',
+          evidencePath: 'artifacts/one-284/frontend-anomaly-timeline-workspace.md',
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          blockedByCredential: true,
+          nextOwner: '',
+        },
+      ],
+      activeLaneId: 'lane-ready',
+    });
+
+    expect(normalized.dispatchReadyCount).toBe(1);
+    expect(normalized.blockedCount).toBe(1);
+    expect(normalized.rows.find((row) => row.id === 'lane-ready')?.machineFields).toEqual({
+      hasBranch: true,
+      hasCommit: true,
+      hasPr: true,
+      hasTestCommand: true,
+      hasArtifactPath: true,
+      credentialBlocked: false,
+      nextOwner: 'qa',
+      dispatchReady: true,
+    });
+    expect(normalized.rows.find((row) => row.id === 'lane-blocked')?.machineFields).toEqual({
+      hasBranch: false,
+      hasCommit: false,
+      hasPr: false,
+      hasTestCommand: false,
+      hasArtifactPath: false,
+      credentialBlocked: true,
+      nextOwner: 'unassigned',
+      dispatchReady: false,
+    });
+    expect(normalized.handoffPacketMarkdown).toContain('/ONE/issues/ONE-293');
+    expect(normalized.handoffPacketMarkdown).toContain('credentialBlocked');
+  });
+
+  it('builds canonical patch preview and keyboard workflow for offline publication evidence normalizer', () => {
+    const preview = buildOfflinePublicationEvidenceCanonicalPatchPreview({
+      markdown: [
+        '- source issue: /issues/ONE-293',
+        '- plan doc: https://paperclip.dev/issues/ONE-291#document-plan',
+        '- review comment: /ONE/issues/ONE-295#comment-12',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-offline-publication-evidence-canonical-patch-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-293',
+      '/ONE/issues/ONE-295#comment-12',
+      '/ONE/issues/ONE-291#document-plan',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-291#document-plan');
+
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'e', altKey: true })).toBe('focus_evidence_list');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_lane');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_lane');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'h', ctrlKey: true, shiftKey: true }))
+      .toBe('open_handoff_packet_preview');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_normalization_pass');
+
+    expect(moveOfflinePublicationEvidenceLaneSelection({
+      rows: buildOfflinePublicationEvidenceNormalizer({
+        rows: [
+          {
+            id: 'lane-1',
+            issueIdentifier: 'ONE-293',
+            lanePriorityWeight: 1,
+            readinessWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+          },
+          {
+            id: 'lane-2',
+            issueIdentifier: 'ONE-294',
+            lanePriorityWeight: 2,
+            readinessWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-294/test.log',
+          },
+        ],
+        activeLaneId: '',
+      }).rows,
+      activeLaneId: 'lane-1',
+      direction: 'next_lane',
+    })).toBe('lane-2');
+  });
+
+  it('builds remediation queue triage workspace in deterministic tuple order', () => {
+    const first = buildRemediationQueueTriageWorkspace({
+      rows: [
+        {
+          id: 'lane-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'qa-gate',
+          severityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 3,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'release',
+          severityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 3,
+        },
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'evidence',
+          severityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+      ],
+      activeRowId: '',
+    });
+    const second = buildRemediationQueueTriageWorkspace({
+      rows: [
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'evidence',
+          severityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+        {
+          id: 'lane-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'qa-gate',
+          severityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 3,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'release',
+          severityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 3,
+        },
+      ],
+      activeRowId: '',
+    });
+    expect(first.contract).toBe('settlement-remediation-queue-triage-workspace.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['lane-a', 'lane-b', 'lane-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, 2, 'ONE-300', 3]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits stable remediation queue machine fields and handoff output', () => {
+    const workspace = buildRemediationQueueTriageWorkspace({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'release',
+          severityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          branch: 'feature/one-300',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/300',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-300/test-settlement-qa-release-gate-verdict-packet-endpoint.log',
+          nextOwner: 'qa',
+          blockingDependencies: [],
+          canonicalLinks: ['/ONE/issues/ONE-300', '/ONE/issues/ONE-299#document-plan'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'evidence',
+          severityWeight: 1,
+          blockerWeight: 2,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          nextOwner: '',
+          blockingDependencies: ['ONE-292 credential restore'],
+          canonicalLinks: ['/issues/ONE-301'],
+        },
+      ],
+      activeRowId: '',
+    });
+    const panel = buildRemediationQueueHandoffPanel({ rows: workspace.rows });
+
+    expect(workspace.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      readyForExecution: true,
+      missingEvidence: [],
+      blockingDependencies: [],
+      nextOwner: 'qa',
+      canonicalLinkViolations: [],
+    });
+    expect(workspace.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      readyForExecution: false,
+      missingEvidence: ['artifactPath', 'branch', 'fullSha', 'prLink', 'testCommand'],
+      blockingDependencies: ['ONE-292 credential restore'],
+      nextOwner: 'unassigned',
+      canonicalLinkViolations: ['/issues/ONE-301'],
+    });
+    expect(panel.contract).toBe('settlement-remediation-queue-handoff-panel.v1');
+    expect(panel.markdown).toContain('/ONE/issues/ONE-300');
+    expect(panel.markdown).toContain('ONE-292 credential restore');
+  });
+
+  it('builds remediation canonical autofix preview and keyboard workflow deterministically', () => {
+    const preview = buildRemediationQueueCanonicalAutofixPreview({
+      markdown: [
+        '- upstream queue: /issues/ONE-301',
+        '- verdict packet: /ONE/issues/ONE-300#document-plan',
+        '- related comment: https://paperclip.dev/issues/ONE-299#comment-19',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-remediation-queue-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-301',
+      '/ONE/issues/ONE-300#document-plan',
+      '/ONE/issues/ONE-299#comment-19',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-301');
+    expect(resolveRemediationQueueShortcut({ key: 'q', altKey: true })).toBe('focus_queue');
+    expect(resolveRemediationQueueShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_item');
+    expect(resolveRemediationQueueShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_item');
+    expect(resolveRemediationQueueShortcut({ key: 'h', ctrlKey: true, shiftKey: true })).toBe('open_handoff_panel');
+    expect(resolveRemediationQueueShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true })).toBe('run_validation_pass');
+    expect(moveRemediationQueueSelection({
+      rows: buildRemediationQueueTriageWorkspace({
+        rows: [
+          {
+            id: 'lane-1',
+            issueIdentifier: 'ONE-300',
+            remediationType: 'release',
+            severityWeight: 1,
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+          {
+            id: 'lane-2',
+            issueIdentifier: 'ONE-301',
+            remediationType: 'evidence',
+            severityWeight: 1,
+            blockerWeight: 2,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+        ],
+        activeRowId: '',
+      }).rows,
+      activeRowId: 'lane-1',
+      direction: 'next_item',
+    })).toBe('lane-2');
+  });
+
+  it('builds release-gate verdict explorer rows in deterministic ordering-key order', () => {
+    const first = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'gate-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'dependency_graph',
+          gatePriorityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+      ],
+      activeVerdictId: '',
+    });
+    const second = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'gate-b',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 1,
+        },
+        {
+          id: 'gate-c',
+          issueIdentifier: 'ONE-340',
+          remediationType: 'dependency_graph',
+          gatePriorityWeight: 2,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 2,
+        },
+        {
+          id: 'gate-a',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          remediationTypeWeight: 2,
+        },
+      ],
+      activeVerdictId: '',
+    });
+    expect(first.contract).toBe('settlement-release-gate-verdict-explorer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['gate-a', 'gate-b', 'gate-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, 2, 'ONE-300', 2]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits release-gate matrix machine fields with deterministic readiness and canonical checks', () => {
+    const explorer = buildReleaseGateVerdictExplorer({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-300',
+          remediationType: 'qa_packet',
+          gatePriorityWeight: 1,
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          releaseGateState: 'pass',
+          requiredRemediations: [],
+          blockingDependencies: [],
+          missingEvidence: [],
+          nextOwner: 'qa',
+          branch: 'feature/one-300',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/300',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-300/test-settlement-qa-release-gate-verdict-packet-endpoint.log',
+          canonicalLinks: ['/ONE/issues/ONE-300', '/ONE/issues/ONE-291'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-301',
+          remediationType: 'queue_contract',
+          gatePriorityWeight: 1,
+          blockerWeight: 2,
+          dependencyDepthWeight: 1,
+          remediationTypeWeight: 1,
+          releaseGateState: 'block',
+          requiredRemediations: ['backfill queue parity'],
+          blockingDependencies: ['ONE-292 credential restore'],
+          missingEvidence: ['operatorSignoff'],
+          nextOwner: '',
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          canonicalLinks: ['/issues/ONE-301'],
+        },
+      ],
+      activeVerdictId: '',
+    });
+    const matrix = buildReleaseGateRemediationActionMatrix({ rows: explorer.rows });
+
+    expect(explorer.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      releaseGateState: 'pass',
+      requiredRemediations: [],
+      blockingDependencies: [],
+      missingEvidence: [],
+      nextOwner: 'qa',
+      readyForExecution: true,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      releaseGateState: 'block',
+      requiredRemediations: ['backfill queue parity'],
+      blockingDependencies: ['ONE-292 credential restore'],
+      missingEvidence: ['artifactPath', 'branch', 'fullSha', 'operatorSignoff', 'prLink', 'testCommand'],
+      nextOwner: 'unassigned',
+      readyForExecution: false,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.canonicalLinkViolations).toEqual(['/issues/ONE-301']);
+    expect(matrix.contract).toBe('settlement-release-gate-remediation-action-matrix.v1');
+    expect(matrix.markdown).toContain('/ONE/issues/ONE-300');
+    expect(matrix.markdown).toContain('ONE-292 credential restore');
+  });
+
+  it('builds release-gate canonical autofix preview and shortcut workflow deterministically', () => {
+    const preview = buildReleaseGateCanonicalAutofixPreview({
+      markdown: [
+        '- queue source: /issues/ONE-301',
+        '- verdict packet: /ONE/issues/ONE-300#document-plan',
+        '- dependency comment: https://paperclip.dev/issues/ONE-299#comment-9',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-release-gate-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-301',
+      '/ONE/issues/ONE-300#document-plan',
+      '/ONE/issues/ONE-299#comment-9',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-301');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'g', altKey: true })).toBe('focus_verdict_explorer');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_verdict');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_verdict');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'm', ctrlKey: true, shiftKey: true }))
+      .toBe('open_remediation_matrix');
+    expect(resolveReleaseGateVerdictShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveReleaseGateVerdictSelection({
+      rows: buildReleaseGateVerdictExplorer({
+        rows: [
+          {
+            id: 'gate-1',
+            issueIdentifier: 'ONE-300',
+            remediationType: 'qa_packet',
+            gatePriorityWeight: 1,
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+          {
+            id: 'gate-2',
+            issueIdentifier: 'ONE-301',
+            remediationType: 'queue_contract',
+            gatePriorityWeight: 1,
+            blockerWeight: 2,
+            dependencyDepthWeight: 1,
+            remediationTypeWeight: 1,
+          },
+        ],
+        activeVerdictId: '',
+      }).rows,
+      activeVerdictId: 'gate-1',
+      direction: 'next_verdict',
+    })).toBe('gate-2');
+  });
+
+  it('builds remediation plan explorer in deterministic section/order tuple order', () => {
+    const first = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'plan-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-c',
+          requiredActions: ['validate deterministic export'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 2,
+          planFingerprint: 'fingerprint-a',
+          requiredActions: ['align contract shape'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-b',
+          requiredActions: ['prepare QA evidence'],
+          owner: 'qa',
+        },
+      ],
+      activePlanItemId: '',
+    });
+    const second = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'plan-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-b',
+          requiredActions: ['prepare QA evidence'],
+          owner: 'qa',
+        },
+        {
+          id: 'plan-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-c',
+          requiredActions: ['validate deterministic export'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 2,
+          planFingerprint: 'fingerprint-a',
+          requiredActions: ['align contract shape'],
+          owner: 'frontend engineer',
+        },
+      ],
+      activePlanItemId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-plan-explorer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['plan-b', 'plan-a', 'plan-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 'contract_alignment', 1, 'ONE-339', 'fingerprint-b']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('builds execution checklist machine fields with stable readiness behavior', () => {
+    const explorer = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'one340-fingerprint',
+          requiredActions: ['confirm output tuple'],
+          blockedDependencies: [],
+          evidenceGaps: [],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'qa_handoff',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'one339-fingerprint',
+          requiredActions: ['attach QA packet'],
+          blockedDependencies: ['ONE-286 credential unblock'],
+          evidenceGaps: ['qa_signoff'],
+          owner: 'qa',
+        },
+      ],
+      activePlanItemId: '',
+    });
+    const checklist = buildRemediationExecutionChecklistComposer({ rows: explorer.rows });
+
+    expect(explorer.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      planFingerprint: 'one340-fingerprint',
+      requiredActions: ['confirm output tuple'],
+      blockedDependencies: [],
+      evidenceGaps: [],
+      owner: 'frontend engineer',
+      readyForQA: true,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      planFingerprint: 'one339-fingerprint',
+      requiredActions: ['attach QA packet'],
+      blockedDependencies: ['ONE-286 credential unblock'],
+      evidenceGaps: ['qa_signoff'],
+      owner: 'qa',
+      readyForQA: false,
+    });
+    expect(checklist.contract).toBe('settlement-remediation-execution-checklist-composer.v1');
+    expect(checklist.markdown).toContain('/ONE/issues/ONE-340');
+    expect(checklist.markdown).toContain('ONE-286 credential unblock');
+    expect(JSON.stringify(checklist)).toBe(JSON.stringify(buildRemediationExecutionChecklistComposer({ rows: explorer.rows })));
+  });
+
+  it('builds remediation plan canonical autofix preview and shortcut workflow deterministically', () => {
+    const preview = buildRemediationPlanCanonicalAutofixPreview({
+      markdown: [
+        '- parent issue: /issues/ONE-340',
+        '- plan doc: /ONE/issues/ONE-339#document-plan',
+        '- comment: https://paperclip.dev/issues/ONE-338#comment-9',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-remediation-plan-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-340',
+      '/ONE/issues/ONE-339#document-plan',
+      '/ONE/issues/ONE-338#comment-9',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-340');
+    expect(resolveRemediationPlanShortcut({ key: 'r', altKey: true })).toBe('focus_plan_explorer');
+    expect(resolveRemediationPlanShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_plan_item');
+    expect(resolveRemediationPlanShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_plan_item');
+    expect(resolveRemediationPlanShortcut({ key: 'k', ctrlKey: true, shiftKey: true })).toBe('open_checklist_composer');
+    expect(resolveRemediationPlanShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveRemediationPlanSelection({
+      rows: buildRemediationPlanExplorer({
+        rows: [
+          {
+            id: 'plan-1',
+            issueIdentifier: 'ONE-340',
+            sectionKey: 'execution',
+            sectionWeight: 1,
+            itemOrder: 1,
+            requiredActions: ['a'],
+            owner: 'frontend engineer',
+          },
+          {
+            id: 'plan-2',
+            issueIdentifier: 'ONE-339',
+            sectionKey: 'qa_handoff',
+            sectionWeight: 2,
+            itemOrder: 1,
+            requiredActions: ['b'],
+            owner: 'qa',
+          },
+        ],
+        activePlanItemId: '',
+      }).rows,
+      activePlanItemId: 'plan-1',
+      direction: 'next_plan_item',
+    })).toBe('plan-2');
+  });
+
+  it('builds remediation readiness scoreboard rows in deterministic tuple order', () => {
+    const first = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-c',
+          issueIdentifier: 'ONE-339',
+          planSet: 'canonical-link-hardening',
+          planFingerprint: 'fp-c',
+          readinessScore: 75,
+          blockingCount: 2,
+          evidenceCoverage: 70,
+          nextOwner: 'pm',
+          dispatchPriority: 'medium',
+        },
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-a',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-b',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+    const second = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-a',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-c',
+          issueIdentifier: 'ONE-339',
+          planSet: 'canonical-link-hardening',
+          planFingerprint: 'fp-c',
+          readinessScore: 75,
+          blockingCount: 2,
+          evidenceCoverage: 70,
+          nextOwner: 'pm',
+          dispatchPriority: 'medium',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-b',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-readiness-scoreboard.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['row-b', 'row-a', 'row-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, -81, 'ONE-341', 'fp-b']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits remediation readiness machine fields with stable readyForQA behavior', () => {
+    const scoreboard = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-ready',
+          readinessScore: 92,
+          blockingCount: 0,
+          evidenceCoverage: 95,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+          canonicalLinks: ['/ONE/issues/ONE-343'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-blocked',
+          readinessScore: 68,
+          blockingCount: 2,
+          evidenceCoverage: 55,
+          nextOwner: '',
+          dispatchPriority: 'critical',
+          canonicalLinks: ['/issues/ONE-341'],
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(scoreboard.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      planFingerprint: 'fp-ready',
+      readinessScore: 92,
+      blockingCount: 0,
+      evidenceCoverage: 95,
+      nextOwner: 'qa',
+      dispatchPriority: 'high',
+      readyForQA: true,
+    });
+    expect(scoreboard.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      planFingerprint: 'fp-blocked',
+      readinessScore: 68,
+      blockingCount: 2,
+      evidenceCoverage: 55,
+      nextOwner: 'unassigned',
+      dispatchPriority: 'critical',
+      readyForQA: false,
+    });
+    expect(scoreboard.rows.find((row) => row.id === 'blocked')?.canonicalLinkViolations).toEqual(['/issues/ONE-341']);
+  });
+
+  it('builds remediation dispatch brief markdown with canonical autofix preview and keyboard workflow', () => {
+    const scoreboard = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-1',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-1',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-2',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-2',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+    const brief = buildRemediationDispatchBriefGenerator({
+      rows: scoreboard.rows,
+      relatedLinksText: [
+        '/issues/ONE-343',
+        '/issues/ONE-341#document-plan',
+        'https://paperclip.dev/issues/ONE-340#comment-7',
+      ].join('\n'),
+    });
+
+    expect(brief.contract).toBe('settlement-remediation-dispatch-brief-generator.v1');
+    expect(brief.markdown).toContain('# Remediation Dispatch Brief');
+    expect(brief.markdown).toContain('/ONE/issues/ONE-343');
+    expect(brief.markdown).toContain('/ONE/issues/ONE-341');
+    expect(brief.canonicalAutofixPreview.changedCount).toBe(3);
+    expect(brief.canonicalAutofixPreview.invalidCount).toBe(0);
+    expect(brief.canonicalAutofixPreview.copyText).toContain('/ONE/issues/ONE-340#comment-7');
+    expect(resolveRemediationReadinessShortcut({ key: 's', altKey: true })).toBe('focus_scoreboard');
+    expect(resolveRemediationReadinessShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_row');
+    expect(resolveRemediationReadinessShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_row');
+    expect(resolveRemediationReadinessShortcut({ key: 'b', ctrlKey: true, shiftKey: true }))
+      .toBe('open_dispatch_brief_generator');
+    expect(resolveRemediationReadinessShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveRemediationReadinessScoreboardSelection({
+      rows: scoreboard.rows,
+      activeRowId: scoreboard.rows[0]?.id ?? '',
+      direction: 'next_row',
+    })).toBe(scoreboard.rows[1]?.id);
+  });
+
+  it('builds remediation-plan diff inspector rows in deterministic section/order tuple order', () => {
+    const first = buildRemediationPlanDiffInspector({
+      rows: [
+        {
+          id: 'diff-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          rowOrder: 1,
+          planFingerprintAfter: 'after-c',
+          planFingerprintBefore: 'before-c',
+          changedActions: ['publish deterministic packet'],
+          nextOwner: 'frontend engineer',
+        },
+        {
+          id: 'diff-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          rowOrder: 2,
+          planFingerprintAfter: 'after-a',
+          planFingerprintBefore: 'before-a',
+          changedActions: ['normalize issue links'],
+          nextOwner: 'pm',
+        },
+        {
+          id: 'diff-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          rowOrder: 1,
+          planFingerprintAfter: 'after-b',
+          planFingerprintBefore: 'before-b',
+          changedActions: ['attach QA parity matrix'],
+          nextOwner: 'qa',
+        },
+      ],
+      activeDiffRowId: '',
+    });
+    const second = buildRemediationPlanDiffInspector({
+      rows: [
+        {
+          id: 'diff-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          rowOrder: 1,
+          planFingerprintAfter: 'after-b',
+          planFingerprintBefore: 'before-b',
+          changedActions: ['attach QA parity matrix'],
+          nextOwner: 'qa',
+        },
+        {
+          id: 'diff-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          rowOrder: 1,
+          planFingerprintAfter: 'after-c',
+          planFingerprintBefore: 'before-c',
+          changedActions: ['publish deterministic packet'],
+          nextOwner: 'frontend engineer',
+        },
+        {
+          id: 'diff-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          rowOrder: 2,
+          planFingerprintAfter: 'after-a',
+          planFingerprintBefore: 'before-a',
+          changedActions: ['normalize issue links'],
+          nextOwner: 'pm',
+        },
+      ],
+      activeDiffRowId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-plan-diff-inspector.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['diff-b', 'diff-a', 'diff-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 'contract_alignment', 1, 'ONE-339', 'after-b']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits remediation-plan diff machine fields with stable canonical and readiness behavior', () => {
+    const inspector = buildRemediationPlanDiffInspector({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 1,
+          rowOrder: 1,
+          planFingerprintBefore: 'before-ready',
+          planFingerprintAfter: 'after-ready',
+          changedActions: ['align ordering tuple', 'align ordering tuple'],
+          newBlocks: [],
+          resolvedBlocks: ['ONE-286 credential unblock'],
+          evidenceDelta: [],
+          nextOwner: 'frontend engineer',
+          canonicalLinks: ['/ONE/issues/ONE-340', '/ONE/issues/ONE-339'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'qa_handoff',
+          sectionWeight: 2,
+          rowOrder: 1,
+          planFingerprintBefore: 'before-blocked',
+          planFingerprintAfter: 'after-blocked',
+          changedActions: ['attach QA evidence packet'],
+          newBlocks: ['ONE-292 credential restore'],
+          resolvedBlocks: [],
+          evidenceDelta: ['missing_test_log'],
+          nextOwner: '',
+          canonicalLinks: ['/issues/ONE-338'],
+        },
+      ],
+      activeDiffRowId: '',
+    });
+
+    expect(inspector.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      planFingerprintBefore: 'before-ready',
+      planFingerprintAfter: 'after-ready',
+      changedActions: ['align ordering tuple'],
+      newBlocks: [],
+      resolvedBlocks: ['ONE-286 credential unblock'],
+      evidenceDelta: [],
+      nextOwner: 'frontend engineer',
+      readyForQA: true,
+    });
+    expect(inspector.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      planFingerprintBefore: 'before-blocked',
+      planFingerprintAfter: 'after-blocked',
+      changedActions: ['attach QA evidence packet'],
+      newBlocks: ['ONE-292 credential restore'],
+      resolvedBlocks: [],
+      evidenceDelta: ['missing_test_log'],
+      nextOwner: 'unassigned',
+      readyForQA: false,
+    });
+    expect(inspector.rows.find((row) => row.id === 'blocked')?.canonicalLinkViolations).toEqual(['/issues/ONE-338']);
+  });
+
+  it('builds remediation-plan diff export composer and canonical autofix preview deterministically', () => {
+    const inspector = buildRemediationPlanDiffInspector({
+      rows: [
+        {
+          id: 'diff-1',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 1,
+          rowOrder: 1,
+          planFingerprintBefore: 'before-1',
+          planFingerprintAfter: 'after-1',
+          changedActions: ['validate diff checksum'],
+          newBlocks: [],
+          resolvedBlocks: [],
+          evidenceDelta: [],
+          nextOwner: 'frontend engineer',
+        },
+        {
+          id: 'diff-2',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'qa_handoff',
+          sectionWeight: 2,
+          rowOrder: 1,
+          planFingerprintBefore: 'before-2',
+          planFingerprintAfter: 'after-2',
+          changedActions: ['publish export packet'],
+          newBlocks: [],
+          resolvedBlocks: [],
+          evidenceDelta: [],
+          nextOwner: 'qa',
+        },
+      ],
+      activeDiffRowId: '',
+    });
+    const composer = buildRemediationPlanEvidenceExportComposer({ rows: inspector.rows });
+    const preview = buildRemediationPlanDiffCanonicalAutofixPreview({
+      markdown: [
+        composer.markdown,
+        '',
+        '- parent issue: /issues/ONE-340',
+        '- comment: https://paperclip.dev/issues/ONE-339#comment-9',
+      ].join('\n'),
+    });
+
+    expect(composer.contract).toBe('settlement-remediation-plan-evidence-export-composer.v1');
+    expect(composer.markdown).toContain('/ONE/issues/ONE-340');
+    expect(preview.contract).toBe('settlement-remediation-plan-diff-canonical-autofix-preview.v1');
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-340');
+    expect(resolveRemediationPlanDiffShortcut({ key: 'd', altKey: true })).toBe('focus_diff_inspector');
+    expect(resolveRemediationPlanDiffShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_diff_row');
+    expect(resolveRemediationPlanDiffShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_diff_row');
+    expect(resolveRemediationPlanDiffShortcut({ key: 'e', ctrlKey: true, shiftKey: true }))
+      .toBe('open_export_composer');
+    expect(resolveRemediationPlanDiffShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveRemediationPlanDiffSelection({
+      rows: inspector.rows,
+      activeDiffRowId: 'diff-1',
+      direction: 'next_diff_row',
+    })).toBe('diff-2');
   });
 });

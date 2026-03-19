@@ -46,6 +46,16 @@ import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/
 import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
+import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
+import { BuildSettlementQaReleaseGateVerdictPacketDto } from './dto/build-settlement-qa-release-gate-verdict-packet.dto';
+import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
+import { BuildSettlementReleaseCandidateRemediationQueueDto } from './dto/build-settlement-release-candidate-remediation-queue.dto';
+import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
+import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
+import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
+import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
+import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto/build-settlement-remediation-publication-readiness-envelope.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -80,6 +90,46 @@ import {
   buildSettlementPublicationDiagnosticsTrendDigest,
   SettlementPublicationDiagnosticsTrendDigest,
 } from './publication-diagnostics-trend-digest';
+import {
+  buildSettlementPublicationEvidenceManifest,
+  SettlementPublicationEvidenceManifest,
+} from './publication-evidence-manifest';
+import {
+  buildSettlementReleaseCandidateScorecard,
+  SettlementReleaseCandidateScorecard,
+} from './release-candidate-scorecard';
+import {
+  buildSettlementReleaseEvidenceAdjudicationSnapshot,
+  SettlementReleaseEvidenceAdjudicationSnapshot,
+} from './release-evidence-adjudication-snapshot';
+import {
+  buildSettlementReleaseCandidateRemediationQueue,
+  SettlementReleaseCandidateRemediationQueue,
+} from './release-candidate-remediation-queue';
+import {
+  buildSettlementRemediationExecutionBlueprintPacket,
+  SettlementRemediationExecutionBlueprintPacket,
+} from './remediation-execution-blueprint-packet';
+import {
+  buildSettlementRemediationPublicationReadinessEnvelope,
+  SettlementRemediationPublicationReadinessEnvelope,
+} from './remediation-publication-readiness-envelope';
+import {
+  buildSettlementReleaseReadyDependencyGraphSnapshot,
+  SettlementReleaseReadyDependencyGraphSnapshot,
+} from './release-ready-dependency-graph-snapshot';
+import {
+  buildSettlementAdjudicationRoutingManifest,
+  SettlementAdjudicationRoutingManifest,
+} from './adjudication-routing-manifest';
+import {
+  buildSettlementQaReleaseGateVerdictPacket,
+  SettlementQaReleaseGateVerdictPacket,
+} from './qa-release-gate-verdict-packet';
+import {
+  buildSettlementReleaseCandidateHandoffPacket,
+  SettlementReleaseCandidateHandoffPacket,
+} from './release-candidate-handoff-packet';
 import {
   buildSettlementPublicationWindowPlan,
   SettlementPublicationWindowPlan,
@@ -281,6 +331,16 @@ type SettlementPublicationDiagnosticsContractSnapshotContractResponse =
 type SettlementPublicationDiagnosticsDeltaBundleContractResponse = SettlementPublicationDiagnosticsDeltaBundle;
 type SettlementPublicationDiagnosticsFixtureExportContractResponse = SettlementPublicationDiagnosticsFixtureExport;
 type SettlementPublicationDiagnosticsTrendDigestContractResponse = SettlementPublicationDiagnosticsTrendDigest;
+type SettlementPublicationEvidenceManifestContractResponse = SettlementPublicationEvidenceManifest;
+type SettlementReleaseCandidateScorecardContractResponse = SettlementReleaseCandidateScorecard;
+type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementReleaseCandidateHandoffPacket;
+type SettlementReleaseEvidenceAdjudicationSnapshotContractResponse = SettlementReleaseEvidenceAdjudicationSnapshot;
+type SettlementReleaseCandidateRemediationQueueContractResponse = SettlementReleaseCandidateRemediationQueue;
+type SettlementRemediationExecutionBlueprintPacketContractResponse = SettlementRemediationExecutionBlueprintPacket;
+type SettlementRemediationPublicationReadinessEnvelopeContractResponse = SettlementRemediationPublicationReadinessEnvelope;
+type SettlementReleaseReadyDependencyGraphSnapshotContractResponse = SettlementReleaseReadyDependencyGraphSnapshot;
+type SettlementQaReleaseGateVerdictPacketContractResponse = SettlementQaReleaseGateVerdictPacket;
+type SettlementAdjudicationRoutingManifestContractResponse = SettlementAdjudicationRoutingManifest;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -685,6 +745,69 @@ export class SettlementsService {
     input: BuildSettlementPublicationDiagnosticsTrendDigestDto,
   ): SettlementPublicationDiagnosticsTrendDigestContractResponse {
     return buildSettlementPublicationDiagnosticsTrendDigest(input);
+  }
+
+  buildSettlementExceptionPublicationEvidenceManifest(
+    input: BuildSettlementPublicationEvidenceManifestDto,
+  ): SettlementPublicationEvidenceManifestContractResponse {
+    return buildSettlementPublicationEvidenceManifest(input);
+  }
+
+  buildSettlementExceptionReleaseCandidateScorecard(
+    input: BuildSettlementReleaseCandidateScorecardDto,
+  ): SettlementReleaseCandidateScorecardContractResponse {
+    return buildSettlementReleaseCandidateScorecard(input);
+  }
+
+  buildSettlementExceptionReleaseCandidateHandoffPacket(
+    input: BuildSettlementReleaseCandidateHandoffPacketDto,
+  ): SettlementReleaseCandidateHandoffPacketContractResponse {
+    return buildSettlementReleaseCandidateHandoffPacket(input);
+  }
+
+  buildSettlementExceptionReleaseEvidenceAdjudicationSnapshot(
+    input: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto,
+  ): SettlementReleaseEvidenceAdjudicationSnapshotContractResponse {
+    return buildSettlementReleaseEvidenceAdjudicationSnapshot(input);
+  }
+
+  buildSettlementExceptionReleaseCandidateRemediationQueue(
+    input: BuildSettlementReleaseCandidateRemediationQueueDto,
+  ): SettlementReleaseCandidateRemediationQueueContractResponse {
+    return buildSettlementReleaseCandidateRemediationQueue(input);
+  }
+
+  buildSettlementExceptionRemediationExecutionBlueprintPacket(
+    input: BuildSettlementRemediationExecutionBlueprintPacketDto,
+  ): SettlementRemediationExecutionBlueprintPacketContractResponse {
+    return buildSettlementRemediationExecutionBlueprintPacket(input);
+  }
+
+  buildSettlementExceptionRemediationPublicationReadinessEnvelope(
+    input: BuildSettlementRemediationPublicationReadinessEnvelopeDto,
+  ): SettlementRemediationPublicationReadinessEnvelopeContractResponse {
+    return buildSettlementRemediationPublicationReadinessEnvelope({
+      ...input,
+      executionReadiness: input.executionReadiness === 'ready' ? 'ready' : 'blocked',
+    });
+  }
+
+  buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(
+    input: BuildSettlementReleaseReadyDependencyGraphSnapshotDto,
+  ): SettlementReleaseReadyDependencyGraphSnapshotContractResponse {
+    return buildSettlementReleaseReadyDependencyGraphSnapshot(input);
+  }
+
+  buildSettlementExceptionQaReleaseGateVerdictPacket(
+    input: BuildSettlementQaReleaseGateVerdictPacketDto,
+  ): SettlementQaReleaseGateVerdictPacketContractResponse {
+    return buildSettlementQaReleaseGateVerdictPacket(input);
+  }
+
+  buildSettlementExceptionAdjudicationRoutingManifest(
+    input: BuildSettlementAdjudicationRoutingManifestDto,
+  ): SettlementAdjudicationRoutingManifestContractResponse {
+    return buildSettlementAdjudicationRoutingManifest(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(

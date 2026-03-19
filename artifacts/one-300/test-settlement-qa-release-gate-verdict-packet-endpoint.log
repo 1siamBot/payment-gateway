@@ -1,0 +1,4 @@
+
+> payment-gateway@0.1.0 test
+> jest test/settlement-qa-release-gate-verdict-packet-endpoint.spec.ts
+
