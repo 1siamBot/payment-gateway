@@ -121,6 +121,46 @@ type RefundResponse = {
 type RefundLifecycleConflictReason = 'duplicate_request' | 'invalid_prior_state' | 'stale_update';
 type RefundLifecycleEventReasonCode = 'refund_requested' | 'refund_processing' | 'refund_succeeded' | 'refund_failed';
 type RefundTransitionTargetStatus = Exclude<RefundStatus, 'REQUESTED'>;
+type PayoutChargebackStatus = 'opened' | 'investigating' | 'won' | 'lost' | 'reversed';
+type PayoutChargebackLifecycleConflictReason = 'duplicate_event' | 'invalid_prior_state' | 'stale_transition_update';
+type PayoutChargebackLifecycleEventReasonCode =
+  | 'chargeback_opened'
+  | 'chargeback_investigating'
+  | 'chargeback_won'
+  | 'chargeback_lost'
+  | 'payout_reversed';
+
+type PayoutChargebackTransition = {
+  fromStatus: PayoutChargebackStatus | null;
+  toStatus: PayoutChargebackStatus;
+  eventId: string;
+  reasonCode: PayoutChargebackLifecycleEventReasonCode;
+  occurredAt: string;
+};
+
+type PayoutChargebackLifecycleResponse = {
+  paymentReference: string;
+  transactionId: string;
+  merchantId: string;
+  transition: PayoutChargebackTransition | null;
+  timeline: PayoutChargebackTransition[];
+  lifecycle: {
+    contract: 'payout-chargeback-transition.v1';
+    currentStatus: PayoutChargebackStatus | null;
+    terminal: boolean;
+    allowedNextStatuses: PayoutChargebackStatus[];
+    reasonCodes: {
+      duplicateEvent: 'duplicate_event';
+      invalidPriorState: 'invalid_prior_state';
+      staleTransitionUpdate: 'stale_transition_update';
+    };
+    httpStatusByReason: {
+      duplicate_event: 409;
+      invalid_prior_state: 409;
+      stale_transition_update: 409;
+    };
+  };
+};
 
 const REFUND_LIFECYCLE_TRANSITIONS: Record<RefundStatus, RefundStatus[]> = {
   REQUESTED: [RefundStatus.PROCESSING],
@@ -134,6 +174,22 @@ const REFUND_LIFECYCLE_EVENT_REASON_CODES: Record<RefundStatus, RefundLifecycleE
   PROCESSING: 'refund_processing',
   SUCCEEDED: 'refund_succeeded',
   FAILED: 'refund_failed',
+};
+
+const PAYOUT_CHARGEBACK_TRANSITIONS: Record<PayoutChargebackStatus, PayoutChargebackStatus[]> = {
+  opened: ['investigating', 'reversed'],
+  investigating: ['won', 'lost', 'reversed'],
+  won: [],
+  lost: [],
+  reversed: [],
+};
+
+const PAYOUT_CHARGEBACK_EVENT_REASON_CODES: Record<PayoutChargebackStatus, PayoutChargebackLifecycleEventReasonCode> = {
+  opened: 'chargeback_opened',
+  investigating: 'chargeback_investigating',
+  won: 'chargeback_won',
+  lost: 'chargeback_lost',
+  reversed: 'payout_reversed',
 };
 
 type PaymentAttemptTimelineResponse = {
@@ -984,6 +1040,120 @@ export class PaymentsService {
     });
   }
 
+  async getPayoutChargebackLifecycle(
+    reference: string,
+    actorMerchantId?: string,
+  ): Promise<PayoutChargebackLifecycleResponse> {
+    const tx = await this.prisma.transaction.findUnique({ where: { reference } });
+    if (!tx) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    this.assertMerchantScope(tx.merchantId, actorMerchantId);
+    const timeline = await this.getPayoutChargebackTimeline(tx.id);
+    const currentStatus = timeline[timeline.length - 1]?.toStatus ?? null;
+
+    return {
+      paymentReference: tx.reference,
+      transactionId: tx.id,
+      merchantId: tx.merchantId,
+      transition: timeline[timeline.length - 1] ?? null,
+      timeline,
+      lifecycle: {
+        contract: 'payout-chargeback-transition.v1',
+        currentStatus,
+        terminal: currentStatus ? PAYOUT_CHARGEBACK_TRANSITIONS[currentStatus].length === 0 : false,
+        allowedNextStatuses: this.resolvePayoutChargebackAllowedNextStatuses(currentStatus),
+        reasonCodes: {
+          duplicateEvent: 'duplicate_event',
+          invalidPriorState: 'invalid_prior_state',
+          staleTransitionUpdate: 'stale_transition_update',
+        },
+        httpStatusByReason: {
+          duplicate_event: 409,
+          invalid_prior_state: 409,
+          stale_transition_update: 409,
+        },
+      },
+    };
+  }
+
+  async transitionPayoutChargeback(
+    reference: string,
+    input: {
+      toStatus: PayoutChargebackStatus;
+      eventId: string;
+      expectedCurrentStatus?: PayoutChargebackStatus;
+      occurredAt?: string;
+    },
+    actorMerchantId?: string,
+  ): Promise<PayoutChargebackLifecycleResponse> {
+    const tx = await this.prisma.transaction.findUnique({ where: { reference } });
+    if (!tx) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    this.assertMerchantScope(tx.merchantId, actorMerchantId);
+    const eventId = input.eventId.trim();
+    if (!eventId) {
+      throw new BadRequestException('eventId is required');
+    }
+
+    const timeline = await this.getPayoutChargebackTimeline(tx.id);
+    const currentStatus = timeline[timeline.length - 1]?.toStatus ?? null;
+
+    if (timeline.some((row) => row.eventId === eventId)) {
+      this.throwPayoutChargebackLifecycleConflict('duplicate_event', {
+        paymentReference: reference,
+        transactionId: tx.id,
+        eventId,
+      });
+    }
+
+    if (input.expectedCurrentStatus && input.expectedCurrentStatus !== currentStatus) {
+      this.throwPayoutChargebackLifecycleConflict('stale_transition_update', {
+        paymentReference: reference,
+        transactionId: tx.id,
+        expectedCurrentStatus: input.expectedCurrentStatus,
+        currentStatus,
+      });
+    }
+
+    const allowedNextStatuses = this.resolvePayoutChargebackAllowedNextStatuses(currentStatus);
+    if (!allowedNextStatuses.includes(input.toStatus)) {
+      this.throwPayoutChargebackLifecycleConflict('invalid_prior_state', {
+        paymentReference: reference,
+        transactionId: tx.id,
+        currentStatus,
+        requestedStatus: input.toStatus,
+        allowedNextStatuses,
+      });
+    }
+
+    const occurredAt = input.occurredAt ? new Date(input.occurredAt) : new Date();
+    if (Number.isNaN(occurredAt.getTime())) {
+      throw new BadRequestException('occurredAt must be a valid ISO datetime string');
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        eventType: 'chargeback.transition',
+        actor: 'system',
+        entityType: 'transaction',
+        entityId: tx.id,
+        metadata: JSON.stringify({
+          fromStatus: currentStatus,
+          toStatus: input.toStatus,
+          eventId,
+          reasonCode: PAYOUT_CHARGEBACK_EVENT_REASON_CODES[input.toStatus],
+          occurredAt: occurredAt.toISOString(),
+        }),
+      },
+    });
+
+    return this.getPayoutChargebackLifecycle(reference, actorMerchantId);
+  }
+
   async listRefunds(filters: {
     merchantId?: string;
     paymentReference?: string;
@@ -1251,6 +1421,66 @@ export class PaymentsService {
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
 
+  private async getPayoutChargebackTimeline(transactionId: string): Promise<PayoutChargebackTransition[]> {
+    const logs = await this.prisma.auditLog.findMany({
+      where: {
+        entityType: 'transaction',
+        entityId: transactionId,
+        eventType: 'chargeback.transition',
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return logs
+      .map((log) => this.parseAuditMetadata(log.metadata))
+      .map((metadata) => {
+        const toStatus = this.getPayoutChargebackStatusValue(metadata.toStatus);
+        const reasonCode = this.getPayoutChargebackReasonCodeValue(metadata.reasonCode);
+        const eventId = this.getStringValue(metadata.eventId);
+        if (!toStatus || !reasonCode || !eventId) {
+          return null;
+        }
+
+        return {
+          fromStatus: this.getPayoutChargebackStatusValue(metadata.fromStatus),
+          toStatus,
+          eventId,
+          reasonCode,
+          occurredAt: this.getDateValue(metadata.occurredAt) ?? new Date(0).toISOString(),
+        } satisfies PayoutChargebackTransition;
+      })
+      .filter((transition): transition is PayoutChargebackTransition => transition !== null);
+  }
+
+  private resolvePayoutChargebackAllowedNextStatuses(
+    currentStatus: PayoutChargebackStatus | null,
+  ): PayoutChargebackStatus[] {
+    if (!currentStatus) {
+      return ['opened'];
+    }
+    return PAYOUT_CHARGEBACK_TRANSITIONS[currentStatus];
+  }
+
+  private getPayoutChargebackStatusValue(value: unknown): PayoutChargebackStatus | null {
+    if (value === 'opened' || value === 'investigating' || value === 'won' || value === 'lost' || value === 'reversed') {
+      return value;
+    }
+    return null;
+  }
+
+  private getPayoutChargebackReasonCodeValue(value: unknown): PayoutChargebackLifecycleEventReasonCode | null {
+    if (
+      value === 'chargeback_opened'
+      || value === 'chargeback_investigating'
+      || value === 'chargeback_won'
+      || value === 'chargeback_lost'
+      || value === 'payout_reversed'
+    ) {
+      return value;
+    }
+    return null;
+  }
+
   private getObjectValue(value: unknown): Record<string, unknown> | null {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       return value as Record<string, unknown>;
@@ -1430,6 +1660,18 @@ export class PaymentsService {
   ): never {
     throw new ConflictException({
       code: 'REFUND_LIFECYCLE_CONFLICT',
+      reason,
+      httpStatus: 409,
+      metadata,
+    });
+  }
+
+  private throwPayoutChargebackLifecycleConflict(
+    reason: PayoutChargebackLifecycleConflictReason,
+    metadata: Record<string, unknown>,
+  ): never {
+    throw new ConflictException({
+      code: 'PAYOUT_CHARGEBACK_TRANSITION_CONFLICT',
       reason,
       httpStatus: 409,
       metadata,
