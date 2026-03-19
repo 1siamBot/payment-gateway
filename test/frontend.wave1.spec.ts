@@ -19,6 +19,7 @@ import {
   serializeExceptionSavedViewState,
   canRefundStatus,
   filterSettlementMerchants,
+  filterExceptionSimulationOutcomeRows,
   parseExceptionQueryState,
   normalizeExceptionStatus,
   normalizeOptional,
@@ -29,6 +30,7 @@ import {
   resolveExceptionDiffInspectorEmptyState,
   serializeExceptionQueryState,
   filterExceptionDiffInspectorRows,
+  buildExceptionSimulationOutcomePanel,
   validateExceptionActionInput,
 } from '../frontend/utils/wave1';
 
@@ -279,6 +281,100 @@ describe('frontend wave1 helpers', () => {
     expect(preview.malformedCount).toBe(2);
     expect(preview.malformedMessage).toContain('2 malformed row');
     expect(preview.csvPreview).toContain('warning,malformed_rows_present');
+  });
+
+  it('builds simulation outcome buckets for success/conflict/rollback projections', () => {
+    const panel = buildExceptionSimulationOutcomePanel([
+      {
+        id: 'exc-safe',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        status: 'open',
+        version: 2,
+        currentAmount: 200,
+        incomingAmount: 220,
+        incomingStatus: 'open',
+        incomingVersion: 2,
+        mismatchCount: 1,
+      },
+      {
+        id: 'exc-conflict',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 210,
+        incomingAmount: 215,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 1,
+      },
+      {
+        id: 'exc-rollback',
+        merchantId: 'm-3',
+        provider: 'mock-b',
+        status: 'investigating',
+        version: 1,
+        currentAmount: 100,
+        incomingAmount: 260,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 2,
+      },
+    ]);
+
+    expect(panel.contract).toBe('settlement-bulk-simulation-outcome.v1');
+    expect(panel.buckets.find((bucket) => bucket.key === 'success_projection')?.count).toBe(1);
+    expect(panel.buckets.find((bucket) => bucket.key === 'conflict_projection')?.count).toBe(1);
+    expect(panel.buckets.find((bucket) => bucket.key === 'rollback_recommended')?.count).toBe(1);
+  });
+
+  it('filters rollback drilldown rows by reason code deterministically', () => {
+    const panel = buildExceptionSimulationOutcomePanel([
+      {
+        id: 'exc-a',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        status: 'open',
+        version: 4,
+        currentAmount: 300,
+        incomingAmount: 150,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 3,
+      },
+      {
+        id: 'exc-b',
+        merchantId: 'm-2',
+        provider: 'mock-b',
+        status: 'open',
+        version: 2,
+        currentAmount: 140,
+        incomingAmount: 150,
+        incomingStatus: 'open',
+        incomingVersion: 2,
+        mismatchCount: 1,
+      },
+    ]);
+
+    expect(filterExceptionSimulationOutcomeRows(panel.rows, 'HIGH_DELTA_ANOMALY').map((row) => row.id)).toEqual(['exc-a']);
+    expect(filterExceptionSimulationOutcomeRows(panel.rows, 'MIXED_STATUS_SELECTION').map((row) => row.id)).toEqual(['exc-a']);
+    expect(filterExceptionSimulationOutcomeRows(panel.rows, 'all').map((row) => row.id)).toEqual(['exc-a', 'exc-b']);
+  });
+
+  it('returns missing/malformed simulation fallback with deterministic reset label', () => {
+    const missing = buildExceptionSimulationOutcomePanel([]);
+    expect(missing.fallback.active).toBe(true);
+    expect(missing.fallback.title).toBe('Simulation payload missing');
+    expect(missing.fallback.resetActionLabel).toBe('Safe Reset Selection');
+
+    const malformed = buildExceptionSimulationOutcomePanel([
+      { id: 'exc-1', merchantId: 'm-1', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+      { id: '', merchantId: 'm-2', provider: 'mock-a', status: 'open', mismatchCount: 1 },
+    ]);
+    expect(malformed.fallback.active).toBe(true);
+    expect(malformed.fallback.title).toBe('Malformed simulation payload');
+    expect(malformed.buckets.find((bucket) => bucket.key === 'rollback_recommended')?.count).toBeGreaterThan(0);
   });
 
   it('builds deterministic bulk confirmation summary for render state', () => {

@@ -123,6 +123,57 @@ export type ExceptionBulkDiffInspector = {
   reasonCounts: Record<ExceptionConflictReason, number>;
 };
 
+export type ExceptionSimulationOutcomeBucketKey =
+  | 'success_projection'
+  | 'conflict_projection'
+  | 'rollback_recommended';
+export type ExceptionRollbackPlanReasonCode =
+  | 'MALFORMED_ROW'
+  | 'STALE_VERSION_RISK'
+  | 'MIXED_STATUS_SELECTION'
+  | 'HIGH_DELTA_ANOMALY';
+export type ExceptionRollbackPlanReasonSeverity = 'warning' | 'critical';
+export type ExceptionSimulationReasonDrilldownKey = 'all' | ExceptionRollbackPlanReasonCode;
+
+export type ExceptionSimulationOutcomeBucket = {
+  key: ExceptionSimulationOutcomeBucketKey;
+  label: string;
+  description: string;
+  count: number;
+};
+
+export type ExceptionSimulationOutcomeRow = {
+  id: string;
+  merchantId: string;
+  provider: string;
+  bucket: ExceptionSimulationOutcomeBucketKey;
+  reasonCodes: ExceptionRollbackPlanReasonCode[];
+};
+
+export type ExceptionSimulationOutcomeReason = {
+  code: ExceptionRollbackPlanReasonCode;
+  severity: ExceptionRollbackPlanReasonSeverity;
+  description: string;
+  nextStep: string;
+  count: number;
+};
+
+export type ExceptionSimulationOutcomePanel = {
+  contract: 'settlement-bulk-simulation-outcome.v1';
+  selectedCount: number;
+  validCount: number;
+  malformedCount: number;
+  buckets: ExceptionSimulationOutcomeBucket[];
+  rows: ExceptionSimulationOutcomeRow[];
+  reasonCodes: ExceptionSimulationOutcomeReason[];
+  fallback: {
+    active: boolean;
+    title: string;
+    message: string;
+    resetActionLabel: string;
+  };
+};
+
 type ExceptionBulkPreviewRow = {
   id: string;
   merchantId: string;
@@ -141,6 +192,60 @@ type ExceptionBulkPreviewRow = {
 const DIFF_FIELD_ORDER: ExceptionDiffField[] = ['amount', 'status', 'updatedAt', 'version'];
 const CONFLICT_REASON_ORDER: ExceptionConflictReason[] = ['stale_version', 'malformed', 'high_delta', 'mixed_status'];
 const DIFF_FALLBACK_TIMESTAMP = '2026-03-18T00:00:00.000Z';
+const SIMULATION_BUCKET_ORDER: ExceptionSimulationOutcomeBucketKey[] = [
+  'success_projection',
+  'conflict_projection',
+  'rollback_recommended',
+];
+const ROLLBACK_REASON_CODE_ORDER: ExceptionRollbackPlanReasonCode[] = [
+  'MALFORMED_ROW',
+  'STALE_VERSION_RISK',
+  'MIXED_STATUS_SELECTION',
+  'HIGH_DELTA_ANOMALY',
+];
+const ROLLBACK_REASON_METADATA: Record<ExceptionRollbackPlanReasonCode, {
+  severity: ExceptionRollbackPlanReasonSeverity;
+  description: string;
+  nextStep: string;
+}> = {
+  MALFORMED_ROW: {
+    severity: 'critical',
+    description: 'Input contains malformed rows and cannot be trusted for apply-time simulation.',
+    nextStep: 'Run Safe Reset Selection, then reselect only rows with valid id/merchant/provider fields.',
+  },
+  STALE_VERSION_RISK: {
+    severity: 'warning',
+    description: 'Incoming version is older than current row version and may overwrite newer state.',
+    nextStep: 'Refresh the exception list and rerun simulation before confirming any bulk action.',
+  },
+  MIXED_STATUS_SELECTION: {
+    severity: 'warning',
+    description: 'Selection spans multiple statuses and should be split for deterministic operator review.',
+    nextStep: 'Split rows by status and simulate each subset separately before confirmation.',
+  },
+  HIGH_DELTA_ANOMALY: {
+    severity: 'critical',
+    description: 'Projected amount deltas are high enough to require rollback-first handling.',
+    nextStep: 'Open rollback plan, resolve high-delta rows first, and only then continue with normal rows.',
+  },
+};
+const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
+  label: string;
+  description: string;
+}> = {
+  success_projection: {
+    label: 'success_projection',
+    description: 'Rows with deterministic, low-risk outcomes and no rollback warning signals.',
+  },
+  conflict_projection: {
+    label: 'conflict_projection',
+    description: 'Rows with review-required conflicts (stale version or mixed-status transitions).',
+  },
+  rollback_recommended: {
+    label: 'rollback_recommended',
+    description: 'Rows or payload signals that should route through rollback planning first.',
+  },
+};
 
 function parseFiniteNumber(input: unknown): number | null {
   if (typeof input === 'number' && Number.isFinite(input)) {
@@ -372,6 +477,136 @@ export function buildExceptionBulkConfirmation(input: {
     rollbackHint,
     canConfirm,
   };
+}
+
+function createZeroSimulationBucketCounts(): Record<ExceptionSimulationOutcomeBucketKey, number> {
+  return {
+    success_projection: 0,
+    conflict_projection: 0,
+    rollback_recommended: 0,
+  };
+}
+
+function createZeroRollbackReasonCounts(): Record<ExceptionRollbackPlanReasonCode, number> {
+  return {
+    MALFORMED_ROW: 0,
+    STALE_VERSION_RISK: 0,
+    MIXED_STATUS_SELECTION: 0,
+    HIGH_DELTA_ANOMALY: 0,
+  };
+}
+
+function resolveSimulationReasonCodes(row: ExceptionBulkPreviewRow): ExceptionRollbackPlanReasonCode[] {
+  const reasonCodes: ExceptionRollbackPlanReasonCode[] = [];
+  if (row.incomingVersion < row.version) {
+    reasonCodes.push('STALE_VERSION_RISK');
+  }
+  if (row.incomingStatus !== row.status) {
+    reasonCodes.push('MIXED_STATUS_SELECTION');
+  }
+  if (Math.abs(row.incomingAmount - row.amount) >= 100) {
+    reasonCodes.push('HIGH_DELTA_ANOMALY');
+  }
+  return reasonCodes;
+}
+
+function resolveSimulationBucket(reasonCodes: ExceptionRollbackPlanReasonCode[]): ExceptionSimulationOutcomeBucketKey {
+  if (reasonCodes.includes('HIGH_DELTA_ANOMALY')) {
+    return 'rollback_recommended';
+  }
+  if (reasonCodes.length > 0) {
+    return 'conflict_projection';
+  }
+  return 'success_projection';
+}
+
+export function buildExceptionSimulationOutcomePanel(selectedRows: unknown[]): ExceptionSimulationOutcomePanel {
+  const normalizedRows = selectedRows
+    .map((row) => parseExceptionBulkPreviewRow(row))
+    .filter((row): row is ExceptionBulkPreviewRow => Boolean(row))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const malformedCount = selectedRows.length - normalizedRows.length;
+  const bucketCounts = createZeroSimulationBucketCounts();
+  const reasonCounts = createZeroRollbackReasonCounts();
+
+  const rows: ExceptionSimulationOutcomeRow[] = normalizedRows.map((row) => {
+    const reasonCodes = resolveSimulationReasonCodes(row);
+    const bucket = resolveSimulationBucket(reasonCodes);
+    bucketCounts[bucket] += 1;
+    for (const code of reasonCodes) {
+      reasonCounts[code] += 1;
+    }
+    return {
+      id: row.id,
+      merchantId: row.merchantId,
+      provider: row.provider,
+      bucket,
+      reasonCodes,
+    };
+  });
+
+  if (malformedCount > 0) {
+    reasonCounts.MALFORMED_ROW += malformedCount;
+    bucketCounts.rollback_recommended += malformedCount;
+  }
+
+  const buckets = SIMULATION_BUCKET_ORDER.map((key) => ({
+    key,
+    label: SIMULATION_BUCKET_METADATA[key].label,
+    description: SIMULATION_BUCKET_METADATA[key].description,
+    count: bucketCounts[key],
+  }));
+
+  const reasonCodes = ROLLBACK_REASON_CODE_ORDER.map((code) => ({
+    code,
+    severity: ROLLBACK_REASON_METADATA[code].severity,
+    description: ROLLBACK_REASON_METADATA[code].description,
+    nextStep: ROLLBACK_REASON_METADATA[code].nextStep,
+    count: reasonCounts[code],
+  }));
+
+  let fallback = {
+    active: false,
+    title: '',
+    message: '',
+    resetActionLabel: 'Safe Reset Selection',
+  };
+  if (selectedRows.length === 0) {
+    fallback = {
+      active: true,
+      title: 'Simulation payload missing',
+      message: 'No selected rows are available for simulation. Select rows, then rerun preview.',
+      resetActionLabel: 'Safe Reset Selection',
+    };
+  } else if (malformedCount > 0) {
+    fallback = {
+      active: true,
+      title: 'Malformed simulation payload',
+      message: `${malformedCount} row(s) are malformed and moved to rollback_recommended fallback. Use deterministic reset before retry.`,
+      resetActionLabel: 'Safe Reset Selection',
+    };
+  }
+
+  return {
+    contract: 'settlement-bulk-simulation-outcome.v1',
+    selectedCount: selectedRows.length,
+    validCount: normalizedRows.length,
+    malformedCount,
+    buckets,
+    rows,
+    reasonCodes,
+    fallback,
+  };
+}
+
+export function filterExceptionSimulationOutcomeRows(
+  rows: ExceptionSimulationOutcomeRow[],
+  drilldown: ExceptionSimulationReasonDrilldownKey,
+): ExceptionSimulationOutcomeRow[] {
+  if (drilldown === 'all') {
+    return rows;
+  }
+  return rows.filter((row) => row.reasonCodes.includes(drilldown));
 }
 
 function normalizeReasons(reasons: ExceptionConflictReason[]): ExceptionConflictReason[] {

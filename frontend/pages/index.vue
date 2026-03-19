@@ -18,6 +18,7 @@ import {
   EXCEPTION_SAVED_VIEW_QUERY_KEY,
   EXCEPTION_SAVED_VIEW_STORAGE_KEY,
   filterSettlementMerchants,
+  filterExceptionSimulationOutcomeRows,
   listExceptionQueryPresets,
   parseExceptionQueryState,
   pinExceptionSavedView,
@@ -28,6 +29,7 @@ import {
   resolveActiveExceptionPreset,
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
+  buildExceptionSimulationOutcomePanel,
   restoreExceptionSavedViewState,
   serializeExceptionSavedViewState,
   serializeExceptionQueryState,
@@ -36,6 +38,7 @@ import {
   validateExceptionActionInput,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
+import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -347,7 +350,9 @@ const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
 const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) => selectedExceptionIds.value.includes(row.id)));
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
 const bulkDiffInspector = computed(() => buildExceptionBulkDiffInspector(selectedExceptionRows.value));
+const bulkSimulationOutcome = computed(() => buildExceptionSimulationOutcomePanel(selectedExceptionRows.value));
 const activeConflictDrilldown = ref<ExceptionConflictDrilldownKey>('all');
+const activeRollbackPlanReason = ref<ExceptionSimulationReasonDrilldownKey>('all');
 const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; label: string }> = [
   { key: 'all', label: 'all' },
   { key: 'stale_version', label: 'stale_version' },
@@ -355,10 +360,36 @@ const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; labe
   { key: 'high_delta', label: 'high_delta' },
   { key: 'mixed_status', label: 'mixed_status' },
 ];
+const rollbackPlanReasonOptions = computed(() => {
+  const options: Array<{ key: ExceptionSimulationReasonDrilldownKey; label: string; count: number }> = [
+    {
+      key: 'all',
+      label: 'all',
+      count: bulkSimulationOutcome.value.rows.length,
+    },
+  ];
+  for (const reason of bulkSimulationOutcome.value.reasonCodes) {
+    if (reason.count <= 0) {
+      continue;
+    }
+    options.push({
+      key: reason.code,
+      label: reason.code,
+      count: reason.count,
+    });
+  }
+  return options;
+});
+const activeRollbackPlanReasonMeta = computed(() => bulkSimulationOutcome.value.reasonCodes
+  .find((reason) => reason.code === activeRollbackPlanReason.value));
 const activeBulkDiffRowId = ref('');
 const filteredBulkDiffRows = computed(() => filterExceptionDiffInspectorRows(
   bulkDiffInspector.value.rows,
   activeConflictDrilldown.value,
+));
+const rollbackPlanDrilldownRows = computed(() => filterExceptionSimulationOutcomeRows(
+  bulkSimulationOutcome.value.rows,
+  activeRollbackPlanReason.value,
 ));
 const bulkDiffEmptyState = computed(() => resolveExceptionDiffInspectorEmptyState({
   activeReason: activeConflictDrilldown.value,
@@ -1081,8 +1112,13 @@ function setActiveBulkDiffRow(rowId: string) {
   activeBulkDiffRowId.value = rowId;
 }
 
+function setActiveRollbackPlanReason(reasonCode: ExceptionSimulationReasonDrilldownKey) {
+  activeRollbackPlanReason.value = reasonCode;
+}
+
 function resetBulkInspectorViewState() {
   activeConflictDrilldown.value = 'all';
+  activeRollbackPlanReason.value = 'all';
   activeBulkDiffRowId.value = filteredBulkDiffRows.value[0]?.id ?? '';
   bulkPreviewConfirmState.error = '';
   bulkPreviewConfirmState.message = 'Inspector view reset. Bulk selection is preserved.';
@@ -2300,6 +2336,61 @@ onMounted(() => {
             <p v-if="bulkConfirmation.needsRollbackHint" class="state">
               {{ bulkConfirmation.rollbackHint }}
             </p>
+
+            <div class="simulation-outcome-panel">
+              <h4>Simulation Outcome Panel</h4>
+              <p class="state">Deterministic buckets: <code>success_projection</code>, <code>conflict_projection</code>, <code>rollback_recommended</code>.</p>
+              <div class="simulation-outcome-grid">
+                <article
+                  v-for="bucket in bulkSimulationOutcome.buckets"
+                  :key="bucket.key"
+                  class="simulation-bucket"
+                >
+                  <h5>{{ bucket.label }}</h5>
+                  <p><strong>{{ bucket.count }}</strong> row(s)</p>
+                  <p class="state">{{ bucket.description }}</p>
+                </article>
+              </div>
+              <p v-if="bulkSimulationOutcome.fallback.active" class="state error">
+                <strong>{{ bulkSimulationOutcome.fallback.title }}:</strong> {{ bulkSimulationOutcome.fallback.message }}
+              </p>
+              <button
+                v-if="bulkSimulationOutcome.fallback.active"
+                type="button"
+                class="link"
+                @click="resetBulkSelectionSafe"
+              >
+                {{ bulkSimulationOutcome.fallback.resetActionLabel }}
+              </button>
+
+              <h5>Rollback Plan Drilldown</h5>
+              <div class="chip-row">
+                <button
+                  v-for="option in rollbackPlanReasonOptions"
+                  :key="`rollback-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeRollbackPlanReason === option.key }"
+                  @click="setActiveRollbackPlanReason(option.key)"
+                >
+                  {{ option.label }} ({{ option.count }})
+                </button>
+              </div>
+              <p v-if="activeRollbackPlanReasonMeta" class="state">
+                <strong>{{ activeRollbackPlanReasonMeta.code }}</strong> ({{ activeRollbackPlanReasonMeta.severity }}):
+                {{ activeRollbackPlanReasonMeta.description }}
+                Next step: {{ activeRollbackPlanReasonMeta.nextStep }}
+              </p>
+              <p v-else class="state">Pick a reason code to inspect rollback plan steps and affected rows.</p>
+              <ul v-if="rollbackPlanDrilldownRows.length" class="timeline-list">
+                <li v-for="row in rollbackPlanDrilldownRows" :key="`rollback-row-${row.id}`">
+                  <strong>{{ row.id }}</strong> ({{ row.merchantId }} / {{ row.provider }})
+                  <small>Bucket: {{ row.bucket }}</small>
+                  <small>Reasons: {{ row.reasonCodes.length ? row.reasonCodes.join(', ') : 'none' }}</small>
+                </li>
+              </ul>
+              <p v-else class="state">No rows match this rollback reason drilldown.</p>
+            </div>
           </div>
           <div>
             <h4>Diff Inspector</h4>
