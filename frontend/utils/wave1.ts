@@ -440,6 +440,57 @@ export type CanonicalLinkAutofixPreview = {
   changedCount: number;
 };
 
+export type RemediationPlaybookCategory =
+  | 'missing'
+  | 'stale'
+  | 'malformed'
+  | 'dependency-gap'
+  | 'blocker-drift';
+
+export type AnomalyTriageShortcut =
+  | 'focus_anomaly_board'
+  | 'next_anomaly'
+  | 'prev_anomaly'
+  | 'open_playbook_composer'
+  | 'validate_active_playbook';
+
+export type AnomalyTriageRow = {
+  id: string;
+  issueIdentifier: string;
+  fieldPath: string;
+  category: RemediationPlaybookCategory;
+  severityWeight: number;
+  stalenessMinutes: number;
+  summary: string;
+};
+
+export type AnomalyTriageBoard = {
+  contract: 'settlement-anomaly-triage-board.v1';
+  rows: AnomalyTriageRow[];
+  activeRowId: string;
+};
+
+export type RemediationPlaybookDraft = {
+  anomalyId: string;
+  issueIdentifier: string;
+  category: RemediationPlaybookCategory;
+  summary: string;
+  stagedActionsText: string;
+  owner: string;
+  eta: string;
+  dependencyIssueLinksText: string;
+  notes: string;
+  updatedAt: string;
+};
+
+export type RemediationPlaybookValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+  stagedActions: string[];
+};
+
 export type EvidencePacketLintChecklistDraft = {
   branch: string;
   fullSha: string;
@@ -886,6 +937,40 @@ const EVIDENCE_PACKET_LINT_FIELD_PRIORITY: Record<string, number> = {
   blockerEta: 80,
 };
 const EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER = '0000000000000000000000000000000000000000';
+const REMEDIATION_PLAYBOOK_CATEGORY_ORDER: RemediationPlaybookCategory[] = [
+  'missing',
+  'stale',
+  'malformed',
+  'dependency-gap',
+  'blocker-drift',
+];
+const REMEDIATION_PLAYBOOK_CATEGORY_ACTIONS: Record<RemediationPlaybookCategory, string[]> = {
+  missing: [
+    'Backfill missing evidence field in fixture payload.',
+    'Add canonical dependency links for unresolved context.',
+    'Re-validate packet completeness before handoff.',
+  ],
+  stale: [
+    'Refresh stale fixture lane snapshot and compare deltas.',
+    'Record refresh timestamp in operator notes.',
+    'Queue rerun for affected issue lane.',
+  ],
+  malformed: [
+    'Repair malformed payload segment and rerun linter.',
+    'Capture validation output in artifacts path.',
+    'Attach remediation summary to handoff packet.',
+  ],
+  'dependency-gap': [
+    'Identify upstream dependency issue and owner.',
+    'Normalize dependency links to canonical company format.',
+    'Document mitigation path if dependency remains open.',
+  ],
+  'blocker-drift': [
+    'Reconfirm blocker owner and latest ETA.',
+    'Compare ETA drift against baseline handoff.',
+    'Publish escalation note for unresolved drift.',
+  ],
+};
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
 const REPLAY_DIFF_CHANGE_TYPE_PRIORITY: Record<'added' | 'removed' | 'modified', number> = {
@@ -2904,6 +2989,240 @@ function canonicalizePaperclipIssueLink(input: string): string | null {
     return normalizedHash ? `/${prefix}/issues/${identifier}#${normalizedHash[1]}` : null;
   }
   return null;
+}
+
+function normalizeRemediationPlaybookCategory(input: unknown): RemediationPlaybookCategory {
+  if (typeof input !== 'string') {
+    return 'missing';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'missing'
+    || normalized === 'stale'
+    || normalized === 'malformed'
+    || normalized === 'dependency-gap'
+    || normalized === 'blocker-drift') {
+    return normalized;
+  }
+  return 'missing';
+}
+
+function parseAnomalyTriageRow(row: unknown): AnomalyTriageRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const raw = row as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof raw.issueIdentifier === 'string'
+      ? raw.issueIdentifier.toUpperCase()
+      : String(raw.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const fieldPath = normalizeOptional(
+    typeof raw.fieldPath === 'string'
+      ? raw.fieldPath
+      : String(raw.fieldPath ?? ''),
+  ) ?? 'unknown.field';
+  const category = normalizeRemediationPlaybookCategory(raw.category);
+  const severityWeight = parseFiniteNumber(raw.severityWeight ?? raw.severity ?? raw.priority) ?? 0;
+  const stalenessMinutes = Math.max(0, Math.trunc(parseFiniteNumber(raw.stalenessMinutes) ?? 0));
+  const summary = normalizeOptional(
+    typeof raw.summary === 'string'
+      ? raw.summary
+      : String(raw.summary ?? ''),
+  ) ?? `${issueIdentifier} requires remediation for ${fieldPath}.`;
+  const id = normalizeOptional(
+    typeof raw.id === 'string'
+      ? raw.id
+      : `${issueIdentifier}|${fieldPath}|${category}|${severityWeight}|${stalenessMinutes}`,
+  ) ?? `${issueIdentifier}|${fieldPath}|${category}|${severityWeight}|${stalenessMinutes}`;
+  return {
+    id,
+    issueIdentifier,
+    fieldPath,
+    category,
+    severityWeight,
+    stalenessMinutes,
+    summary,
+  };
+}
+
+export function buildAnomalyTriageBoard(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): AnomalyTriageBoard {
+  const categoryRank = new Map(REMEDIATION_PLAYBOOK_CATEGORY_ORDER.map((category, index) => [category, index]));
+  const rows = input.rows
+    .map((row) => parseAnomalyTriageRow(row))
+    .filter((row): row is AnomalyTriageRow => Boolean(row))
+    .sort((left, right) => (
+      right.severityWeight - left.severityWeight
+      || right.stalenessMinutes - left.stalenessMinutes
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.fieldPath.localeCompare(right.fieldPath)
+      || (categoryRank.get(left.category) ?? Number.MAX_SAFE_INTEGER)
+      - (categoryRank.get(right.category) ?? Number.MAX_SAFE_INTEGER)
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeRowId = idSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-anomaly-triage-board.v1',
+    rows,
+    activeRowId,
+  };
+}
+
+export function moveAnomalyTriageSelection(input: {
+  rows: AnomalyTriageRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (!input.rows.length) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveAnomalyTriageShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): AnomalyTriageShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'a') {
+    return 'focus_anomaly_board';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_anomaly';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_anomaly';
+  }
+  if (normalizedKey === 'p' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_playbook_composer';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_playbook';
+  }
+  return null;
+}
+
+export function getDefaultRemediationPlaybookDraft(input: {
+  anomalyId: string;
+  issueIdentifier: string;
+  category: RemediationPlaybookCategory;
+}): RemediationPlaybookDraft {
+  return {
+    anomalyId: input.anomalyId,
+    issueIdentifier: input.issueIdentifier,
+    category: input.category,
+    summary: '',
+    stagedActionsText: REMEDIATION_PLAYBOOK_CATEGORY_ACTIONS[input.category].join('\n'),
+    owner: '',
+    eta: '',
+    dependencyIssueLinksText: '',
+    notes: '',
+    updatedAt: '',
+  };
+}
+
+export function upsertRemediationPlaybookDraft(input: {
+  drafts: RemediationPlaybookDraft[];
+  draft: RemediationPlaybookDraft;
+}): RemediationPlaybookDraft[] {
+  const byAnomaly = new Map(input.drafts.map((draft) => [draft.anomalyId, draft]));
+  byAnomaly.set(input.draft.anomalyId, input.draft);
+  return [...byAnomaly.values()].sort((left, right) => (
+    left.issueIdentifier.localeCompare(right.issueIdentifier)
+    || left.category.localeCompare(right.category)
+    || left.anomalyId.localeCompare(right.anomalyId)
+  ));
+}
+
+export function validateRemediationPlaybookDraft(
+  draft: RemediationPlaybookDraft,
+): RemediationPlaybookValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const summary = draft.summary.trim();
+  const stagedActions = normalizeMultilineEntries(draft.stagedActionsText);
+  const owner = draft.owner.trim();
+  const eta = draft.eta.trim();
+  const dependencyIssueLinks = normalizeMultilineEntries(draft.dependencyIssueLinksText);
+  if (!summary) {
+    missingFields.push('summary');
+  }
+  if (!stagedActions.length) {
+    missingFields.push('stagedActions');
+  }
+  if (!owner) {
+    missingFields.push('owner');
+  }
+  if (!eta) {
+    missingFields.push('eta');
+  } else if (!Number.isFinite(new Date(eta).getTime())) {
+    errors.push('ETA must be a valid date-time string.');
+  }
+  if (!dependencyIssueLinks.length) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!canonicalizePaperclipIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks: dependencyIssueLinks
+      .map((link) => canonicalizePaperclipIssueLink(link))
+      .filter((link): link is string => Boolean(link))
+      .sort((left, right) => left.localeCompare(right)),
+    stagedActions,
+  };
+}
+
+export function resetRemediationPlaybookDraftSafe(input: {
+  anomalyId: string;
+  issueIdentifier: string;
+  category: RemediationPlaybookCategory;
+  confirmFullReset: boolean;
+}): {
+  draft: RemediationPlaybookDraft;
+  didFullReset: boolean;
+  message: string;
+} {
+  const draft = getDefaultRemediationPlaybookDraft({
+    anomalyId: input.anomalyId,
+    issueIdentifier: input.issueIdentifier,
+    category: input.category,
+  });
+  if (input.confirmFullReset) {
+    return {
+      draft,
+      didFullReset: true,
+      message: 'Remediation playbook drafts cleared. Lane-scoped draft memory reset.',
+    };
+  }
+  return {
+    draft,
+    didFullReset: false,
+    message: 'Active remediation draft cleared. Other lane drafts remain staged.',
+  };
 }
 
 export function buildCanonicalLinkAutofixPreview(input: {

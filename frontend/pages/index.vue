@@ -65,6 +65,7 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolveEvidencePacketLintShortcut,
+  resolveAnomalyTriageShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveEvidenceTimelineHeatmapShortcut,
   resetOperatorDecisionQueueDraftSafe,
@@ -78,6 +79,7 @@ import {
   validateEvidenceGapChecklistDraft,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildAnomalyTriageBoard,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
   buildReleaseReadinessSimulator,
@@ -102,6 +104,11 @@ import {
   applyDispatchEvidenceDraftPrMode,
   upsertDispatchEvidenceDraft,
   validateDispatchEvidenceDraft,
+  validateRemediationPlaybookDraft,
+  getDefaultRemediationPlaybookDraft,
+  resetRemediationPlaybookDraftSafe,
+  moveAnomalyTriageSelection,
+  upsertRemediationPlaybookDraft,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
@@ -112,6 +119,7 @@ import type { OperatorTimelinePresetKey } from '../utils/wave1';
 import type { ReviewQueueLedgerFilterKey } from '../utils/wave1';
 import type { ReplayDiffInspectorFilterKey } from '../utils/wave1';
 import type { EvidencePacketLintFilterKey } from '../utils/wave1';
+import type { RemediationPlaybookCategory } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -601,8 +609,37 @@ const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidenceTimelineHeatmapPanelRef = ref<HTMLElement | null>(null);
+const anomalyTriageBoardPanelRef = ref<HTMLElement | null>(null);
+const remediationPlaybookOwnerInputRef = ref<HTMLInputElement | null>(null);
+const remediationPlaybookComposerOpen = ref(false);
+const remediationPlaybookState = reactive({
+  message: '',
+  error: '',
+});
+const activeAnomalyTriageRowId = ref('');
+const remediationPlaybookDraftBank = ref<Array<ReturnType<typeof getDefaultRemediationPlaybookDraft>>>([]);
+const remediationPlaybookDraft = ref(getDefaultRemediationPlaybookDraft({
+  anomalyId: '',
+  issueIdentifier: '',
+  category: 'missing',
+}));
+const remediationPlaybookMissingFields = ref<Set<string>>(new Set());
 const queueDraftRowIds = ref<string[]>([]);
 const activeDecisionQueueItemId = ref('');
+const remediationCategoryCycle: RemediationPlaybookCategory[] = [
+  'missing',
+  'stale',
+  'malformed',
+  'dependency-gap',
+  'blocker-drift',
+];
+const anomalyFieldPathByCategory: Record<RemediationPlaybookCategory, string> = {
+  missing: 'evidence.branch',
+  stale: 'timeline.updatedAt',
+  malformed: 'packet.fullSha',
+  'dependency-gap': 'dependencyIssueLinks',
+  'blocker-drift': 'blocker.eta',
+};
 const operatorDecisionQueue = computed(() => buildOperatorDecisionQueue({
   matrixRows: scenarioCompareMatrix.value.rows,
   stagedRowIds: queueDraftRowIds.value,
@@ -702,6 +739,34 @@ const activeDispatchCockpitRow = computed(() => dispatchCockpit.value.rows
   .find((row) => row.id === activeDispatchCockpitRowId.value) ?? null);
 const dispatchDraftCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
   linksText: dispatchDraft.value.dependencyIssueLinksText,
+}));
+const anomalyTriageSourceRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => {
+  const category = remediationCategoryCycle[index % remediationCategoryCycle.length];
+  const severityWeight = row.priority === 'critical'
+    ? 100
+    : row.priority === 'high'
+      ? 80
+      : row.priority === 'medium'
+        ? 50
+        : 20;
+  return {
+    id: `anomaly-${row.id}-${category}`,
+    issueIdentifier: row.id.toUpperCase(),
+    fieldPath: anomalyFieldPathByCategory[category],
+    category,
+    severityWeight,
+    stalenessMinutes: (index + 1) * 13 + (row.priority === 'critical' ? 34 : row.priority === 'high' ? 21 : 8),
+    summary: `${row.title} requires ${category} remediation in ${anomalyFieldPathByCategory[category]}.`,
+  };
+}));
+const anomalyTriageBoard = computed(() => buildAnomalyTriageBoard({
+  rows: anomalyTriageSourceRows.value,
+  activeRowId: activeAnomalyTriageRowId.value,
+}));
+const activeAnomalyTriageRow = computed(() => anomalyTriageBoard.value.rows
+  .find((row) => row.id === activeAnomalyTriageRowId.value) ?? null);
+const remediationPlaybookCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: remediationPlaybookDraft.value.dependencyIssueLinksText,
 }));
 const reviewQueueFilterOptions = computed(() => ([
   { key: 'all' as ReviewQueueLedgerFilterKey, label: 'all', count: reviewQueueLedger.value.rows.length },
@@ -1236,11 +1301,13 @@ onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
   window.addEventListener('keydown', onDispatchCockpitKeydown);
+  window.addEventListener('keydown', onAnomalyTriageKeydown);
 });
 onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
   window.removeEventListener('keydown', onDispatchCockpitKeydown);
+  window.removeEventListener('keydown', onAnomalyTriageKeydown);
 });
 
 const healthLevel = computed(() => {
@@ -1596,6 +1663,11 @@ function resetDispatchCockpitState() {
   dispatchDraftMissingFields.value = new Set();
 }
 
+function resetRemediationPlaybookState() {
+  remediationPlaybookState.message = '';
+  remediationPlaybookState.error = '';
+}
+
 function resetReleaseReadinessState() {
   releaseReadinessState.message = '';
   releaseReadinessState.error = '';
@@ -1744,6 +1816,21 @@ watch(evidenceTimelineHeatmap, (heatmap) => {
   }
 }, { deep: true, immediate: true });
 
+watch(anomalyTriageBoard, (board) => {
+  if (!board.rows.length) {
+    activeAnomalyTriageRowId.value = '';
+    remediationPlaybookDraft.value = getDefaultRemediationPlaybookDraft({
+      anomalyId: '',
+      issueIdentifier: '',
+      category: 'missing',
+    });
+    return;
+  }
+  if (!board.rows.some((row) => row.id === activeAnomalyTriageRowId.value)) {
+    setActiveAnomalyTriageRow(board.activeRowId, false);
+  }
+}, { deep: true, immediate: true });
+
 watch(() => bulkDiffInspector.value.reasonCounts, () => {
   const applied = applyExplainabilityPresetSlot({
     slots: explainabilityPresetSlots.value,
@@ -1878,6 +1965,131 @@ function validateDispatchDraft() {
 function focusDispatchCockpit() {
   dispatchCockpitPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   dispatchDraftBranchInputRef.value?.focus();
+}
+
+function isRemediationPlaybookFieldMissing(fieldKey: string): boolean {
+  return remediationPlaybookMissingFields.value.has(fieldKey);
+}
+
+function setActiveAnomalyTriageRow(rowId: string, preserveCurrentDraft = true) {
+  resetRemediationPlaybookState();
+  const currentDraft = remediationPlaybookDraft.value;
+  if (preserveCurrentDraft && currentDraft.anomalyId) {
+    remediationPlaybookDraftBank.value = upsertRemediationPlaybookDraft({
+      drafts: remediationPlaybookDraftBank.value,
+      draft: currentDraft,
+    });
+  }
+  activeAnomalyTriageRowId.value = rowId;
+  const row = anomalyTriageBoard.value.rows.find((candidate) => candidate.id === rowId) ?? null;
+  if (!row) {
+    remediationPlaybookDraft.value = getDefaultRemediationPlaybookDraft({
+      anomalyId: '',
+      issueIdentifier: '',
+      category: 'missing',
+    });
+    return;
+  }
+  const existing = remediationPlaybookDraftBank.value.find((draft) => draft.anomalyId === row.id);
+  remediationPlaybookDraft.value = existing
+    ? { ...existing }
+    : getDefaultRemediationPlaybookDraft({
+      anomalyId: row.id,
+      issueIdentifier: row.issueIdentifier,
+      category: row.category,
+    });
+  remediationPlaybookMissingFields.value = new Set();
+}
+
+function focusAnomalyTriageBoard() {
+  anomalyTriageBoardPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  anomalyTriageBoardPanelRef.value?.focus();
+}
+
+function openRemediationPlaybookComposer() {
+  resetRemediationPlaybookState();
+  if (!activeAnomalyTriageRow.value && anomalyTriageBoard.value.rows.length) {
+    setActiveAnomalyTriageRow(anomalyTriageBoard.value.rows[0].id, false);
+  }
+  remediationPlaybookComposerOpen.value = true;
+  nextTick(() => {
+    remediationPlaybookOwnerInputRef.value?.focus();
+  });
+}
+
+function closeRemediationPlaybookComposer() {
+  remediationPlaybookComposerOpen.value = false;
+}
+
+function saveRemediationPlaybookDraft() {
+  resetRemediationPlaybookState();
+  const row = activeAnomalyTriageRow.value;
+  if (!row) {
+    remediationPlaybookState.error = 'Select an anomaly row before saving playbook draft.';
+    return;
+  }
+  const draftToSave = {
+    ...remediationPlaybookDraft.value,
+    anomalyId: row.id,
+    issueIdentifier: row.issueIdentifier,
+    category: row.category,
+    updatedAt: new Date().toISOString(),
+  };
+  remediationPlaybookDraftBank.value = upsertRemediationPlaybookDraft({
+    drafts: remediationPlaybookDraftBank.value,
+    draft: draftToSave,
+  });
+  remediationPlaybookDraft.value = draftToSave;
+  remediationPlaybookState.message = `Saved remediation draft for ${row.issueIdentifier} (${row.category}).`;
+}
+
+function validateActiveRemediationPlaybook() {
+  resetRemediationPlaybookState();
+  const validation = validateRemediationPlaybookDraft(remediationPlaybookDraft.value);
+  remediationPlaybookMissingFields.value = new Set(validation.missingFields);
+  if (!validation.isComplete) {
+    const errorParts: string[] = [];
+    if (validation.missingFields.length > 0) {
+      errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+    }
+    if (validation.errors.length > 0) {
+      errorParts.push(validation.errors.join(' '));
+    }
+    remediationPlaybookState.error = errorParts.join(' | ') || 'Remediation playbook is incomplete.';
+    return;
+  }
+  saveRemediationPlaybookDraft();
+  remediationPlaybookState.message = `Playbook packet validated. Canonical links: ${validation.dependencyIssueLinks.length}.`;
+}
+
+function clearRemediationPlaybookDraft(confirmFullReset: boolean) {
+  resetRemediationPlaybookState();
+  const row = activeAnomalyTriageRow.value;
+  if (!row) {
+    remediationPlaybookState.error = 'Select an anomaly row before clearing playbook draft.';
+    return;
+  }
+  const next = resetRemediationPlaybookDraftSafe({
+    anomalyId: row.id,
+    issueIdentifier: row.issueIdentifier,
+    category: row.category,
+    confirmFullReset,
+  });
+  if (next.didFullReset) {
+    remediationPlaybookDraftBank.value = [];
+  } else {
+    remediationPlaybookDraftBank.value = remediationPlaybookDraftBank.value.filter((draft) => draft.anomalyId !== row.id);
+  }
+  remediationPlaybookDraft.value = next.draft;
+  remediationPlaybookMissingFields.value = new Set();
+  remediationPlaybookState.message = next.message;
+}
+
+function clearRemediationPlaybookDraftWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears all staged remediation drafts across anomaly lanes. Continue?')) {
+    return;
+  }
+  clearRemediationPlaybookDraft(true);
 }
 
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
@@ -2511,6 +2723,46 @@ function onReviewQueueLedgerKeydown(event: KeyboardEvent) {
     return;
   }
   validateReviewQueueHandoffPacket();
+}
+
+function onAnomalyTriageKeydown(event: KeyboardEvent) {
+  const shortcut = resolveAnomalyTriageShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_playbook_composer'
+    && shortcut !== 'validate_active_playbook') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_anomaly_board') {
+    focusAnomalyTriageBoard();
+    return;
+  }
+  if (shortcut === 'next_anomaly' || shortcut === 'prev_anomaly') {
+    const nextId = moveAnomalyTriageSelection({
+      rows: anomalyTriageBoard.value.rows,
+      activeRowId: activeAnomalyTriageRowId.value,
+      direction: shortcut === 'next_anomaly' ? 'next' : 'prev',
+    });
+    if (nextId) {
+      setActiveAnomalyTriageRow(nextId);
+    }
+    return;
+  }
+  if (shortcut === 'open_playbook_composer') {
+    openRemediationPlaybookComposer();
+    return;
+  }
+  validateActiveRemediationPlaybook();
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
@@ -4591,6 +4843,83 @@ onMounted(() => {
               </div>
             </div>
             <div
+              ref="anomalyTriageBoardPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onAnomalyTriageKeydown"
+            >
+              <h4>Anomaly Triage Board</h4>
+              <p class="state" :class="{ error: remediationPlaybookState.error }">
+                {{ remediationPlaybookState.error
+                  || remediationPlaybookState.message
+                  || 'Deterministic order: severityWeight desc, stalenessMinutes desc, issueIdentifier asc, fieldPath asc. Keyboard: Alt+A focus, Alt+Shift+J next anomaly, Alt+Shift+K previous anomaly, Ctrl+Shift+P open playbook composer, Ctrl+Shift+Enter validate playbook.' }}
+              </p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Severity Weight</th>
+                      <th>Staleness (min)</th>
+                      <th>Issue</th>
+                      <th>Field Path</th>
+                      <th>Category</th>
+                      <th>Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!anomalyTriageBoard.rows.length">
+                      <td colspan="6">No anomaly rows available in the current deterministic fixture set.</td>
+                    </tr>
+                    <tr
+                      v-for="row in anomalyTriageBoard.rows"
+                      :key="row.id"
+                      :class="{ 'queue-row-active': activeAnomalyTriageRowId === row.id }"
+                      @click="setActiveAnomalyTriageRow(row.id)"
+                    >
+                      <td>{{ row.severityWeight }}</td>
+                      <td>{{ row.stalenessMinutes }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td><code>{{ row.fieldPath }}</code></td>
+                      <td>{{ row.category }}</td>
+                      <td>{{ row.summary }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="openRemediationPlaybookComposer">Open Playbook Composer</button>
+                <button type="button" class="link" @click="validateActiveRemediationPlaybook">Validate Active Playbook</button>
+                <button type="button" class="link" @click="saveRemediationPlaybookDraft">Save Draft</button>
+              </div>
+              <h5>Canonical Link Autofix Preview</h5>
+              <p class="state">Canonicalized to company-prefixed issue/comment/document links before playbook submission.</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Original</th>
+                      <th>Normalized</th>
+                      <th>Changed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!remediationPlaybookCanonicalPreview.rows.length">
+                      <td colspan="3">Add dependency issue links in the playbook composer to preview canonical normalization.</td>
+                    </tr>
+                    <tr v-for="row in remediationPlaybookCanonicalPreview.rows" :key="`playbook-autofix-${row.id}`">
+                      <td><code>{{ row.original }}</code></td>
+                      <td><code>{{ row.normalized }}</code></td>
+                      <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <label>
+                Corrected Link Output (copy-ready)
+                <textarea :value="remediationPlaybookCanonicalPreview.correctedOutput" rows="3" readonly />
+              </label>
+            </div>
+            <div
               ref="evidencePacketLintPanelRef"
               class="simulation-outcome-panel"
               tabindex="0"
@@ -5136,6 +5465,78 @@ onMounted(() => {
               Cancel
             </button>
           </div>
+        </div>
+      </div>
+
+      <div v-if="remediationPlaybookComposerOpen" class="modal-backdrop" @click.self="closeRemediationPlaybookComposer">
+        <div class="modal explainability-modal">
+          <h3>Remediation Playbook Composer</h3>
+          <p class="state">
+            Keyboard: <code>Alt+A</code> focus anomaly board, <code>Alt+Shift+J/K</code> move anomalies, <code>Ctrl+Shift+P</code> open composer, <code>Ctrl+Shift+Enter</code> validate active playbook.
+          </p>
+          <div class="chip-row">
+            <button
+              v-for="row in anomalyTriageBoard.rows"
+              :key="`playbook-anomaly-${row.id}`"
+              type="button"
+              class="preset-chip"
+              :class="{ active: activeAnomalyTriageRowId === row.id }"
+              @click="setActiveAnomalyTriageRow(row.id)"
+            >
+              {{ row.issueIdentifier }} / {{ row.category }}
+            </button>
+          </div>
+          <form class="grid" @submit.prevent="validateActiveRemediationPlaybook">
+            <label>
+              Active anomaly
+              <input :value="activeAnomalyTriageRow ? `${activeAnomalyTriageRow.issueIdentifier} / ${activeAnomalyTriageRow.fieldPath}` : '-'" disabled />
+            </label>
+            <label>
+              Category
+              <select v-model="remediationPlaybookDraft.category">
+                <option value="missing">missing</option>
+                <option value="stale">stale</option>
+                <option value="malformed">malformed</option>
+                <option value="dependency-gap">dependency-gap</option>
+                <option value="blocker-drift">blocker-drift</option>
+              </select>
+            </label>
+            <label :class="{ 'field-missing': isRemediationPlaybookFieldMissing('summary') }">
+              Summary
+              <textarea v-model="remediationPlaybookDraft.summary" rows="2" placeholder="Operator-facing remediation summary." />
+            </label>
+            <label :class="{ 'field-missing': isRemediationPlaybookFieldMissing('stagedActions') }">
+              Staged Actions (one per line)
+              <textarea v-model="remediationPlaybookDraft.stagedActionsText" rows="4" />
+            </label>
+            <label :class="{ 'field-missing': isRemediationPlaybookFieldMissing('owner') }">
+              Owner
+              <input
+                ref="remediationPlaybookOwnerInputRef"
+                v-model="remediationPlaybookDraft.owner"
+                placeholder="Frontend Engineer / Ops"
+              />
+            </label>
+            <label :class="{ 'field-missing': isRemediationPlaybookFieldMissing('eta') }">
+              ETA
+              <input v-model="remediationPlaybookDraft.eta" placeholder="2026-03-21T15:00:00.000Z" />
+            </label>
+            <label :class="{ 'field-missing': isRemediationPlaybookFieldMissing('dependencyIssueLinks') }">
+              Dependency Issue Links (one per line)
+              <textarea v-model="remediationPlaybookDraft.dependencyIssueLinksText" rows="3" placeholder="/ONE/issues/ONE-263" />
+            </label>
+            <label>
+              Notes
+              <textarea v-model="remediationPlaybookDraft.notes" rows="2" placeholder="Optional operator notes." />
+            </label>
+            <div class="inline-actions">
+              <button type="submit">Validate Active Playbook</button>
+              <button type="button" class="link" @click="saveRemediationPlaybookDraft">Save Draft</button>
+              <button type="button" class="link" @click="clearRemediationPlaybookDraft(false)">Clear Draft Only</button>
+              <button type="button" class="link" @click="clearRemediationPlaybookDraftWithConfirm">Full Reset</button>
+              <button type="button" class="link" @click="closeRemediationPlaybookComposer">Close</button>
+            </div>
+          </form>
         </div>
       </div>
 

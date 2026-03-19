@@ -84,6 +84,7 @@ import {
   buildChecklistAutofixHints,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildAnomalyTriageBoard,
   buildBlockerAwareDispatchCockpit,
   buildReleaseReadinessSimulator,
   buildReleaseReadinessEvidenceBadges,
@@ -97,6 +98,7 @@ import {
   moveReleaseReadinessLaneSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
+  resolveAnomalyTriageShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
@@ -114,6 +116,11 @@ import {
   moveEvidenceDiffRailSelection,
   resolveEvidenceDiffRailShortcut,
   upsertDispatchEvidenceDraft,
+  getDefaultRemediationPlaybookDraft,
+  upsertRemediationPlaybookDraft,
+  validateRemediationPlaybookDraft,
+  resetRemediationPlaybookDraftSafe,
+  moveAnomalyTriageSelection,
   validateBlockerOwnershipRegisterDraft,
   serializeBlockerOwnershipRegisterDraft,
   resetBlockerOwnershipRegisterDraftSafe,
@@ -1435,6 +1442,145 @@ describe('frontend wave1 helpers', () => {
       '/ONE/issues/ONE-241',
       '/ONE/issues/ONE-257#document-plan',
     ].join('\n'));
+  });
+
+  it('builds anomaly triage board rows in deterministic order by severityWeight, stalenessMinutes, issueIdentifier, fieldPath', () => {
+    const board = buildAnomalyTriageBoard({
+      rows: [
+        {
+          id: 'anom-c',
+          issueIdentifier: 'ONE-270',
+          fieldPath: 'dependencyIssueLinks',
+          category: 'dependency-gap',
+          severityWeight: 80,
+          stalenessMinutes: 40,
+          summary: 'Dependency gap',
+        },
+        {
+          id: 'anom-a',
+          issueIdentifier: 'ONE-269',
+          fieldPath: 'evidence.branch',
+          category: 'missing',
+          severityWeight: 100,
+          stalenessMinutes: 33,
+          summary: 'Branch missing',
+        },
+        {
+          id: 'anom-b',
+          issueIdentifier: 'ONE-268',
+          fieldPath: 'packet.fullSha',
+          category: 'malformed',
+          severityWeight: 100,
+          stalenessMinutes: 12,
+          summary: 'SHA malformed',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(board.contract).toBe('settlement-anomaly-triage-board.v1');
+    expect(board.rows.map((row) => row.id)).toEqual(['anom-a', 'anom-b', 'anom-c']);
+    expect(board.activeRowId).toBe('anom-a');
+  });
+
+  it('supports anomaly triage keyboard workflow and deterministic next/prev selection', () => {
+    expect(resolveAnomalyTriageShortcut({ key: 'a', altKey: true })).toBe('focus_anomaly_board');
+    expect(resolveAnomalyTriageShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_anomaly');
+    expect(resolveAnomalyTriageShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_anomaly');
+    expect(resolveAnomalyTriageShortcut({ key: 'p', shiftKey: true, ctrlKey: true })).toBe('open_playbook_composer');
+    expect(resolveAnomalyTriageShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true })).toBe('validate_active_playbook');
+
+    const board = buildAnomalyTriageBoard({
+      rows: [
+        {
+          id: 'anom-a',
+          issueIdentifier: 'ONE-269',
+          fieldPath: 'evidence.branch',
+          category: 'missing',
+          severityWeight: 100,
+          stalenessMinutes: 33,
+          summary: 'Branch missing',
+        },
+        {
+          id: 'anom-b',
+          issueIdentifier: 'ONE-268',
+          fieldPath: 'packet.fullSha',
+          category: 'malformed',
+          severityWeight: 100,
+          stalenessMinutes: 12,
+          summary: 'SHA malformed',
+        },
+      ],
+      activeRowId: 'anom-a',
+    });
+
+    expect(moveAnomalyTriageSelection({
+      rows: board.rows,
+      activeRowId: 'anom-a',
+      direction: 'next',
+    })).toBe('anom-b');
+    expect(moveAnomalyTriageSelection({
+      rows: board.rows,
+      activeRowId: 'anom-b',
+      direction: 'prev',
+    })).toBe('anom-a');
+  });
+
+  it('validates remediation playbook drafts and supports safe/full reset behavior', () => {
+    const draft = getDefaultRemediationPlaybookDraft({
+      anomalyId: 'anom-a',
+      issueIdentifier: 'ONE-269',
+      category: 'missing',
+    });
+    const incomplete = validateRemediationPlaybookDraft(draft);
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.missingFields).toEqual([
+      'summary',
+      'owner',
+      'eta',
+      'dependencyIssueLinks',
+    ]);
+
+    const completeDraft = {
+      ...draft,
+      summary: 'Backfill missing branch metadata before handoff.',
+      owner: 'Frontend Engineer',
+      eta: '2026-03-21T15:00:00.000Z',
+      dependencyIssueLinksText: '/issues/ONE-263\n/ONE/issues/ONE-262#comment-12\n/ONE/issues/ONE-241',
+      updatedAt: '2026-03-19T06:20:00.000Z',
+    };
+    const complete = validateRemediationPlaybookDraft(completeDraft);
+    expect(complete.isComplete).toBe(true);
+    expect(complete.dependencyIssueLinks).toEqual([
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-262#comment-12',
+      '/ONE/issues/ONE-263',
+    ]);
+
+    const upserted = upsertRemediationPlaybookDraft({
+      drafts: [],
+      draft: completeDraft,
+    });
+    expect(upserted).toHaveLength(1);
+    expect(upserted[0].anomalyId).toBe('anom-a');
+
+    const safeReset = resetRemediationPlaybookDraftSafe({
+      anomalyId: 'anom-a',
+      issueIdentifier: 'ONE-269',
+      category: 'missing',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.message).toContain('remain staged');
+
+    const fullReset = resetRemediationPlaybookDraftSafe({
+      anomalyId: 'anom-a',
+      issueIdentifier: 'ONE-269',
+      category: 'missing',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.message).toContain('memory reset');
   });
 
   it('validates evidence packet checklist required fields and resets blocker fields when prMode changes', () => {
