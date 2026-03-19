@@ -931,6 +931,55 @@ export type PublicationBlockerCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type PublicationHandoffBundleShortcut =
+  | 'focus_handoff_viewer'
+  | 'next_section'
+  | 'prev_section'
+  | 'open_export_preview'
+  | 'run_export_validation';
+
+export type PublicationHandoffBundleRow = {
+  id: string;
+  issueIdentifier: string;
+  sectionTitle: string;
+  evidencePath: string;
+  orderingKey: [number, number, number, number, string];
+  machineFields: {
+    bundleFingerprint: string;
+    ownerCoverage: number;
+    readyForQA: boolean;
+    missingArtifacts: string[];
+    nonCanonicalLinks: string[];
+  };
+};
+
+export type PublicationHandoffBundleViewer = {
+  contract: 'settlement-publication-handoff-bundle-viewer.v1';
+  rows: PublicationHandoffBundleRow[];
+  activeSectionId: string;
+  readyForQACount: number;
+  blockedCount: number;
+};
+
+export type PublicationHandoffExportValidator = {
+  contract: 'settlement-publication-handoff-export-validator.v1';
+  rows: Array<{
+    id: string;
+    issueIdentifier: string;
+    machineFields: PublicationHandoffBundleRow['machineFields'];
+  }>;
+  markdown: string;
+};
+
+export type PublicationHandoffCanonicalAutofixPreview = {
+  contract: 'settlement-publication-handoff-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -6370,6 +6419,191 @@ export function resolvePublicationBlockerDependencyShortcut(input: {
   }
   if (normalizedKey === 'l' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
     return 'run_canonical_link_validation';
+  }
+  return null;
+}
+
+function parsePublicationHandoffBundleRow(raw: unknown, index: number): PublicationHandoffBundleRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const payload = raw as Record<string, unknown>;
+  const issueIdentifier = normalizePublicationBlockerIdentifier(payload.issueIdentifier, index);
+  const id = normalizeOptional(typeof payload.id === 'string' ? payload.id : '') ?? `handoff-${issueIdentifier.toLowerCase()}-${index + 1}`;
+  const sectionTitle = normalizeOptional(typeof payload.sectionTitle === 'string' ? payload.sectionTitle : '')
+    ?? `${issueIdentifier} publication handoff section`;
+  const evidencePath = normalizeOptional(typeof payload.evidencePath === 'string' ? payload.evidencePath : '')
+    ?? `artifacts/${issueIdentifier.toLowerCase()}/remediation-publication-handoff-bundle.md`;
+  const sectionWeight = Math.max(0, Number(payload.sectionWeight) || 0);
+  const blockerWeight = Math.max(0, Number(payload.blockerWeight) || 0);
+  const dependencyDepthWeight = Math.max(0, Number(payload.dependencyDepthWeight) || 0);
+  const evidenceTypeWeight = Math.max(0, Number(payload.evidenceTypeWeight) || 0);
+  const ownerCoverageRaw = Number(payload.ownerCoverage);
+  const ownerCoverage = Number.isFinite(ownerCoverageRaw)
+    ? Math.max(0, Math.min(1, ownerCoverageRaw))
+    : 0;
+  const missingArtifacts = Array.from(new Set(
+    (Array.isArray(payload.requiredArtifacts) ? payload.requiredArtifacts : [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean),
+  )).sort((left, right) => left.localeCompare(right));
+  const canonicalLinks = Array.from(new Set(
+    (Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : [])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean),
+  ));
+  const nonCanonicalLinks = canonicalLinks
+    .filter((link) => {
+      const canonical = canonicalizePaperclipIssueLink(link);
+      return !canonical || canonical !== link;
+    })
+    .sort((left, right) => left.localeCompare(right));
+  const readyForQA = typeof payload.readyForQA === 'boolean'
+    ? payload.readyForQA
+    : ownerCoverage >= 1 && missingArtifacts.length === 0 && nonCanonicalLinks.length === 0;
+  const bundleFingerprint = `bundle-${hashFNV1a(serializeDeterministicUnknown({
+    issueIdentifier,
+    sectionTitle,
+    evidencePath,
+    ownerCoverage,
+    missingArtifacts,
+    nonCanonicalLinks,
+    readyForQA,
+  }))}`;
+  return {
+    id,
+    issueIdentifier,
+    sectionTitle,
+    evidencePath,
+    orderingKey: [sectionWeight, blockerWeight, dependencyDepthWeight, evidenceTypeWeight, bundleFingerprint],
+    machineFields: {
+      bundleFingerprint,
+      ownerCoverage,
+      readyForQA,
+      missingArtifacts,
+      nonCanonicalLinks,
+    },
+  };
+}
+
+export function buildPublicationHandoffBundleViewer(input: {
+  rows: unknown[];
+  activeSectionId: string;
+}): PublicationHandoffBundleViewer {
+  const rows = input.rows
+    .map((row, index) => parsePublicationHandoffBundleRow(row, index))
+    .filter((row): row is PublicationHandoffBundleRow => Boolean(row))
+    .sort((left, right) => (
+      left.orderingKey[0] - right.orderingKey[0]
+      || left.orderingKey[1] - right.orderingKey[1]
+      || left.orderingKey[2] - right.orderingKey[2]
+      || left.orderingKey[3] - right.orderingKey[3]
+      || left.orderingKey[4].localeCompare(right.orderingKey[4])
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeSectionId = rowIds.has(input.activeSectionId) ? input.activeSectionId : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-publication-handoff-bundle-viewer.v1',
+    rows,
+    activeSectionId,
+    readyForQACount: rows.filter((row) => row.machineFields.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForQA).length,
+  };
+}
+
+export function buildPublicationHandoffExportValidator(input: {
+  rows: PublicationHandoffBundleRow[];
+}): PublicationHandoffExportValidator {
+  const rows = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    machineFields: row.machineFields,
+  }));
+  const lines = [
+    '# Publication Handoff Export Validator',
+    '',
+    '| Issue | bundleFingerprint | ownerCoverage | readyForQA | missingArtifacts | nonCanonicalLinks |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    lines.push([
+      '|',
+      row.issueIdentifier,
+      '|',
+      row.machineFields.bundleFingerprint,
+      '|',
+      row.machineFields.ownerCoverage.toFixed(2),
+      '|',
+      row.machineFields.readyForQA ? 'yes' : 'no',
+      '|',
+      row.machineFields.missingArtifacts.join(', ') || '(none)',
+      '|',
+      row.machineFields.nonCanonicalLinks.join(', ') || '(none)',
+      '|',
+    ].join(' '));
+  }
+  return {
+    contract: 'settlement-publication-handoff-export-validator.v1',
+    rows,
+    markdown: lines.join('\n'),
+  };
+}
+
+export function buildPublicationHandoffCanonicalAutofixPreview(input: {
+  markdown: string;
+}): PublicationHandoffCanonicalAutofixPreview {
+  const preview = buildPublicationBlockerTimelineCanonicalAutofixPreview(input);
+  return {
+    contract: 'settlement-publication-handoff-canonical-autofix-preview.v1',
+    rows: preview.rows,
+    patchedMarkdown: preview.patchedMarkdown,
+    changedCount: preview.changedCount,
+    invalidCount: preview.invalidCount,
+    copyText: preview.patchedMarkdown,
+  };
+}
+
+export function movePublicationHandoffBundleSelection(input: {
+  rows: PublicationHandoffBundleRow[];
+  activeSectionId: string;
+  direction: 'next_section' | 'prev_section';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeSectionId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_section') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolvePublicationHandoffBundleShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): PublicationHandoffBundleShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'h') {
+    return 'focus_handoff_viewer';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_section';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_section';
+  }
+  if (normalizedKey === 'e' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_export_preview';
+  }
+  if (normalizedKey === 'v' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_export_validation';
   }
   return null;
 }
