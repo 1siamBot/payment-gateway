@@ -1,0 +1,15 @@
+
+> payment-gateway@0.1.0 test
+> jest settlement-release-candidate-remediation-queue-endpoint.spec.ts
+
+PASS test/settlement-release-candidate-remediation-queue-endpoint.spec.ts
+  Settlement release-candidate remediation queue endpoint
+    ✓ orders queue items by severityWeight, blockerWeight, dependencyDepthWeight, issueIdentifier, remediationTypeWeight, evidencePath (51 ms)
+    ✓ normalizes canonical reasons and emits blocking/missing machine fields (6 ms)
+    ✓ keeps queue payload and fingerprint byte-stable for semantically identical input (5 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       3 passed, 3 total
+Snapshots:   0 total
+Time:        0.914 s, estimated 2 s
+Ran all test suites matching /settlement-release-candidate-remediation-queue-endpoint.spec.ts/i.

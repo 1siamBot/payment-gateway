@@ -20,6 +20,7 @@ import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settl
 import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
 import { BuildSettlementQaReleaseGateVerdictPacketDto } from './dto/build-settlement-qa-release-gate-verdict-packet.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
+import { BuildSettlementReleaseCandidateRemediationQueueDto } from './dto/build-settlement-release-candidate-remediation-queue.dto';
 import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
@@ -162,6 +163,11 @@ export class SettlementsController {
   @Post('exceptions/release-evidence-adjudication-snapshot')
   releaseEvidenceAdjudicationSnapshot(@Body() body: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto) {
     return this.settlements.buildSettlementExceptionReleaseEvidenceAdjudicationSnapshot(body);
+  }
+
+  @Post('exceptions/release-candidate-remediation-queue')
+  releaseCandidateRemediationQueue(@Body() body: BuildSettlementReleaseCandidateRemediationQueueDto) {
+    return this.settlements.buildSettlementExceptionReleaseCandidateRemediationQueue(body);
   }
 
   @Post('exceptions/release-ready-dependency-graph-snapshot')
