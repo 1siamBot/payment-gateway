@@ -45,11 +45,19 @@ import {
   buildScenarioCompareMatrix,
   buildExceptionSimulationOutcomePanel,
   buildIncidentBookmarkShelf,
+  buildReplayBookmarkCompareStrip,
+  buildReplayDeltaInspector,
   buildReplayChecklistDrawer,
+  filterIncidentBookmarkShelfItems,
+  moveReplayBookmarkSelection,
+  reconcileReplayBookmarkCompareState,
+  resolveReplayBookmarkCompareShortcut,
+  resetReplayBookmarkCompareDraftSafe,
   validateExceptionActionInput,
   moveReplayChecklistFocus,
   resolveReplayChecklistShortcut,
   resetReplayChecklistDrawerDraftSafe,
+  swapReplayBookmarkCompareSlots,
   toggleReplayChecklistStep,
 } from '../frontend/utils/wave1';
 
@@ -659,6 +667,171 @@ describe('frontend wave1 helpers', () => {
     expect(confirmed.noteDraft).toBe('');
     expect(confirmed.activeBookmarkFilter).toBe('all');
     expect(confirmed.message).toContain('reset to default');
+  });
+
+  it('builds deterministic replay bookmark compare strip state for identical fixture payloads', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-02',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'Idempotency drift',
+        status: 'investigating',
+        currentAmount: 220,
+        incomingAmount: 380,
+        mismatchCount: 3,
+      },
+      {
+        id: 'inc-01',
+        merchantId: 'm-1',
+        provider: 'mock-b',
+        severity: 'critical',
+        updatedAt: '2026-03-18T11:00:00.000Z',
+        title: 'Replay dead-letter queue pressure',
+        status: 'open',
+        currentAmount: 120,
+        riskFlags: ['stale_version'],
+      },
+      {
+        id: 'inc-03',
+        merchantId: 'm-3',
+        provider: 'mock-b',
+        severity: 'low',
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        title: 'Late callback batch',
+      },
+    ]);
+    const filtered = filterIncidentBookmarkShelfItems(shelf.items, 'all');
+    const resolved = reconcileReplayBookmarkCompareState({
+      items: filtered,
+      activeBookmarkId: '',
+      primaryBookmarkId: '',
+      secondaryBookmarkId: '',
+    });
+    const first = buildReplayBookmarkCompareStrip({
+      items: filtered,
+      activeBookmarkId: resolved.activeBookmarkId,
+      primaryBookmarkId: resolved.primaryBookmarkId,
+      secondaryBookmarkId: resolved.secondaryBookmarkId,
+    });
+    const second = buildReplayBookmarkCompareStrip({
+      items: filtered,
+      activeBookmarkId: resolved.activeBookmarkId,
+      primaryBookmarkId: resolved.primaryBookmarkId,
+      secondaryBookmarkId: resolved.secondaryBookmarkId,
+    });
+    expect(first).toEqual(second);
+    expect(first.canCompare).toBe(true);
+    expect(first.primaryBookmark?.id).toBe('inc-01');
+    expect(first.secondaryBookmark?.id).toBe('inc-02');
+  });
+
+  it('supports replay compare keyboard shortcuts for previous/next selection, swap, and clear draft', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-01',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        severity: 'critical',
+        updatedAt: '2026-03-18T11:00:00.000Z',
+        title: 'Critical mismatch',
+      },
+      {
+        id: 'inc-02',
+        merchantId: 'm-2',
+        provider: 'mock-a',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'High mismatch',
+      },
+      {
+        id: 'inc-03',
+        merchantId: 'm-3',
+        provider: 'mock-b',
+        severity: 'medium',
+        updatedAt: '2026-03-18T09:00:00.000Z',
+        title: 'Medium mismatch',
+      },
+    ]);
+    expect(resolveReplayBookmarkCompareShortcut('[')).toBe('select_prev');
+    expect(resolveReplayBookmarkCompareShortcut(']')).toBe('select_next');
+    expect(resolveReplayBookmarkCompareShortcut('S')).toBe('swap');
+    expect(resolveReplayBookmarkCompareShortcut('Escape')).toBe('clear_draft');
+
+    expect(moveReplayBookmarkSelection({
+      items: shelf.items,
+      activeBookmarkId: 'inc-02',
+      direction: 'prev',
+    })).toBe('inc-01');
+    expect(moveReplayBookmarkSelection({
+      items: shelf.items,
+      activeBookmarkId: 'inc-02',
+      direction: 'next',
+    })).toBe('inc-03');
+    expect(swapReplayBookmarkCompareSlots({
+      primaryBookmarkId: 'inc-01',
+      secondaryBookmarkId: 'inc-02',
+    })).toEqual({
+      primaryBookmarkId: 'inc-02',
+      secondaryBookmarkId: 'inc-01',
+    });
+  });
+
+  it('preserves bookmark filter on safe replay compare reset unless full reset is confirmed', () => {
+    const safe = resetReplayBookmarkCompareDraftSafe({
+      activeBookmarkFilter: 'high',
+      confirmFilterReset: false,
+    });
+    expect(safe.primaryBookmarkId).toBe('');
+    expect(safe.secondaryBookmarkId).toBe('');
+    expect(safe.activeBookmarkFilter).toBe('high');
+    expect(safe.message).toContain('preserved');
+
+    const confirmed = resetReplayBookmarkCompareDraftSafe({
+      activeBookmarkFilter: 'high',
+      confirmFilterReset: true,
+    });
+    expect(confirmed.primaryBookmarkId).toBe('');
+    expect(confirmed.secondaryBookmarkId).toBe('');
+    expect(confirmed.activeBookmarkFilter).toBe('all');
+    expect(confirmed.message).toContain('reset to default');
+  });
+
+  it('builds replay delta inspector rows in deterministic field order', () => {
+    const shelf = buildIncidentBookmarkShelf([
+      {
+        id: 'inc-a',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        severity: 'critical',
+        updatedAt: '2026-03-18T10:00:00.000Z',
+        title: 'Replay A',
+        status: 'open',
+        currentAmount: 120,
+        riskFlags: ['stale_version'],
+      },
+      {
+        id: 'inc-b',
+        merchantId: 'm-1',
+        provider: 'mock-a',
+        severity: 'high',
+        updatedAt: '2026-03-18T10:05:00.000Z',
+        title: 'Replay B',
+        status: 'investigating',
+        currentAmount: 280,
+        riskFlags: ['high_delta', 'stale_version'],
+      },
+    ]);
+    const inspector = buildReplayDeltaInspector({
+      items: shelf.items,
+      primaryBookmarkId: 'inc-a',
+      secondaryBookmarkId: 'inc-b',
+    });
+    expect(inspector.canCompare).toBe(true);
+    expect(inspector.rows.map((row) => row.field)).toEqual(['status', 'amount', 'riskFlags', 'updatedAt']);
+    expect(inspector.rows.find((row) => row.field === 'amount')?.changed).toBe(true);
   });
 
   it('resets queue draft safely while preserving matrix filter until explicit confirmation', () => {

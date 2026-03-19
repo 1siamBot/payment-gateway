@@ -239,6 +239,9 @@ export type IncidentBookmarkShelfItem = {
   severity: IncidentBookmarkSeverity;
   updatedAt: string;
   title: string;
+  status: ExceptionStatus;
+  amount: number;
+  riskFlags: string[];
 };
 
 export type IncidentBookmarkShelf = {
@@ -260,6 +263,35 @@ export type ReplayChecklistDrawer = {
   steps: ReplayChecklistStep[];
   focusedStepId: string;
   noteDraft: string;
+  emptyMessage: string | null;
+};
+
+export type ReplayBookmarkCompareShortcut = 'select_prev' | 'select_next' | 'swap' | 'clear_draft';
+
+export type ReplayBookmarkCompareStrip = {
+  contract: 'settlement-replay-bookmark-compare-strip.v1';
+  items: IncidentBookmarkShelfItem[];
+  activeBookmarkId: string;
+  primaryBookmark: IncidentBookmarkShelfItem | null;
+  secondaryBookmark: IncidentBookmarkShelfItem | null;
+  canCompare: boolean;
+};
+
+export type ReplayDeltaField = 'status' | 'amount' | 'riskFlags' | 'updatedAt';
+
+export type ReplayDeltaInspectorRow = {
+  field: ReplayDeltaField;
+  primaryValue: string;
+  secondaryValue: string;
+  changed: boolean;
+};
+
+export type ReplayDeltaInspector = {
+  contract: 'settlement-replay-delta-inspector.v1';
+  primaryBookmark: IncidentBookmarkShelfItem | null;
+  secondaryBookmark: IncidentBookmarkShelfItem | null;
+  rows: ReplayDeltaInspectorRow[];
+  canCompare: boolean;
   emptyMessage: string | null;
 };
 
@@ -348,6 +380,7 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
   },
 };
 const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
+const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const DEFAULT_REPLAY_CHECKLIST_STEPS = [
   { id: 'load_context', label: 'Load bookmark context into replay scope.' },
   { id: 'verify_determinism', label: 'Verify deterministic ordering and incident grouping.' },
@@ -821,6 +854,29 @@ function parseIncidentBookmarkItem(raw: unknown): IncidentBookmarkShelfItem | nu
   if (!id || !merchantId || !provider) {
     return null;
   }
+  const status = normalizeExceptionStatus(row.status ?? row.incomingStatus);
+  const amount = parseFiniteNumber(row.currentAmount ?? row.amount ?? row.ledgerAmount ?? row.providerAmount) ?? 0;
+  const incomingAmount = parseFiniteNumber(row.incomingAmount ?? row.nextAmount);
+  const currentVersion = parseFiniteNumber(row.version ?? row.currentVersion) ?? 1;
+  const incomingVersion = parseFiniteNumber(row.incomingVersion ?? row.nextVersion) ?? currentVersion;
+  const mismatchCount = Math.max(0, Math.trunc(parseFiniteNumber(row.mismatchCount) ?? 0));
+  const rawRiskFlags = Array.isArray(row.riskFlags) ? row.riskFlags : [];
+  const normalizedRiskFlags = rawRiskFlags
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim())
+    .sort((a, b) => a.localeCompare(b));
+  const derivedRiskFlags: string[] = [];
+  if (Math.abs((incomingAmount ?? amount) - amount) >= 100) {
+    derivedRiskFlags.push('high_delta');
+  }
+  if (incomingVersion < currentVersion) {
+    derivedRiskFlags.push('stale_version');
+  }
+  if (mismatchCount >= 3) {
+    derivedRiskFlags.push('mismatch_cluster');
+  }
+  const riskFlags = Array.from(new Set([...normalizedRiskFlags, ...derivedRiskFlags]))
+    .sort((a, b) => a.localeCompare(b));
   return {
     id,
     merchantId,
@@ -828,6 +884,9 @@ function parseIncidentBookmarkItem(raw: unknown): IncidentBookmarkShelfItem | nu
     severity: normalizeIncidentSeverity(row.severity),
     updatedAt: resolveDateString(row.updatedAt, DIFF_FALLBACK_TIMESTAMP),
     title,
+    status,
+    amount,
+    riskFlags,
   };
 }
 
@@ -864,6 +923,222 @@ export function buildIncidentBookmarkShelf(fixtures: unknown[]): IncidentBookmar
     totalCount: items.length,
     severityCounts,
     items,
+  };
+}
+
+export function filterIncidentBookmarkShelfItems(
+  items: IncidentBookmarkShelfItem[],
+  filter: IncidentBookmarkFilterKey,
+): IncidentBookmarkShelfItem[] {
+  if (filter === 'all') {
+    return [...items];
+  }
+  return items.filter((item) => item.severity === filter);
+}
+
+function resolveDefaultSecondaryBookmarkId(items: IncidentBookmarkShelfItem[], primaryBookmarkId: string): string {
+  const next = items.find((item) => item.id !== primaryBookmarkId);
+  return next?.id ?? '';
+}
+
+export function reconcileReplayBookmarkCompareState(input: {
+  items: IncidentBookmarkShelfItem[];
+  activeBookmarkId: string;
+  primaryBookmarkId: string;
+  secondaryBookmarkId: string;
+}): { activeBookmarkId: string; primaryBookmarkId: string; secondaryBookmarkId: string } {
+  if (input.items.length === 0) {
+    return {
+      activeBookmarkId: '',
+      primaryBookmarkId: '',
+      secondaryBookmarkId: '',
+    };
+  }
+  const idSet = new Set(input.items.map((item) => item.id));
+  const activeBookmarkId = idSet.has(input.activeBookmarkId)
+    ? input.activeBookmarkId
+    : input.items[0].id;
+  let primaryBookmarkId = idSet.has(input.primaryBookmarkId)
+    ? input.primaryBookmarkId
+    : activeBookmarkId;
+  let secondaryBookmarkId = idSet.has(input.secondaryBookmarkId)
+    ? input.secondaryBookmarkId
+    : resolveDefaultSecondaryBookmarkId(input.items, primaryBookmarkId);
+  if (secondaryBookmarkId === primaryBookmarkId) {
+    secondaryBookmarkId = resolveDefaultSecondaryBookmarkId(input.items, primaryBookmarkId);
+  }
+  if (!idSet.has(primaryBookmarkId)) {
+    primaryBookmarkId = input.items[0].id;
+  }
+  return {
+    activeBookmarkId,
+    primaryBookmarkId,
+    secondaryBookmarkId,
+  };
+}
+
+export function buildReplayBookmarkCompareStrip(input: {
+  items: IncidentBookmarkShelfItem[];
+  activeBookmarkId: string;
+  primaryBookmarkId: string;
+  secondaryBookmarkId: string;
+}): ReplayBookmarkCompareStrip {
+  const resolved = reconcileReplayBookmarkCompareState(input);
+  const itemById = new Map(input.items.map((item) => [item.id, item]));
+  const primaryBookmark = itemById.get(resolved.primaryBookmarkId) ?? null;
+  const secondaryBookmark = itemById.get(resolved.secondaryBookmarkId) ?? null;
+  return {
+    contract: 'settlement-replay-bookmark-compare-strip.v1',
+    items: [...input.items],
+    activeBookmarkId: resolved.activeBookmarkId,
+    primaryBookmark,
+    secondaryBookmark,
+    canCompare: Boolean(primaryBookmark && secondaryBookmark),
+  };
+}
+
+export function moveReplayBookmarkSelection(input: {
+  items: IncidentBookmarkShelfItem[];
+  activeBookmarkId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.items.length === 0) {
+    return '';
+  }
+  const currentIndex = input.items.findIndex((item) => item.id === input.activeBookmarkId);
+  if (currentIndex < 0) {
+    return input.items[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.items[Math.min(currentIndex + 1, input.items.length - 1)].id;
+  }
+  return input.items[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveReplayBookmarkCompareShortcut(key: string): ReplayBookmarkCompareShortcut | null {
+  if (key === '[') {
+    return 'select_prev';
+  }
+  if (key === ']') {
+    return 'select_next';
+  }
+  if (key.toLowerCase() === 's') {
+    return 'swap';
+  }
+  if (key === 'Escape') {
+    return 'clear_draft';
+  }
+  return null;
+}
+
+export function swapReplayBookmarkCompareSlots(input: {
+  primaryBookmarkId: string;
+  secondaryBookmarkId: string;
+}): { primaryBookmarkId: string; secondaryBookmarkId: string } {
+  return {
+    primaryBookmarkId: input.secondaryBookmarkId,
+    secondaryBookmarkId: input.primaryBookmarkId,
+  };
+}
+
+export function resetReplayBookmarkCompareDraftSafe(input: {
+  activeBookmarkFilter: IncidentBookmarkFilterKey;
+  confirmFilterReset: boolean;
+}): {
+  primaryBookmarkId: string;
+  secondaryBookmarkId: string;
+  activeBookmarkFilter: IncidentBookmarkFilterKey;
+  message: string;
+} {
+  if (input.confirmFilterReset) {
+    return {
+      primaryBookmarkId: '',
+      secondaryBookmarkId: '',
+      activeBookmarkFilter: 'all',
+      message: 'Replay compare draft and bookmark filter reset to default.',
+    };
+  }
+  return {
+    primaryBookmarkId: '',
+    secondaryBookmarkId: '',
+    activeBookmarkFilter: input.activeBookmarkFilter,
+    message: 'Replay compare draft cleared. Bookmark filter preserved until explicit reset confirm.',
+  };
+}
+
+function formatReplayDeltaAmount(amount: number): string {
+  return Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+}
+
+function formatReplayDeltaRiskFlags(flags: string[]): string {
+  return flags.length ? flags.join(', ') : 'none';
+}
+
+export function buildReplayDeltaInspector(input: {
+  items: IncidentBookmarkShelfItem[];
+  primaryBookmarkId: string;
+  secondaryBookmarkId: string;
+}): ReplayDeltaInspector {
+  const itemById = new Map(input.items.map((item) => [item.id, item]));
+  const primaryBookmark = itemById.get(input.primaryBookmarkId) ?? null;
+  const secondaryBookmark = itemById.get(input.secondaryBookmarkId) ?? null;
+  if (!primaryBookmark || !secondaryBookmark) {
+    return {
+      contract: 'settlement-replay-delta-inspector.v1',
+      primaryBookmark,
+      secondaryBookmark,
+      rows: [],
+      canCompare: false,
+      emptyMessage: 'Pin primary and secondary bookmarks to inspect deterministic replay deltas.',
+    };
+  }
+  const rows = REPLAY_DELTA_FIELD_ORDER.map((field): ReplayDeltaInspectorRow => {
+    if (field === 'status') {
+      const primaryValue = primaryBookmark.status;
+      const secondaryValue = secondaryBookmark.status;
+      return {
+        field,
+        primaryValue,
+        secondaryValue,
+        changed: primaryValue !== secondaryValue,
+      };
+    }
+    if (field === 'amount') {
+      const primaryValue = formatReplayDeltaAmount(primaryBookmark.amount);
+      const secondaryValue = formatReplayDeltaAmount(secondaryBookmark.amount);
+      return {
+        field,
+        primaryValue,
+        secondaryValue,
+        changed: primaryValue !== secondaryValue,
+      };
+    }
+    if (field === 'riskFlags') {
+      const primaryValue = formatReplayDeltaRiskFlags(primaryBookmark.riskFlags);
+      const secondaryValue = formatReplayDeltaRiskFlags(secondaryBookmark.riskFlags);
+      return {
+        field,
+        primaryValue,
+        secondaryValue,
+        changed: primaryValue !== secondaryValue,
+      };
+    }
+    const primaryValue = primaryBookmark.updatedAt;
+    const secondaryValue = secondaryBookmark.updatedAt;
+    return {
+      field,
+      primaryValue,
+      secondaryValue,
+      changed: primaryValue !== secondaryValue,
+    };
+  });
+  return {
+    contract: 'settlement-replay-delta-inspector.v1',
+    primaryBookmark,
+    secondaryBookmark,
+    rows,
+    canCompare: true,
+    emptyMessage: null,
   };
 }
 

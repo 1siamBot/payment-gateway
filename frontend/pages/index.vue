@@ -14,6 +14,7 @@ import {
   buildExceptionActionIdempotencyKey,
   buildExceptionBulkConfirmation,
   buildExceptionBulkPreview,
+  buildIncidentBookmarkShelf,
   canRefundStatus,
   classifyExceptionActionFailure,
   createExceptionSavedView,
@@ -40,20 +41,29 @@ import {
   resolveExceptionConflictShortcutDrilldown,
   resolveExceptionDiffInspectorEmptyState,
   buildExceptionSimulationOutcomePanel,
+  buildReplayBookmarkCompareStrip,
+  buildReplayDeltaInspector,
   restoreExceptionSavedViewState,
   serializeExceptionSavedViewState,
   serializeExceptionQueryState,
+  filterIncidentBookmarkShelfItems,
   filterExceptionDiffInspectorRows,
+  moveReplayBookmarkSelection,
   moveExceptionDiffInspectorFocus,
   moveOperatorDecisionQueueFocus,
+  reconcileReplayBookmarkCompareState,
+  resetReplayBookmarkCompareDraftSafe,
+  resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
   resetOperatorDecisionQueueDraftSafe,
+  swapReplayBookmarkCompareSlots,
   validateExceptionActionInput,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
 import type { ScenarioCompareMatrixFilterKey } from '../utils/wave1';
 import type { ExplainabilityComposerDraft, ExplainabilityPresetSlot } from '../utils/wave1';
+import type { IncidentBookmarkFilterKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -363,6 +373,37 @@ const activeExceptionPreset = computed(() => resolveActiveExceptionPreset({
   preset: '',
 }));
 const selectedExceptionRows = computed(() => exceptionRows.value.filter((row) => selectedExceptionIds.value.includes(row.id)));
+const activeBookmarkFilter = ref<IncidentBookmarkFilterKey>('all');
+const activeReplayBookmarkId = ref('');
+const replayComparePrimaryBookmarkId = ref('');
+const replayCompareSecondaryBookmarkId = ref('');
+const replayCompareState = reactive({
+  message: '',
+  error: '',
+});
+const replayBookmarkFilterOptions: Array<{ key: IncidentBookmarkFilterKey; label: string }> = [
+  { key: 'all', label: 'all' },
+  { key: 'critical', label: 'critical' },
+  { key: 'high', label: 'high' },
+  { key: 'medium', label: 'medium' },
+  { key: 'low', label: 'low' },
+];
+const incidentBookmarkShelf = computed(() => buildIncidentBookmarkShelf(selectedExceptionRows.value));
+const filteredIncidentBookmarkItems = computed(() => filterIncidentBookmarkShelfItems(
+  incidentBookmarkShelf.value.items,
+  activeBookmarkFilter.value,
+));
+const replayCompareStrip = computed(() => buildReplayBookmarkCompareStrip({
+  items: filteredIncidentBookmarkItems.value,
+  activeBookmarkId: activeReplayBookmarkId.value,
+  primaryBookmarkId: replayComparePrimaryBookmarkId.value,
+  secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+}));
+const replayDeltaInspector = computed(() => buildReplayDeltaInspector({
+  items: filteredIncidentBookmarkItems.value,
+  primaryBookmarkId: replayComparePrimaryBookmarkId.value,
+  secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+}));
 const bulkExceptionPreview = computed(() => buildExceptionBulkPreview(selectedExceptionRows.value));
 const bulkDiffInspector = computed(() => buildExceptionBulkDiffInspector(selectedExceptionRows.value));
 const bulkSimulationOutcome = computed(() => buildExceptionSimulationOutcomePanel(selectedExceptionRows.value));
@@ -1174,6 +1215,18 @@ watch(selectedExceptionIds, (selectedIds) => {
   queueDraftRowIds.value = queueDraftRowIds.value.filter((rowId) => selectedSet.has(rowId));
 }, { deep: true });
 
+watch(filteredIncidentBookmarkItems, (items) => {
+  const reconciled = reconcileReplayBookmarkCompareState({
+    items,
+    activeBookmarkId: activeReplayBookmarkId.value,
+    primaryBookmarkId: replayComparePrimaryBookmarkId.value,
+    secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+  });
+  activeReplayBookmarkId.value = reconciled.activeBookmarkId;
+  replayComparePrimaryBookmarkId.value = reconciled.primaryBookmarkId;
+  replayCompareSecondaryBookmarkId.value = reconciled.secondaryBookmarkId;
+}, { immediate: true, deep: true });
+
 watch(operatorDecisionQueue, (queue) => {
   if (!queue.items.length) {
     activeDecisionQueueItemId.value = '';
@@ -1257,6 +1310,103 @@ function resetDecisionQueueDraftWithFilterConfirm() {
   queueDraftRowIds.value = confirmed.stagedRowIds;
   activeScenarioMatrixFilter.value = confirmed.activeMatrixFilter;
   decisionQueueState.message = confirmed.message;
+}
+
+function resetReplayCompareState() {
+  replayCompareState.error = '';
+  replayCompareState.message = '';
+}
+
+function setActiveBookmarkFilter(filter: IncidentBookmarkFilterKey) {
+  resetReplayCompareState();
+  activeBookmarkFilter.value = filter;
+}
+
+function setActiveReplayBookmark(bookmarkId: string) {
+  activeReplayBookmarkId.value = bookmarkId;
+}
+
+function pinReplayBookmarkPrimary(bookmarkId: string) {
+  resetReplayCompareState();
+  replayComparePrimaryBookmarkId.value = bookmarkId;
+  if (replayCompareSecondaryBookmarkId.value === bookmarkId) {
+    replayCompareSecondaryBookmarkId.value = '';
+  }
+  replayCompareState.message = `Pinned ${bookmarkId} as primary bookmark.`;
+}
+
+function pinReplayBookmarkSecondary(bookmarkId: string) {
+  resetReplayCompareState();
+  replayCompareSecondaryBookmarkId.value = bookmarkId;
+  if (replayComparePrimaryBookmarkId.value === bookmarkId) {
+    replayComparePrimaryBookmarkId.value = '';
+  }
+  replayCompareState.message = `Pinned ${bookmarkId} as secondary bookmark.`;
+}
+
+function swapReplayComparePins() {
+  resetReplayCompareState();
+  const swapped = swapReplayBookmarkCompareSlots({
+    primaryBookmarkId: replayComparePrimaryBookmarkId.value,
+    secondaryBookmarkId: replayCompareSecondaryBookmarkId.value,
+  });
+  replayComparePrimaryBookmarkId.value = swapped.primaryBookmarkId;
+  replayCompareSecondaryBookmarkId.value = swapped.secondaryBookmarkId;
+  replayCompareState.message = 'Swapped primary and secondary bookmarks.';
+}
+
+function clearReplayCompareDraftSafe() {
+  resetReplayCompareState();
+  const safe = resetReplayBookmarkCompareDraftSafe({
+    activeBookmarkFilter: activeBookmarkFilter.value,
+    confirmFilterReset: false,
+  });
+  replayComparePrimaryBookmarkId.value = safe.primaryBookmarkId;
+  replayCompareSecondaryBookmarkId.value = safe.secondaryBookmarkId;
+  activeBookmarkFilter.value = safe.activeBookmarkFilter;
+  replayCompareState.message = safe.message;
+}
+
+function clearReplayCompareDraftWithFilterConfirm() {
+  resetReplayCompareState();
+  if (import.meta.client && !window.confirm('Reset replay compare draft and bookmark severity filter to all?')) {
+    return;
+  }
+  const confirmed = resetReplayBookmarkCompareDraftSafe({
+    activeBookmarkFilter: activeBookmarkFilter.value,
+    confirmFilterReset: true,
+  });
+  replayComparePrimaryBookmarkId.value = confirmed.primaryBookmarkId;
+  replayCompareSecondaryBookmarkId.value = confirmed.secondaryBookmarkId;
+  activeBookmarkFilter.value = confirmed.activeBookmarkFilter;
+  replayCompareState.message = confirmed.message;
+}
+
+function onReplayCompareKeydown(event: KeyboardEvent) {
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
+    return;
+  }
+  const shortcut = resolveReplayBookmarkCompareShortcut(event.key);
+  if (!shortcut) {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'select_prev' || shortcut === 'select_next') {
+    activeReplayBookmarkId.value = moveReplayBookmarkSelection({
+      items: filteredIncidentBookmarkItems.value,
+      activeBookmarkId: activeReplayBookmarkId.value,
+      direction: shortcut === 'select_prev' ? 'prev' : 'next',
+    });
+    replayCompareState.message = `Selected ${activeReplayBookmarkId.value || 'none'} in bookmark shelf.`;
+    replayCompareState.error = '';
+    return;
+  }
+  if (shortcut === 'swap') {
+    swapReplayComparePins();
+    return;
+  }
+  clearReplayCompareDraftSafe();
 }
 
 function onDecisionQueueKeydown(event: KeyboardEvent) {
@@ -1500,6 +1650,7 @@ function closeBulkPreviewDrawer() {
 function resetBulkSelectionSafe() {
   selectedExceptionIds.value = [];
   staleExceptionSelectionCount.value = 0;
+  resetReplayCompareState();
   resetBulkInspectorViewState();
   const safeQueueReset = resetOperatorDecisionQueueDraftSafe({
     activeMatrixFilter: activeScenarioMatrixFilter.value,
@@ -2646,6 +2797,72 @@ onMounted(() => {
             </p>
 
             <div class="simulation-outcome-panel">
+              <h4>Replay Bookmark Compare Strip</h4>
+              <p class="state" :class="{ error: replayCompareState.error }">
+                {{ replayCompareState.error || replayCompareState.message || 'Pin two bookmarks to compare deterministic replay deltas. Keyboard: [ previous, ] next, S swap, Esc clear draft.' }}
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in replayBookmarkFilterOptions"
+                  :key="`bookmark-filter-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeBookmarkFilter === option.key }"
+                  @click="setActiveBookmarkFilter(option.key)"
+                >
+                  {{ option.label }}
+                  ({{ option.key === 'all'
+                    ? incidentBookmarkShelf.totalCount
+                    : incidentBookmarkShelf.severityCounts[option.key] }})
+                </button>
+              </div>
+              <div class="replay-compare-strip-wrap" tabindex="0" @keydown="onReplayCompareKeydown">
+                <ul class="replay-bookmark-list">
+                  <li v-if="!filteredIncidentBookmarkItems.length" class="state">No bookmarks in current severity filter.</li>
+                  <li
+                    v-for="item in filteredIncidentBookmarkItems"
+                    :key="`bookmark-${item.id}`"
+                    class="replay-bookmark-item"
+                    :class="{ active: replayCompareStrip.activeBookmarkId === item.id }"
+                    @click="setActiveReplayBookmark(item.id)"
+                  >
+                    <div>
+                      <strong>{{ item.id }}</strong>
+                      <small>{{ item.merchantId }} / {{ item.provider }} / {{ item.severity }}</small>
+                    </div>
+                    <div class="inline-actions compact">
+                      <button type="button" class="link" @click.stop="pinReplayBookmarkPrimary(item.id)">Pin Primary</button>
+                      <button type="button" class="link" @click.stop="pinReplayBookmarkSecondary(item.id)">Pin Secondary</button>
+                    </div>
+                  </li>
+                </ul>
+                <div class="replay-compare-slots">
+                  <article>
+                    <h5>Primary</h5>
+                    <p><strong>{{ replayCompareStrip.primaryBookmark?.id || '-' }}</strong></p>
+                    <p class="state">{{ replayCompareStrip.primaryBookmark?.title || 'No bookmark pinned.' }}</p>
+                  </article>
+                  <article>
+                    <h5>Secondary</h5>
+                    <p><strong>{{ replayCompareStrip.secondaryBookmark?.id || '-' }}</strong></p>
+                    <p class="state">{{ replayCompareStrip.secondaryBookmark?.title || 'No bookmark pinned.' }}</p>
+                  </article>
+                </div>
+              </div>
+              <div class="inline-actions">
+                <button type="button" :disabled="!replayCompareStrip.canCompare" @click="swapReplayComparePins">Swap Primary/Secondary</button>
+                <button type="button" class="link" @click="clearReplayCompareDraftSafe">Safe Clear Compare Draft</button>
+                <button type="button" class="link" @click="clearReplayCompareDraftWithFilterConfirm">Clear Draft + Reset Severity Filter</button>
+              </div>
+              <p class="state">
+                Active pair:
+                {{ replayCompareStrip.primaryBookmark?.id || '-' }}
+                vs
+                {{ replayCompareStrip.secondaryBookmark?.id || '-' }}.
+              </p>
+            </div>
+
+            <div class="simulation-outcome-panel">
               <h4>Simulation Outcome Panel</h4>
               <p class="state">Deterministic buckets: <code>success_projection</code>, <code>conflict_projection</code>, <code>rollback_recommended</code>.</p>
               <div class="simulation-outcome-grid">
@@ -2808,6 +3025,35 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <h4>Replay Delta Inspector</h4>
+            <p class="state">Field-level compare order is deterministic: status, amount, riskFlags, updatedAt.</p>
+            <div class="replay-delta-table-wrap">
+              <table class="replay-delta-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Primary</th>
+                    <th>Secondary</th>
+                    <th>Changed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="!replayDeltaInspector.canCompare">
+                    <td colspan="4">{{ replayDeltaInspector.emptyMessage }}</td>
+                  </tr>
+                  <tr
+                    v-for="row in replayDeltaInspector.rows"
+                    :key="`replay-delta-${row.field}`"
+                    :class="{ 'replay-delta-row-changed': row.changed }"
+                  >
+                    <td>{{ row.field }}</td>
+                    <td>{{ row.primaryValue }}</td>
+                    <td>{{ row.secondaryValue }}</td>
+                    <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
             <h4>Diff Inspector</h4>
             <p class="state">Per-row current vs incoming deltas use deterministic field order: amount, status, updatedAt, version.</p>
             <p class="state">Keyboard: <code>↑/↓</code> or <code>j/k</code> to move row focus, <code>0-4</code> to jump reason bucket, <code>Esc</code> to reset view.</p>
