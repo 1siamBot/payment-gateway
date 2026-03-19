@@ -412,6 +412,7 @@ onMounted(() => {
         <NuxtLink class="button-link" to="/">Open Legacy Control Tower</NuxtLink>
         <NuxtLink class="button-link" to="/payment-reconciliation-workspace">Open Reconciliation Workspace</NuxtLink>
         <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
+        <NuxtLink class="button-link" to="/provider-failover-insights">Open Provider Failover Insights</NuxtLink>
       </div>
     </section>
 
