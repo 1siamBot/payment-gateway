@@ -537,6 +537,174 @@ describe('SettlementsService', () => {
     expect(secondPage.data).toHaveLength(1);
   });
 
+  it('returns empty list deterministically when no exceptions match filters', async () => {
+    const prismaMock = createPrismaMock();
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const listed = await service.listSettlementExceptions({
+      merchantId: 'merchant_missing',
+      status: SettlementExceptionStatus.OPEN,
+    });
+
+    expect(listed.data).toEqual([]);
+    expect(listed.pageInfo).toEqual({
+      take: 20,
+      hasNext: false,
+      nextCursor: null,
+    });
+  });
+
+  it('orders list rows deterministically by severity then createdAt then id', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_alpha',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 2200,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+      {
+        id: 'tx-b',
+        reference: 'ref-b',
+        merchantId: 'merchant_bravo',
+        providerName: 'mock-b',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 900,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+      {
+        id: 'tx-c',
+        reference: 'ref-c',
+        merchantId: 'merchant_charlie',
+        providerName: 'mock-c',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 260,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [
+        { merchantId: 'merchant_alpha', providerName: 'mock-a', providerTotal: 900 },
+        { merchantId: 'merchant_bravo', providerName: 'mock-b', providerTotal: 560 },
+        { merchantId: 'merchant_charlie', providerName: 'mock-c', providerTotal: 200 },
+      ],
+    }, 'ops');
+
+    const listed = await service.listSettlementExceptions({});
+
+    expect(listed.data.map((row) => row.id)).toEqual(['se-1', 'se-2', 'se-3']);
+    expect(listed.data.map((row) => row.severity)).toEqual(['critical', 'high', 'low']);
+    expect(listed.data[0].actionState).toEqual({
+      acknowledge: { enabled: true, reason: 'available' },
+      assignOwner: { enabled: true, reason: 'available' },
+      markResolved: { enabled: true, reason: 'available' },
+    });
+  });
+
+  it('returns filtered subset by status, merchantId, and date window', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_alpha',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 400,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+      {
+        id: 'tx-b',
+        reference: 'ref-b',
+        merchantId: 'merchant_bravo',
+        providerName: 'mock-b',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 300,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [
+        { merchantId: 'merchant_alpha', providerName: 'mock-a', providerTotal: 200 },
+        { merchantId: 'merchant_bravo', providerName: 'mock-b', providerTotal: 250 },
+      ],
+    }, 'ops');
+
+    await service.updateSettlementException(detected.exceptions[0].id, {
+      action: 'resolve',
+      reason: 'resolved for filtered subset test',
+      expectedVersion: detected.exceptions[0].version,
+    }, 'ops');
+
+    const listed = await service.listSettlementExceptions({
+      status: SettlementExceptionStatus.RESOLVED,
+      merchantId: 'merchant_alpha',
+      dateFrom: '2026-03-17',
+      dateTo: '2026-03-17',
+    });
+
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0]).toEqual(expect.objectContaining({
+      merchantId: 'merchant_alpha',
+      status: SettlementExceptionStatus.RESOLVED,
+      actionState: {
+        acknowledge: { enabled: false, reason: 'terminal_status' },
+        assignOwner: { enabled: false, reason: 'terminal_status' },
+        markResolved: { enabled: false, reason: 'terminal_status' },
+      },
+    }));
+  });
+
+  it('returns detail for existing exception and not-found for unknown id', async () => {
+    const prismaMock = createPrismaMock([
+      {
+        id: 'tx-a',
+        reference: 'ref-a',
+        merchantId: 'merchant_alpha',
+        providerName: 'mock-a',
+        type: TransactionType.DEPOSIT,
+        status: TransactionStatus.PAID,
+        amount: 500,
+        currency: 'USD',
+        callbackEvents: [{ status: 'succeeded' }],
+      },
+    ]);
+    const service = new SettlementsService(prismaMock.prisma as any);
+
+    const detected = await service.detectSettlementExceptions({
+      windowDate: '2026-03-17',
+      records: [{ merchantId: 'merchant_alpha', providerName: 'mock-a', providerTotal: 100 }],
+    }, 'ops');
+
+    const detail = await service.getSettlementException(detected.exceptions[0].id);
+    expect(detail.id).toBe(detected.exceptions[0].id);
+    expect(detail.severity).toBe('high');
+    expect(detail.actionState).toEqual({
+      acknowledge: { enabled: true, reason: 'available' },
+      assignOwner: { enabled: true, reason: 'available' },
+      markResolved: { enabled: true, reason: 'available' },
+    });
+
+    await expect(service.getSettlementException('se-missing')).rejects.toThrow('Settlement exception not found');
+  });
+
   it('enforces transition reason and writes immutable audit trail', async () => {
     const prismaMock = createPrismaMock([
       {
