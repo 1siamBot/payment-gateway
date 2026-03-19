@@ -1,0 +1,4 @@
+
+> payment-gateway@0.1.0 test
+> jest test/frontend.release-gate-evidence-digest.spec.ts
+
