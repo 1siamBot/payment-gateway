@@ -48,6 +48,7 @@ import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/bui
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
 import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
+import { BuildSettlementQaReleaseGateVerdictPacketDto } from './dto/build-settlement-qa-release-gate-verdict-packet.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
 import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
@@ -106,6 +107,10 @@ import {
   buildSettlementAdjudicationRoutingManifest,
   SettlementAdjudicationRoutingManifest,
 } from './adjudication-routing-manifest';
+import {
+  buildSettlementQaReleaseGateVerdictPacket,
+  SettlementQaReleaseGateVerdictPacket,
+} from './qa-release-gate-verdict-packet';
 import {
   buildSettlementReleaseCandidateHandoffPacket,
   SettlementReleaseCandidateHandoffPacket,
@@ -316,6 +321,7 @@ type SettlementReleaseCandidateScorecardContractResponse = SettlementReleaseCand
 type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementReleaseCandidateHandoffPacket;
 type SettlementReleaseEvidenceAdjudicationSnapshotContractResponse = SettlementReleaseEvidenceAdjudicationSnapshot;
 type SettlementReleaseReadyDependencyGraphSnapshotContractResponse = SettlementReleaseReadyDependencyGraphSnapshot;
+type SettlementQaReleaseGateVerdictPacketContractResponse = SettlementQaReleaseGateVerdictPacket;
 type SettlementAdjudicationRoutingManifestContractResponse = SettlementAdjudicationRoutingManifest;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
@@ -751,6 +757,12 @@ export class SettlementsService {
     input: BuildSettlementReleaseReadyDependencyGraphSnapshotDto,
   ): SettlementReleaseReadyDependencyGraphSnapshotContractResponse {
     return buildSettlementReleaseReadyDependencyGraphSnapshot(input);
+  }
+
+  buildSettlementExceptionQaReleaseGateVerdictPacket(
+    input: BuildSettlementQaReleaseGateVerdictPacketDto,
+  ): SettlementQaReleaseGateVerdictPacketContractResponse {
+    return buildSettlementQaReleaseGateVerdictPacket(input);
   }
 
   buildSettlementExceptionAdjudicationRoutingManifest(

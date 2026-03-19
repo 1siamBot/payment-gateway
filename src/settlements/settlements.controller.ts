@@ -18,6 +18,7 @@ import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/bui
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
 import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
+import { BuildSettlementQaReleaseGateVerdictPacketDto } from './dto/build-settlement-qa-release-gate-verdict-packet.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
 import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
@@ -166,6 +167,11 @@ export class SettlementsController {
   @Post('exceptions/release-ready-dependency-graph-snapshot')
   releaseReadyDependencyGraphSnapshot(@Body() body: BuildSettlementReleaseReadyDependencyGraphSnapshotDto) {
     return this.settlements.buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(body);
+  }
+
+  @Post('exceptions/qa-release-gate-verdict-packet')
+  qaReleaseGateVerdictPacket(@Body() body: BuildSettlementQaReleaseGateVerdictPacketDto) {
+    return this.settlements.buildSettlementExceptionQaReleaseGateVerdictPacket(body);
   }
 
   @Post('exceptions/adjudication-routing-manifest')
