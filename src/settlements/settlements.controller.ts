@@ -24,6 +24,7 @@ import { BuildSettlementReleaseCandidateRemediationQueueDto } from './dto/build-
 import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
+import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -168,6 +169,11 @@ export class SettlementsController {
   @Post('exceptions/release-candidate-remediation-queue')
   releaseCandidateRemediationQueue(@Body() body: BuildSettlementReleaseCandidateRemediationQueueDto) {
     return this.settlements.buildSettlementExceptionReleaseCandidateRemediationQueue(body);
+  }
+
+  @Post('exceptions/remediation-execution-blueprint-packet')
+  remediationExecutionBlueprintPacket(@Body() body: BuildSettlementRemediationExecutionBlueprintPacketDto) {
+    return this.settlements.buildSettlementExceptionRemediationExecutionBlueprintPacket(body);
   }
 
   @Post('exceptions/release-ready-dependency-graph-snapshot')

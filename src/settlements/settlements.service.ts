@@ -54,6 +54,7 @@ import { BuildSettlementReleaseCandidateRemediationQueueDto } from './dto/build-
 import { BuildSettlementReleaseReadyDependencyGraphSnapshotDto } from './dto/build-settlement-release-ready-dependency-graph-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
+import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/build-settlement-remediation-execution-blueprint-packet.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -104,6 +105,10 @@ import {
   buildSettlementReleaseCandidateRemediationQueue,
   SettlementReleaseCandidateRemediationQueue,
 } from './release-candidate-remediation-queue';
+import {
+  buildSettlementRemediationExecutionBlueprintPacket,
+  SettlementRemediationExecutionBlueprintPacket,
+} from './remediation-execution-blueprint-packet';
 import {
   buildSettlementReleaseReadyDependencyGraphSnapshot,
   SettlementReleaseReadyDependencyGraphSnapshot,
@@ -326,6 +331,7 @@ type SettlementReleaseCandidateScorecardContractResponse = SettlementReleaseCand
 type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementReleaseCandidateHandoffPacket;
 type SettlementReleaseEvidenceAdjudicationSnapshotContractResponse = SettlementReleaseEvidenceAdjudicationSnapshot;
 type SettlementReleaseCandidateRemediationQueueContractResponse = SettlementReleaseCandidateRemediationQueue;
+type SettlementRemediationExecutionBlueprintPacketContractResponse = SettlementRemediationExecutionBlueprintPacket;
 type SettlementReleaseReadyDependencyGraphSnapshotContractResponse = SettlementReleaseReadyDependencyGraphSnapshot;
 type SettlementQaReleaseGateVerdictPacketContractResponse = SettlementQaReleaseGateVerdictPacket;
 type SettlementAdjudicationRoutingManifestContractResponse = SettlementAdjudicationRoutingManifest;
@@ -763,6 +769,12 @@ export class SettlementsService {
     input: BuildSettlementReleaseCandidateRemediationQueueDto,
   ): SettlementReleaseCandidateRemediationQueueContractResponse {
     return buildSettlementReleaseCandidateRemediationQueue(input);
+  }
+
+  buildSettlementExceptionRemediationExecutionBlueprintPacket(
+    input: BuildSettlementRemediationExecutionBlueprintPacketDto,
+  ): SettlementRemediationExecutionBlueprintPacketContractResponse {
+    return buildSettlementRemediationExecutionBlueprintPacket(input);
   }
 
   buildSettlementExceptionReleaseReadyDependencyGraphSnapshot(
