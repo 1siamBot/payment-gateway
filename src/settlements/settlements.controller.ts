@@ -28,6 +28,7 @@ import { BuildSettlementRemediationExecutionBlueprintPacketDto } from './dto/bui
 import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto/build-settlement-remediation-publication-readiness-envelope.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
+import { CommandSettlementExceptionDto } from './dto/command-settlement-exception.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
 import { ListReconciliationDiscrepanciesDto } from './dto/list-reconciliation-discrepancies.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
@@ -249,6 +250,60 @@ export class SettlementsController {
       exceptionId,
       {
         ...body,
+        idempotencyKey: body.idempotencyKey ?? idempotencyHeader,
+      },
+      request.auth?.role ?? 'system',
+    );
+  }
+
+  @Post('exceptions/:exceptionId/acknowledge')
+  acknowledgeException(
+    @Req() request: AuthenticatedRequest,
+    @Param('exceptionId') exceptionId: string,
+    @Body() body: CommandSettlementExceptionDto,
+    @Headers('idempotency-key') idempotencyHeader?: string,
+  ) {
+    return this.settlements.commandSettlementException(
+      exceptionId,
+      {
+        ...body,
+        command: 'acknowledge',
+        idempotencyKey: body.idempotencyKey ?? idempotencyHeader,
+      },
+      request.auth?.role ?? 'system',
+    );
+  }
+
+  @Post('exceptions/:exceptionId/assign-owner')
+  assignExceptionOwner(
+    @Req() request: AuthenticatedRequest,
+    @Param('exceptionId') exceptionId: string,
+    @Body() body: CommandSettlementExceptionDto,
+    @Headers('idempotency-key') idempotencyHeader?: string,
+  ) {
+    return this.settlements.commandSettlementException(
+      exceptionId,
+      {
+        ...body,
+        command: 'assignOwner',
+        idempotencyKey: body.idempotencyKey ?? idempotencyHeader,
+      },
+      request.auth?.role ?? 'system',
+    );
+  }
+
+  @Post('exceptions/:exceptionId/mark-resolved')
+  markExceptionResolved(
+    @Req() request: AuthenticatedRequest,
+    @Param('exceptionId') exceptionId: string,
+    @Body() body: CommandSettlementExceptionDto,
+    @Headers('idempotency-key') idempotencyHeader?: string,
+  ) {
+    return this.settlements.commandSettlementException(
+      exceptionId,
+      {
+        ...body,
+        command: 'markResolved',
         idempotencyKey: body.idempotencyKey ?? idempotencyHeader,
       },
       request.auth?.role ?? 'system',
