@@ -47,6 +47,7 @@ import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
@@ -96,6 +97,10 @@ import {
   buildSettlementReleaseEvidenceAdjudicationSnapshot,
   SettlementReleaseEvidenceAdjudicationSnapshot,
 } from './release-evidence-adjudication-snapshot';
+import {
+  buildSettlementAdjudicationRoutingManifest,
+  SettlementAdjudicationRoutingManifest,
+} from './adjudication-routing-manifest';
 import {
   buildSettlementReleaseCandidateHandoffPacket,
   SettlementReleaseCandidateHandoffPacket,
@@ -305,6 +310,7 @@ type SettlementPublicationEvidenceManifestContractResponse = SettlementPublicati
 type SettlementReleaseCandidateScorecardContractResponse = SettlementReleaseCandidateScorecard;
 type SettlementReleaseCandidateHandoffPacketContractResponse = SettlementReleaseCandidateHandoffPacket;
 type SettlementReleaseEvidenceAdjudicationSnapshotContractResponse = SettlementReleaseEvidenceAdjudicationSnapshot;
+type SettlementAdjudicationRoutingManifestContractResponse = SettlementAdjudicationRoutingManifest;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -733,6 +739,12 @@ export class SettlementsService {
     input: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto,
   ): SettlementReleaseEvidenceAdjudicationSnapshotContractResponse {
     return buildSettlementReleaseEvidenceAdjudicationSnapshot(input);
+  }
+
+  buildSettlementExceptionAdjudicationRoutingManifest(
+    input: BuildSettlementAdjudicationRoutingManifestDto,
+  ): SettlementAdjudicationRoutingManifestContractResponse {
+    return buildSettlementAdjudicationRoutingManifest(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(

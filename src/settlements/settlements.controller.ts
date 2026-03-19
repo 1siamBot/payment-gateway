@@ -17,6 +17,7 @@ import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationEvidenceManifestDto } from './dto/build-settlement-publication-evidence-manifest.dto';
+import { BuildSettlementAdjudicationRoutingManifestDto } from './dto/build-settlement-adjudication-routing-manifest.dto';
 import { BuildSettlementReleaseEvidenceAdjudicationSnapshotDto } from './dto/build-settlement-release-evidence-adjudication-snapshot.dto';
 import { BuildSettlementReleaseCandidateHandoffPacketDto } from './dto/build-settlement-release-candidate-handoff-packet.dto';
 import { BuildSettlementReleaseCandidateScorecardDto } from './dto/build-settlement-release-candidate-scorecard.dto';
@@ -159,6 +160,11 @@ export class SettlementsController {
   @Post('exceptions/release-evidence-adjudication-snapshot')
   releaseEvidenceAdjudicationSnapshot(@Body() body: BuildSettlementReleaseEvidenceAdjudicationSnapshotDto) {
     return this.settlements.buildSettlementExceptionReleaseEvidenceAdjudicationSnapshot(body);
+  }
+
+  @Post('exceptions/adjudication-routing-manifest')
+  adjudicationRoutingManifest(@Body() body: BuildSettlementAdjudicationRoutingManifestDto) {
+    return this.settlements.buildSettlementExceptionAdjudicationRoutingManifest(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')
