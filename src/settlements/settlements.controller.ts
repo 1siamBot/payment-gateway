@@ -3,6 +3,7 @@ import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementEvidenceLineageDto } from './dto/build-settlement-evidence-lineage.dto';
+import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
@@ -84,6 +85,11 @@ export class SettlementsController {
   @Post('exceptions/evidence-gap-summary')
   evidenceGapSummary(@Body() body: BuildSettlementEvidenceGapSummaryDto) {
     return this.settlements.buildSettlementExceptionEvidenceGapSummary(body);
+  }
+
+  @Post('exceptions/evidence-packet-lint')
+  evidencePacketLint(@Body() body: BuildSettlementEvidencePacketLintDto) {
+    return this.settlements.buildSettlementExceptionEvidencePacketLint(body);
   }
 
   @Post('exceptions/publication-readiness-trend')

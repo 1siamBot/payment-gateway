@@ -30,6 +30,7 @@ import {
 import {
   BuildSettlementEvidenceLineageDto,
 } from './dto/build-settlement-evidence-lineage.dto';
+import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import {
   BuildSettlementBulkActionPreviewDto,
@@ -45,6 +46,10 @@ import {
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
 import { buildSettlementEvidenceLineage, SettlementEvidenceLineageContract } from './evidence-lineage';
 import { buildSettlementEvidenceGapSummary, SettlementEvidenceGapSummary } from './evidence-gap-summary';
+import {
+  lintSettlementEvidencePackets,
+  SettlementEvidencePacketLintContract,
+} from './evidence-packet-lint';
 import {
   buildSettlementPublicationReadinessTrend,
   SettlementPublicationReadinessTrend,
@@ -218,6 +223,7 @@ type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainab
 type SettlementPacketAuditSummaryContractResponse = SettlementPacketAuditSummary;
 type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContract;
 type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary;
+type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 
 @Injectable()
@@ -557,6 +563,12 @@ export class SettlementsService {
       }
       throw error;
     }
+  }
+
+  buildSettlementExceptionEvidencePacketLint(
+    input: BuildSettlementEvidencePacketLintDto,
+  ): SettlementEvidencePacketLintContractResponse {
+    return lintSettlementEvidencePackets(input);
   }
 
   buildSettlementExceptionPublicationReadinessTrend(
