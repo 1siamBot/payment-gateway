@@ -335,6 +335,7 @@ onMounted(() => {
       <div class="inline-actions">
         <NuxtLink class="button-link" to="/">Open Legacy Control Tower</NuxtLink>
         <NuxtLink class="button-link" to="/payment-operations-dashboard">Open Payment Operations Dashboard</NuxtLink>
+        <NuxtLink class="button-link" to="/settlement-exceptions-inbox">Open Settlement Exceptions Inbox</NuxtLink>
         <NuxtLink class="button-link" to="/merchant-operations">Open Merchant Operations Panel</NuxtLink>
       </div>
     </section>
