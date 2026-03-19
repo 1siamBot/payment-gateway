@@ -5,6 +5,7 @@ import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk
 import { BuildSettlementEvidenceLineageDto } from './dto/build-settlement-evidence-lineage.dto';
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
+import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
@@ -101,6 +102,11 @@ export class SettlementsController {
   @Post('exceptions/delivery-readiness-digest')
   deliveryReadinessDigest(@Body() body: BuildSettlementDeliveryReadinessDigestDto) {
     return this.settlements.buildSettlementExceptionDeliveryReadinessDigest(body);
+  }
+
+  @Post('exceptions/evidence-anomaly-scorecard')
+  evidenceAnomalyScorecard(@Body() body: BuildSettlementEvidenceAnomalyScorecardDto) {
+    return this.settlements.buildSettlementExceptionEvidenceAnomalyScorecard(body);
   }
 
   @Get('exceptions/qa-fixtures')

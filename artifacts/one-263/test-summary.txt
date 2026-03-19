@@ -1,0 +1,5 @@
+Command: npm test -- test/settlement-evidence-anomaly-scorecard.spec.ts test/settlement-evidence-anomaly-scorecard-endpoint.spec.ts
+Result: PASS
+Suites: 2 passed, 0 failed
+Tests: 4 passed, 0 failed
+Timestamp: 2026-03-19T05:47:00Z

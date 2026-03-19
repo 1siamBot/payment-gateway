@@ -32,6 +32,7 @@ import {
 } from './dto/build-settlement-evidence-lineage.dto';
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
+import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import {
   BuildSettlementBulkActionPreviewDto,
@@ -59,6 +60,10 @@ import {
   buildSettlementDeliveryReadinessDigest,
   SettlementDeliveryReadinessDigest,
 } from './delivery-readiness-digest';
+import {
+  buildSettlementEvidenceAnomalyScorecard,
+  SettlementEvidenceAnomalyScorecard,
+} from './evidence-anomaly-scorecard';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -231,6 +236,7 @@ type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary
 type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
+type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
 
 @Injectable()
 export class SettlementsService {
@@ -587,6 +593,12 @@ export class SettlementsService {
     input: BuildSettlementDeliveryReadinessDigestDto,
   ): SettlementDeliveryReadinessDigestContractResponse {
     return buildSettlementDeliveryReadinessDigest(input);
+  }
+
+  buildSettlementExceptionEvidenceAnomalyScorecard(
+    input: BuildSettlementEvidenceAnomalyScorecardDto,
+  ): SettlementEvidenceAnomalyScorecardContractResponse {
+    return buildSettlementEvidenceAnomalyScorecard(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
