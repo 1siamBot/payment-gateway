@@ -12,6 +12,7 @@ import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlemen
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
+import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
@@ -111,6 +112,11 @@ export class SettlementsController {
   @Post('exceptions/publication-window-diagnostics')
   publicationWindowDiagnostics(@Body() body: BuildSettlementPublicationWindowDiagnosticsDto) {
     return this.settlements.buildSettlementExceptionPublicationWindowDiagnostics(body);
+  }
+
+  @Post('exceptions/publication-diagnostics-fixture-export')
+  publicationDiagnosticsFixtureExport(@Body() body: BuildSettlementPublicationDiagnosticsFixtureExportDto) {
+    return this.settlements.buildSettlementExceptionPublicationDiagnosticsFixtureExport(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')

@@ -42,6 +42,7 @@ import {
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
+import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
@@ -60,6 +61,10 @@ import {
   buildSettlementPublicationWindowDiagnostics,
   SettlementPublicationWindowDiagnostics,
 } from './publication-window-diagnostics';
+import {
+  buildSettlementPublicationDiagnosticsFixtureExport,
+  SettlementPublicationDiagnosticsFixtureExport,
+} from './publication-diagnostics-fixture-export';
 import {
   buildSettlementPublicationWindowPlan,
   SettlementPublicationWindowPlan,
@@ -256,6 +261,7 @@ type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary
 type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
 type SettlementPublicationWindowDiagnosticsContractResponse = SettlementPublicationWindowDiagnostics;
+type SettlementPublicationDiagnosticsFixtureExportContractResponse = SettlementPublicationDiagnosticsFixtureExport;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
@@ -636,6 +642,12 @@ export class SettlementsService {
     input: BuildSettlementPublicationWindowDiagnosticsDto,
   ): SettlementPublicationWindowDiagnosticsContractResponse {
     return buildSettlementPublicationWindowDiagnostics(input);
+  }
+
+  buildSettlementExceptionPublicationDiagnosticsFixtureExport(
+    input: BuildSettlementPublicationDiagnosticsFixtureExportDto,
+  ): SettlementPublicationDiagnosticsFixtureExportContractResponse {
+    return buildSettlementPublicationDiagnosticsFixtureExport(input);
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(
