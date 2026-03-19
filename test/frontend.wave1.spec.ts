@@ -80,9 +80,12 @@ import {
   resolveLineageReplayNavigatorShortcut,
   resetQaEvidencePacketComposerDraftSafe,
   buildReplayDiffInspector,
+  buildEvidencePackageDiffStudio,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
   buildEvidencePacketLintConsole,
+  buildQaCanonicalLinkAutofixPreview,
+  buildQaHandoffPreflightSummary,
   buildCanonicalLinkAutofixPreview,
   buildDeterministicAnomalyTimelineWorkspace,
   moveDeterministicAnomalyTimelineSelection,
@@ -112,6 +115,7 @@ import {
   moveEvidencePacketLintSelection,
   moveManifestDiffSelection,
   moveReplayDiffInspectorSelection,
+  moveEvidencePackageDiffSelection,
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
@@ -124,6 +128,7 @@ import {
   resolveAnomalyTriageShortcut,
   resolveRemediationRunbookShortcut,
   resolveReplayDiffInspectorShortcut,
+  resolveEvidencePackageDiffStudioShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
@@ -3687,5 +3692,154 @@ describe('frontend wave1 helpers', () => {
     expect(secondPacket).toBe(firstPacket);
     expect(firstPacket).toContain('/ONE/issues/ONE-281');
     expect(firstPacket).toContain('/ONE/issues/ONE-269#document-plan');
+  });
+
+  it('builds evidence-package diff studio rows in deterministic tuple order', () => {
+    const studio = buildEvidencePackageDiffStudio({
+      baselinePackage: [
+        {
+          issueIdentifier: 'ONE-410',
+          severityWeight: 2,
+          packageSectionWeight: 2,
+          artifactType: 'timeline',
+          artifactPath: 'artifacts/one-410/timeline.json',
+          checksum: 'sha-old-410',
+        },
+        {
+          issueIdentifier: 'ONE-402',
+          severityWeight: 1,
+          packageSectionWeight: 3,
+          artifactType: 'playbook',
+          artifactPath: 'artifacts/one-402/playbook.md',
+          checksum: 'sha-old-402',
+        },
+      ],
+      candidatePackage: [
+        {
+          issueIdentifier: 'ONE-410',
+          severityWeight: 2,
+          packageSectionWeight: 2,
+          artifactType: 'timeline',
+          artifactPath: 'artifacts/one-410/timeline.json',
+          checksum: 'sha-new-410',
+        },
+        {
+          issueIdentifier: 'ONE-401',
+          severityWeight: 1,
+          packageSectionWeight: 1,
+          artifactType: 'json',
+          artifactPath: 'artifacts/one-401/preflight.json',
+          checksum: 'sha-new-401',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(studio.contract).toBe('settlement-evidence-package-diff-studio.v1');
+    expect(studio.rows.map((row) => row.id)).toEqual([
+      'ONE-401|json|artifacts/one-401/preflight.json',
+      'ONE-402|playbook|artifacts/one-402/playbook.md',
+      'ONE-410|timeline|artifacts/one-410/timeline.json',
+    ]);
+    expect(studio.rows.map((row) => row.changeType)).toEqual(['added', 'removed', 'modified']);
+    expect(studio.changeCounts).toEqual({
+      added: 1,
+      removed: 1,
+      modified: 1,
+      unchanged: 0,
+    });
+  });
+
+  it('supports ONE-285 keyboard workflow and deterministic selection movement', () => {
+    expect(resolveEvidencePackageDiffStudioShortcut({ key: 'd', altKey: true })).toBe('focus_diff_studio');
+    expect(resolveEvidencePackageDiffStudioShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_diff');
+    expect(resolveEvidencePackageDiffStudioShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_diff');
+    expect(resolveEvidencePackageDiffStudioShortcut({ key: 'Q', ctrlKey: true, shiftKey: true })).toBe('open_qa_preflight');
+    expect(resolveEvidencePackageDiffStudioShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true })).toBe('run_full_preflight');
+
+    const rows = buildEvidencePackageDiffStudio({
+      baselinePackage: [],
+      candidatePackage: [
+        {
+          issueIdentifier: 'ONE-401',
+          severityWeight: 1,
+          packageSectionWeight: 1,
+          artifactType: 'json',
+          artifactPath: 'artifacts/one-401/preflight.json',
+          checksum: 'sha-a',
+        },
+        {
+          issueIdentifier: 'ONE-402',
+          severityWeight: 1,
+          packageSectionWeight: 2,
+          artifactType: 'timeline',
+          artifactPath: 'artifacts/one-402/timeline.json',
+          checksum: 'sha-b',
+        },
+      ],
+      activeRowId: '',
+    }).rows;
+
+    const first = rows[0].id;
+    const second = moveEvidencePackageDiffSelection({
+      rows,
+      activeRowId: first,
+      direction: 'next',
+    });
+    expect(second).toBe(rows[1].id);
+    expect(moveEvidencePackageDiffSelection({
+      rows,
+      activeRowId: second,
+      direction: 'prev',
+    })).toBe(first);
+  });
+
+  it('keeps QA preflight summary and canonical-link autofix output stable across reruns', () => {
+    const links = [
+      '/issues/one-285',
+      '/ONE/issues/ONE-279#comment-88',
+      '/ONE/issues/ONE-241#document-plan',
+      'not-a-link',
+    ];
+    const preview = buildQaCanonicalLinkAutofixPreview({ links });
+
+    expect(preview.correctedOutput).toContain('/ONE/issues/ONE-285');
+    expect(preview.changedCount).toBe(1);
+    expect(preview.invalidCount).toBe(1);
+
+    const first = buildQaHandoffPreflightSummary({
+      requiredEvidence: [
+        'artifacts/one-285/evidence-package-diff-studio.md',
+        'artifacts/one-285/qa-preflight-summary.json',
+      ],
+      providedEvidence: [
+        'artifacts/one-285/evidence-package-diff-studio.md',
+      ],
+      dependencyIssueLinks: [
+        '/issues/one-284',
+        '/ONE/issues/ONE-279',
+      ],
+      exportLinks: links,
+    });
+    const second = buildQaHandoffPreflightSummary({
+      requiredEvidence: [
+        'artifacts/one-285/evidence-package-diff-studio.md',
+        'artifacts/one-285/qa-preflight-summary.json',
+      ],
+      providedEvidence: [
+        'artifacts/one-285/evidence-package-diff-studio.md',
+      ],
+      dependencyIssueLinks: [
+        '/issues/one-284',
+        '/ONE/issues/ONE-279',
+      ],
+      exportLinks: links,
+    });
+
+    expect(first.missingEvidence).toEqual(['artifacts/one-285/qa-preflight-summary.json']);
+    expect(first.readyForQa).toBe(false);
+    expect(first.linkViolations).toHaveLength(1);
+    expect(first.dependencyViolations).toHaveLength(0);
+    expect(second.stableSummaryJson).toBe(first.stableSummaryJson);
   });
 });
