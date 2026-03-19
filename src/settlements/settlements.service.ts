@@ -43,6 +43,7 @@ import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settl
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
 import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/build-settlement-publication-diagnostics-contract-snapshot.dto';
+import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
@@ -67,6 +68,10 @@ import {
   buildSettlementPublicationDiagnosticsContractSnapshot,
   SettlementPublicationDiagnosticsContractSnapshot,
 } from './publication-diagnostics-contract-snapshot';
+import {
+  buildSettlementPublicationDiagnosticsDeltaBundle,
+  SettlementPublicationDiagnosticsDeltaBundle,
+} from './publication-diagnostics-delta-bundle';
 import {
   buildSettlementPublicationDiagnosticsFixtureExport,
   SettlementPublicationDiagnosticsFixtureExport,
@@ -273,6 +278,7 @@ type SettlementPublicationReadinessTrendContractResponse = SettlementPublication
 type SettlementPublicationWindowDiagnosticsContractResponse = SettlementPublicationWindowDiagnostics;
 type SettlementPublicationDiagnosticsContractSnapshotContractResponse =
   SettlementPublicationDiagnosticsContractSnapshot;
+type SettlementPublicationDiagnosticsDeltaBundleContractResponse = SettlementPublicationDiagnosticsDeltaBundle;
 type SettlementPublicationDiagnosticsFixtureExportContractResponse = SettlementPublicationDiagnosticsFixtureExport;
 type SettlementPublicationDiagnosticsTrendDigestContractResponse = SettlementPublicationDiagnosticsTrendDigest;
 type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
@@ -661,6 +667,12 @@ export class SettlementsService {
     input: BuildSettlementPublicationDiagnosticsContractSnapshotDto,
   ): SettlementPublicationDiagnosticsContractSnapshotContractResponse {
     return buildSettlementPublicationDiagnosticsContractSnapshot(input);
+  }
+
+  buildSettlementExceptionPublicationDiagnosticsDeltaBundle(
+    input: BuildSettlementPublicationDiagnosticsDeltaBundleDto,
+  ): SettlementPublicationDiagnosticsDeltaBundleContractResponse {
+    return buildSettlementPublicationDiagnosticsDeltaBundle(input);
   }
 
   buildSettlementExceptionPublicationDiagnosticsFixtureExport(

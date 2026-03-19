@@ -13,6 +13,7 @@ import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settl
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationWindowDiagnosticsDto } from './dto/build-settlement-publication-window-diagnostics.dto';
 import { BuildSettlementPublicationDiagnosticsContractSnapshotDto } from './dto/build-settlement-publication-diagnostics-contract-snapshot.dto';
+import { BuildSettlementPublicationDiagnosticsDeltaBundleDto } from './dto/build-settlement-publication-diagnostics-delta-bundle.dto';
 import { BuildSettlementPublicationDiagnosticsFixtureExportDto } from './dto/build-settlement-publication-diagnostics-fixture-export.dto';
 import { BuildSettlementPublicationDiagnosticsTrendDigestDto } from './dto/build-settlement-publication-diagnostics-trend-digest.dto';
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
@@ -119,6 +120,11 @@ export class SettlementsController {
   @Post('exceptions/publication-diagnostics-contract-snapshot')
   publicationDiagnosticsContractSnapshot(@Body() body: BuildSettlementPublicationDiagnosticsContractSnapshotDto) {
     return this.settlements.buildSettlementExceptionPublicationDiagnosticsContractSnapshot(body);
+  }
+
+  @Post('exceptions/publication-diagnostics-delta-bundle')
+  publicationDiagnosticsDeltaBundle(@Body() body: BuildSettlementPublicationDiagnosticsDeltaBundleDto) {
+    return this.settlements.buildSettlementExceptionPublicationDiagnosticsDeltaBundle(body);
   }
 
   @Post('exceptions/publication-diagnostics-fixture-export')
