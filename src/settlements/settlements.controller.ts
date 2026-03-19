@@ -5,6 +5,7 @@ import { BuildSettlementBulkActionPreviewDto } from './dto/build-settlement-bulk
 import { BuildSettlementEvidenceLineageDto } from './dto/build-settlement-evidence-lineage.dto';
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
+import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
@@ -95,6 +96,11 @@ export class SettlementsController {
   @Post('exceptions/publication-readiness-trend')
   publicationReadinessTrend(@Body() body: BuildSettlementPublicationReadinessTrendDto) {
     return this.settlements.buildSettlementExceptionPublicationReadinessTrend(body);
+  }
+
+  @Post('exceptions/delivery-readiness-digest')
+  deliveryReadinessDigest(@Body() body: BuildSettlementDeliveryReadinessDigestDto) {
+    return this.settlements.buildSettlementExceptionDeliveryReadinessDigest(body);
   }
 
   @Get('exceptions/qa-fixtures')

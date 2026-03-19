@@ -32,6 +32,7 @@ import {
 } from './dto/build-settlement-evidence-lineage.dto';
 import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evidence-packet-lint.dto';
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
+import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import {
   BuildSettlementBulkActionPreviewDto,
 } from './dto/build-settlement-bulk-action-preview.dto';
@@ -54,6 +55,10 @@ import {
   buildSettlementPublicationReadinessTrend,
   SettlementPublicationReadinessTrend,
 } from './publication-readiness-trend';
+import {
+  buildSettlementDeliveryReadinessDigest,
+  SettlementDeliveryReadinessDigest,
+} from './delivery-readiness-digest';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -225,6 +230,7 @@ type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContra
 type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary;
 type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
+type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 
 @Injectable()
 export class SettlementsService {
@@ -575,6 +581,12 @@ export class SettlementsService {
     input: BuildSettlementPublicationReadinessTrendDto,
   ): SettlementPublicationReadinessTrendContractResponse {
     return buildSettlementPublicationReadinessTrend(input);
+  }
+
+  buildSettlementExceptionDeliveryReadinessDigest(
+    input: BuildSettlementDeliveryReadinessDigestDto,
+  ): SettlementDeliveryReadinessDigestContractResponse {
+    return buildSettlementDeliveryReadinessDigest(input);
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
