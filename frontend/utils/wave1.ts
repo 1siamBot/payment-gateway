@@ -503,6 +503,64 @@ export type OfflinePublicationEvidenceCanonicalPatchPreview = {
   copyText: string;
 };
 
+export type RemediationQueueShortcut =
+  | 'focus_queue'
+  | 'next_item'
+  | 'prev_item'
+  | 'open_handoff_panel'
+  | 'run_validation_pass';
+
+export type RemediationQueueMachineFields = {
+  readyForExecution: boolean;
+  missingEvidence: string[];
+  blockingDependencies: string[];
+  nextOwner: string;
+  canonicalLinkViolations: string[];
+};
+
+export type RemediationQueueTriageRow = {
+  id: string;
+  issueIdentifier: string;
+  remediationType: string;
+  severityWeight: number;
+  blockerWeight: number;
+  dependencyDepthWeight: number;
+  remediationTypeWeight: number;
+  title: string;
+  evidencePath: string;
+  orderingKey: [number, number, number, string, number];
+  machineFields: RemediationQueueMachineFields;
+};
+
+export type RemediationQueueTriageWorkspace = {
+  contract: 'settlement-remediation-queue-triage-workspace.v1';
+  rows: RemediationQueueTriageRow[];
+  activeRowId: string;
+};
+
+export type RemediationQueueHandoffPanel = {
+  contract: 'settlement-remediation-queue-handoff-panel.v1';
+  items: Array<{
+    id: string;
+    issueIdentifier: string;
+    readyForExecution: boolean;
+    missingEvidence: string[];
+    blockingDependencies: string[];
+    nextOwner: string;
+    canonicalLinkViolations: string[];
+  }>;
+  markdown: string;
+};
+
+export type RemediationQueueCanonicalAutofixPreview = {
+  contract: 'settlement-remediation-queue-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -4033,6 +4091,268 @@ export function buildOfflinePublicationEvidenceCanonicalPatchPreview(input: {
 
   return {
     contract: 'settlement-offline-publication-evidence-canonical-patch-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+  };
+}
+
+function normalizeRemediationQueueIdentifier(raw: unknown, fallbackIndex: number): string {
+  if (typeof raw === 'string') {
+    const value = raw.trim().toUpperCase();
+    if (/^[A-Z0-9]+-\d+$/.test(value)) {
+      return value;
+    }
+  }
+  return `ONE-${1000 + fallbackIndex}`;
+}
+
+function normalizeRemediationQueueWeight(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  return fallback;
+}
+
+function parseRemediationQueueRow(row: unknown, index: number): RemediationQueueTriageRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizeRemediationQueueIdentifier(payload.issueIdentifier, index);
+  const idRaw = normalizeOptional(typeof payload.id === 'string' ? payload.id : '');
+  const id = idRaw ?? `remediation-queue-${index + 1}`;
+  const remediationType = normalizeOptional(typeof payload.remediationType === 'string' ? payload.remediationType : '')
+    ?? 'unspecified';
+  const severityWeight = normalizeRemediationQueueWeight(payload.severityWeight, 5);
+  const blockerWeight = normalizeRemediationQueueWeight(payload.blockerWeight, 5);
+  const dependencyDepthWeight = normalizeRemediationQueueWeight(payload.dependencyDepthWeight, 5);
+  const remediationTypeWeight = normalizeRemediationQueueWeight(payload.remediationTypeWeight, 5);
+  const title = normalizeOptional(typeof payload.title === 'string' ? payload.title : '')
+    ?? `${issueIdentifier} remediation lane`;
+  const evidencePath = normalizeOptional(
+    typeof payload.evidencePath === 'string'
+      ? payload.evidencePath
+      : (typeof payload.artifactPath === 'string' ? payload.artifactPath : ''),
+  ) ?? `artifacts/${issueIdentifier.toLowerCase()}/handoff.md`;
+  const nextOwner = normalizeOptional(typeof payload.nextOwner === 'string' ? payload.nextOwner : '') ?? 'unassigned';
+
+  const missingEvidence = Array.isArray(payload.missingEvidence)
+    ? payload.missingEvidence.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  const evidenceChecks = [
+    ['branch', normalizeOptional(typeof payload.branch === 'string' ? payload.branch : '')],
+    ['fullSha', normalizeOptional(typeof payload.fullSha === 'string' ? payload.fullSha : '')],
+    ['prLink', normalizeOptional(typeof payload.prLink === 'string' ? payload.prLink : '')],
+    ['testCommand', normalizeOptional(typeof payload.testCommand === 'string' ? payload.testCommand : '')],
+    ['artifactPath', normalizeOptional(typeof payload.artifactPath === 'string' ? payload.artifactPath : '')],
+  ] as const;
+  for (const [field, value] of evidenceChecks) {
+    if (!value) {
+      missingEvidence.push(field);
+    }
+  }
+  const uniqueMissingEvidence = [...new Set(missingEvidence)].sort((left, right) => left.localeCompare(right));
+
+  const blockingDependencies = Array.isArray(payload.blockingDependencies)
+    ? payload.blockingDependencies.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  const canonicalCandidates = [
+    ...(Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : []),
+    ...(Array.isArray(payload.dependencyLinks) ? payload.dependencyLinks : []),
+  ]
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+  const canonicalLinkViolations = canonicalCandidates
+    .map((link) => {
+      const normalized = canonicalizePaperclipIssueLink(link);
+      if (!normalized) {
+        return link;
+      }
+      return normalized === link ? '' : link;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+  return {
+    id,
+    issueIdentifier,
+    remediationType,
+    severityWeight,
+    blockerWeight,
+    dependencyDepthWeight,
+    remediationTypeWeight,
+    title,
+    evidencePath,
+    orderingKey: [
+      severityWeight,
+      blockerWeight,
+      dependencyDepthWeight,
+      issueIdentifier,
+      remediationTypeWeight,
+    ],
+    machineFields: {
+      readyForExecution: uniqueMissingEvidence.length === 0
+        && blockingDependencies.length === 0
+        && canonicalLinkViolations.length === 0,
+      missingEvidence: uniqueMissingEvidence,
+      blockingDependencies: [...blockingDependencies].sort((left, right) => left.localeCompare(right)),
+      nextOwner,
+      canonicalLinkViolations,
+    },
+  };
+}
+
+export function buildRemediationQueueTriageWorkspace(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): RemediationQueueTriageWorkspace {
+  const rows = input.rows
+    .map((row, index) => parseRemediationQueueRow(row, index))
+    .filter((row): row is RemediationQueueTriageRow => Boolean(row))
+    .sort((left, right) => (
+      left.severityWeight - right.severityWeight
+      || left.blockerWeight - right.blockerWeight
+      || left.dependencyDepthWeight - right.dependencyDepthWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.remediationTypeWeight - right.remediationTypeWeight
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeRowId = rowIds.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-queue-triage-workspace.v1',
+    rows,
+    activeRowId,
+  };
+}
+
+export function moveRemediationQueueSelection(input: {
+  rows: RemediationQueueTriageRow[];
+  activeRowId: string;
+  direction: 'next_item' | 'prev_item';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_item') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationQueueShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationQueueShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'q') {
+    return 'focus_queue';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_item';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_item';
+  }
+  if (normalizedKey === 'h' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_panel';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_validation_pass';
+  }
+  return null;
+}
+
+function buildRemediationQueueHandoffMarkdown(rows: RemediationQueueTriageRow[]): string {
+  const lines = [
+    '# Remediation Queue Handoff',
+    '',
+    '| Issue | Ready | Missing Evidence | Blocking Dependencies | Next Owner | Canonical Link Violations |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.machineFields.readyForExecution ? 'yes' : 'no',
+      '|',
+      row.machineFields.missingEvidence.join(', ') || 'none',
+      '|',
+      row.machineFields.blockingDependencies.join(', ') || 'none',
+      '|',
+      row.machineFields.nextOwner,
+      '|',
+      row.machineFields.canonicalLinkViolations.join(', ') || 'none',
+      '|',
+    ].join(' '));
+  }
+  return lines.join('\n');
+}
+
+export function buildRemediationQueueHandoffPanel(input: {
+  rows: RemediationQueueTriageRow[];
+}): RemediationQueueHandoffPanel {
+  const items = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    readyForExecution: row.machineFields.readyForExecution,
+    missingEvidence: [...row.machineFields.missingEvidence],
+    blockingDependencies: [...row.machineFields.blockingDependencies],
+    nextOwner: row.machineFields.nextOwner,
+    canonicalLinkViolations: [...row.machineFields.canonicalLinkViolations],
+  }));
+  return {
+    contract: 'settlement-remediation-queue-handoff-panel.v1',
+    items,
+    markdown: buildRemediationQueueHandoffMarkdown(input.rows),
+  };
+}
+
+export function buildRemediationQueueCanonicalAutofixPreview(input: {
+  markdown: string;
+}): RemediationQueueCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `remediation-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-remediation-queue-canonical-autofix-preview.v1',
     rows,
     patchedMarkdown,
     changedCount,
