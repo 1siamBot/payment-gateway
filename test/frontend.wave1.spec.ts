@@ -93,6 +93,9 @@ import {
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDiagnosticsDriftSummaryChips,
+  buildRemediationManifestDrillboard,
+  buildRemediationDependencyGraphInspector,
+  buildRemediationManifestHandoffPacket,
   buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
@@ -117,6 +120,7 @@ import {
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
+  resolveRemediationManifestShortcut,
   resolvePublicationWindowScoreBandFromFinalScore,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
@@ -3240,5 +3244,140 @@ describe('frontend wave1 helpers', () => {
     expect(restored.source).toBe('default');
     expect(restored.state).toEqual(DEFAULT_EXCEPTION_SAVED_VIEW_STATE);
     expect(restored.recoveryReasons.length).toBeGreaterThan(0);
+  });
+
+  it('builds remediation manifest drillboard rows in deterministic tuple order', () => {
+    const board = buildRemediationManifestDrillboard({
+      rows: [
+        {
+          id: 'row-c',
+          issueIdentifier: 'ONE-309',
+          runbookStepCode: 'STEP-20',
+          artifactPath: 'artifacts/one-309/c.md',
+          priorityWeight: 2,
+          dependencyDepth: 3,
+          blockerClass: 'contract_gap',
+          createdAt: '2026-03-19T03:00:00.000Z',
+        },
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-301',
+          runbookStepCode: 'STEP-05',
+          artifactPath: 'artifacts/one-301/a.md',
+          priorityWeight: 1,
+          dependencyDepth: 1,
+          blockerClass: 'credential_blocker',
+          createdAt: '2026-03-19T01:00:00.000Z',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-302',
+          runbookStepCode: 'STEP-01',
+          artifactPath: 'artifacts/one-302/b.md',
+          priorityWeight: 1,
+          dependencyDepth: 2,
+          blockerClass: 'artifact_missing',
+          createdAt: '2026-03-19T02:00:00.000Z',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(board.contract).toBe('settlement-remediation-manifest-drillboard.v1');
+    expect(board.rows.map((row) => row.id)).toEqual(['row-a', 'row-b', 'row-c']);
+    expect(board.activeRowId).toBe('row-a');
+  });
+
+  it('builds dependency graph inspector with canonical class grouping and deterministic sorting', () => {
+    const graph = buildRemediationDependencyGraphInspector({
+      rows: [
+        {
+          id: 'node-z',
+          issueIdentifier: 'ONE-340',
+          blockerClass: 'qa_gate_pending',
+          createdAt: '2026-03-19T04:00:00.000Z',
+          summary: 'QA dependency pending',
+        },
+        {
+          id: 'node-a',
+          issueIdentifier: 'ONE-301',
+          blockerClass: 'credential_blocker',
+          createdAt: '2026-03-19T02:00:00.000Z',
+          summary: 'Credential rotation pending',
+        },
+        {
+          id: 'node-b',
+          issueIdentifier: 'ONE-302',
+          blockerClass: 'credential_blocker',
+          createdAt: '2026-03-19T03:00:00.000Z',
+          summary: 'Credential secret sync pending',
+        },
+        {
+          id: 'node-c',
+          issueIdentifier: 'ONE-399',
+          blockerClass: 'link_noncanonical',
+          createdAt: '2026-03-19T01:00:00.000Z',
+          summary: 'Link normalization pending',
+        },
+      ],
+      activeNodeId: '',
+    });
+
+    expect(graph.contract).toBe('settlement-remediation-dependency-graph-inspector.v1');
+    expect(graph.nodes.map((node) => node.id)).toEqual(['node-a', 'node-b', 'node-z', 'node-c']);
+    expect(graph.classCounts).toEqual({
+      credential_blocker: 2,
+      contract_gap: 0,
+      artifact_missing: 0,
+      qa_gate_pending: 1,
+      link_noncanonical: 1,
+    });
+  });
+
+  it('keeps remediation-manifest shortcut mapping and export packet output deterministic across reruns', () => {
+    expect(resolveRemediationManifestShortcut({ key: 'm', altKey: true })).toBe('focus_manifest_table');
+    expect(resolveRemediationManifestShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_row');
+    expect(resolveRemediationManifestShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_row');
+    expect(resolveRemediationManifestShortcut({ key: 'g', ctrlKey: true, shiftKey: true })).toBe('open_dependency_graph');
+    expect(resolveRemediationManifestShortcut({ key: 'e', ctrlKey: true, shiftKey: true })).toBe('export_handoff_packet');
+
+    const board = buildRemediationManifestDrillboard({
+      rows: [
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-301',
+          runbookStepCode: 'STEP-05',
+          artifactPath: 'artifacts/one-301/a.md',
+          priorityWeight: 1,
+          dependencyDepth: 1,
+          blockerClass: 'credential_blocker',
+          createdAt: '2026-03-19T01:00:00.000Z',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-302',
+          runbookStepCode: 'STEP-07',
+          artifactPath: 'artifacts/one-302/b.md',
+          priorityWeight: 2,
+          dependencyDepth: 1,
+          blockerClass: 'contract_gap',
+          createdAt: '2026-03-19T02:00:00.000Z',
+        },
+      ],
+      activeRowId: '',
+    });
+    const dependencyLinksText = '/issues/ONE-281\n/issues/ONE-269#document-plan\n/issues/ONE-279#comment-12';
+    const firstPacket = buildRemediationManifestHandoffPacket({
+      drillboardRows: board.rows,
+      dependencyLinksText,
+    });
+    const secondPacket = buildRemediationManifestHandoffPacket({
+      drillboardRows: board.rows,
+      dependencyLinksText,
+    });
+
+    expect(secondPacket).toBe(firstPacket);
+    expect(firstPacket).toContain('/ONE/issues/ONE-281');
+    expect(firstPacket).toContain('/ONE/issues/ONE-269#document-plan');
   });
 });

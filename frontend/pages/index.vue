@@ -66,6 +66,7 @@ import {
   resolveReleaseReadinessShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
+  resolveRemediationManifestShortcut,
   resolveEvidencePacketLintShortcut,
   resolveManifestDiffShortcut,
   resolveAnomalyTriageShortcut,
@@ -91,6 +92,9 @@ import {
   buildPublicationWindowPlanBoard,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDiagnosticsDriftSummaryChips,
+  buildRemediationManifestDrillboard,
+  buildRemediationDependencyGraphInspector,
+  buildRemediationManifestHandoffPacket,
   buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
@@ -100,6 +104,7 @@ import {
   moveRemediationRunbookTimelineSelection,
   movePublicationWindowLaneSelection,
   moveDiagnosticsBaselineDeltaSelection,
+  moveRemediationManifestRowSelection,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
@@ -599,10 +604,18 @@ const diagnosticsBaselineState = reactive({
   message: '',
   error: '',
 });
+const remediationManifestState = reactive({
+  message: '',
+  error: '',
+});
 const activeReleaseReadinessLaneId = ref('');
 const activePublicationWindowLaneId = ref('');
 const activeDiagnosticsDeltaId = ref('');
+const activeRemediationManifestRowId = ref('');
 const activeOverrideScenarioId = ref('');
+const remediationManifestDependencyGraphOpen = ref(false);
+const remediationManifestExportOpen = ref(false);
+const remediationManifestDependencyLinksText = ref('/ONE/issues/ONE-280\n/ONE/issues/ONE-279\n/ONE/issues/ONE-269\n/ONE/issues/ONE-241');
 const overrideScenarioLinksText = ref('');
 const overrideSimulatorOpen = ref(false);
 const diagnosticsHandoffComposerOpen = ref(false);
@@ -647,6 +660,7 @@ const dispatchCockpitPanelRef = ref<HTMLElement | null>(null);
 const releaseReadinessPanelRef = ref<HTMLElement | null>(null);
 const publicationWindowPanelRef = ref<HTMLElement | null>(null);
 const diagnosticsBaselinePanelRef = ref<HTMLElement | null>(null);
+const remediationManifestPanelRef = ref<HTMLElement | null>(null);
 const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
@@ -1091,6 +1105,44 @@ const diagnosticsHandoffPacketMarkdown = computed(() => {
   }
   return lines.join('\n');
 });
+const remediationManifestSourceRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => {
+  const blockerClasses = [
+    'credential_blocker',
+    'contract_gap',
+    'artifact_missing',
+    'qa_gate_pending',
+    'link_noncanonical',
+  ] as const;
+  const blockerClass = blockerClasses[index % blockerClasses.length];
+  return {
+    id: `manifest-drill-${row.id}-${index}`,
+    issueIdentifier: row.id.toUpperCase(),
+    runbookStepCode: `STEP-${String((index % 4) + 1).padStart(2, '0')}`,
+    artifactPath: `artifacts/${row.id.toLowerCase()}/remediation-manifest-${String(index + 1).padStart(2, '0')}.md`,
+    priorityWeight: row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4,
+    dependencyDepth: (index % 3) + 1,
+    blockerClass,
+    createdAt: row.eventTime,
+    summary: `${row.id.toUpperCase()} requires ${blockerClass} remediation sequencing before handoff.`,
+  };
+}));
+const remediationManifestDrillboard = computed(() => buildRemediationManifestDrillboard({
+  rows: remediationManifestSourceRows.value,
+  activeRowId: activeRemediationManifestRowId.value,
+}));
+const activeRemediationManifestRow = computed(() => remediationManifestDrillboard.value.rows
+  .find((row) => row.id === activeRemediationManifestRowId.value) ?? null);
+const remediationDependencyGraphInspector = computed(() => buildRemediationDependencyGraphInspector({
+  rows: remediationManifestSourceRows.value,
+  activeNodeId: activeRemediationManifestRowId.value,
+}));
+const remediationManifestCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: remediationManifestDependencyLinksText.value,
+}));
+const remediationManifestExportPacket = computed(() => buildRemediationManifestHandoffPacket({
+  drillboardRows: remediationManifestDrillboard.value.rows,
+  dependencyLinksText: remediationManifestCanonicalPreview.value.correctedOutput,
+}));
 const evidencePacketLintFindingSourceRows = computed(() => {
   const baseRows = reviewQueueLedger.value.rows;
   if (!baseRows.length) {
@@ -1611,6 +1663,7 @@ onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
   window.addEventListener('keydown', onDiagnosticsBaselineKeydown);
+  window.addEventListener('keydown', onRemediationManifestKeydown);
   window.addEventListener('keydown', onDispatchCockpitKeydown);
   window.addEventListener('keydown', onPublicationWindowKeydown);
   window.addEventListener('keydown', onManifestDiffKeydown);
@@ -1620,6 +1673,7 @@ onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
   window.removeEventListener('keydown', onDiagnosticsBaselineKeydown);
+  window.removeEventListener('keydown', onRemediationManifestKeydown);
   window.removeEventListener('keydown', onDispatchCockpitKeydown);
   window.removeEventListener('keydown', onPublicationWindowKeydown);
   window.removeEventListener('keydown', onManifestDiffKeydown);
@@ -2189,6 +2243,18 @@ watch(manifestDiffViewer, (viewer) => {
   }
 }, { deep: true, immediate: true });
 
+watch(remediationManifestDrillboard, (board) => {
+  if (!board.rows.length) {
+    activeRemediationManifestRowId.value = '';
+    remediationManifestDependencyGraphOpen.value = false;
+    remediationManifestExportOpen.value = false;
+    return;
+  }
+  if (!board.rows.some((row) => row.id === activeRemediationManifestRowId.value)) {
+    activeRemediationManifestRowId.value = board.activeRowId;
+  }
+}, { deep: true, immediate: true });
+
 watch(anomalyTriageBoard, (board) => {
   if (!board.rows.length) {
     activeAnomalyTriageRowId.value = '';
@@ -2260,6 +2326,28 @@ function focusPublicationWindowPlanBoard() {
 function focusDiagnosticsBaselineCompare() {
   diagnosticsBaselinePanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   diagnosticsBaselinePanelRef.value?.focus();
+}
+
+function focusRemediationManifestDrillboard() {
+  remediationManifestPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  remediationManifestPanelRef.value?.focus();
+}
+
+function setActiveRemediationManifestRow(rowId: string) {
+  activeRemediationManifestRowId.value = rowId;
+  remediationManifestState.error = '';
+}
+
+function openRemediationManifestDependencyGraph() {
+  remediationManifestDependencyGraphOpen.value = true;
+  remediationManifestState.error = '';
+  remediationManifestState.message = 'Dependency graph inspector opened for canonical blocker classes.';
+}
+
+function openRemediationManifestExportPacket() {
+  remediationManifestExportOpen.value = true;
+  remediationManifestState.error = '';
+  remediationManifestState.message = `Export packet generated for ${remediationManifestDrillboard.value.rows.length} manifest row(s).`;
 }
 
 function isDiagnosticsHandoffFieldMissing(fieldKey: string): boolean {
@@ -3580,6 +3668,47 @@ function onDiagnosticsBaselineKeydown(event: KeyboardEvent) {
     return;
   }
   validateDiagnosticsHandoffPacket();
+}
+
+function onRemediationManifestKeydown(event: KeyboardEvent) {
+  const shortcut = resolveRemediationManifestShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_dependency_graph'
+    && shortcut !== 'export_handoff_packet') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_manifest_table') {
+    focusRemediationManifestDrillboard();
+    return;
+  }
+  if (shortcut === 'next_row' || shortcut === 'prev_row') {
+    const nextRowId = moveRemediationManifestRowSelection({
+      rows: remediationManifestDrillboard.value.rows,
+      activeRowId: activeRemediationManifestRowId.value,
+      direction: shortcut === 'next_row' ? 'next' : 'prev',
+    });
+    if (nextRowId) {
+      setActiveRemediationManifestRow(nextRowId);
+      remediationManifestState.message = `Selected remediation row ${nextRowId}.`;
+    }
+    return;
+  }
+  if (shortcut === 'open_dependency_graph') {
+    openRemediationManifestDependencyGraph();
+    return;
+  }
+  openRemediationManifestExportPacket();
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
@@ -5659,6 +5788,131 @@ onMounted(() => {
                 <label>
                   Corrected Link Output (copy-ready)
                   <textarea :value="overrideScenarioLinkPreview.correctedOutput" rows="3" readonly />
+                </label>
+              </div>
+            </div>
+            <div
+              ref="remediationManifestPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onRemediationManifestKeydown"
+            >
+              <h4>Remediation-Manifest Drillboard</h4>
+              <p class="state" :class="{ error: remediationManifestState.error }">
+                {{ remediationManifestState.error
+                  || remediationManifestState.message
+                  || 'Deterministic order: (priorityWeight, dependencyDepth, issueIdentifier, runbookStepCode, artifactPath). Keyboard: Alt+M focus table, Alt+Shift+J next row, Alt+Shift+K previous row, Ctrl+Shift+G open dependency graph, Ctrl+Shift+E export packet.' }}
+              </p>
+              <p class="state">Active remediation row: {{ activeRemediationManifestRow?.id || 'none' }}</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Priority</th>
+                      <th>Depth</th>
+                      <th>Issue</th>
+                      <th>Step</th>
+                      <th>Artifact</th>
+                      <th>Blocker Class</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!remediationManifestDrillboard.rows.length">
+                      <td colspan="6">No remediation-manifest rows available.</td>
+                    </tr>
+                    <tr
+                      v-for="row in remediationManifestDrillboard.rows"
+                      :key="`remediation-manifest-row-${row.id}`"
+                      :class="{ 'queue-row-active': activeRemediationManifestRowId === row.id }"
+                      @click="setActiveRemediationManifestRow(row.id)"
+                    >
+                      <td>{{ row.priorityWeight }}</td>
+                      <td>{{ row.dependencyDepth }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td><code>{{ row.runbookStepCode }}</code></td>
+                      <td><code>{{ row.artifactPath }}</code></td>
+                      <td><code>{{ row.blockerClass }}</code></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="openRemediationManifestDependencyGraph">Open Dependency Graph</button>
+                <button type="button" class="link" @click="openRemediationManifestExportPacket">Export Handoff Packet</button>
+              </div>
+              <label>
+                Canonical Links (issue/comment/document; one per line)
+                <textarea
+                  v-model="remediationManifestDependencyLinksText"
+                  rows="4"
+                  placeholder="/issues/ONE-281&#10;/issues/ONE-269#document-plan&#10;/issues/ONE-279#comment-12"
+                />
+              </label>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Original</th>
+                      <th>Normalized</th>
+                      <th>Changed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!remediationManifestCanonicalPreview.rows.length">
+                      <td colspan="3">Add links to preview canonical normalization before export.</td>
+                    </tr>
+                    <tr v-for="row in remediationManifestCanonicalPreview.rows" :key="`remediation-manifest-link-${row.id}`">
+                      <td><code>{{ row.original }}</code></td>
+                      <td><code>{{ row.normalized }}</code></td>
+                      <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="remediationManifestDependencyGraphOpen">
+                <h5>Dependency Graph Inspector</h5>
+                <p class="state">
+                  credential_blocker={{ remediationDependencyGraphInspector.classCounts.credential_blocker }},
+                  contract_gap={{ remediationDependencyGraphInspector.classCounts.contract_gap }},
+                  artifact_missing={{ remediationDependencyGraphInspector.classCounts.artifact_missing }},
+                  qa_gate_pending={{ remediationDependencyGraphInspector.classCounts.qa_gate_pending }},
+                  link_noncanonical={{ remediationDependencyGraphInspector.classCounts.link_noncanonical }}.
+                </p>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Class Weight</th>
+                        <th>Class</th>
+                        <th>Issue</th>
+                        <th>Created</th>
+                        <th>Summary</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!remediationDependencyGraphInspector.nodes.length">
+                        <td colspan="5">No dependency graph nodes available.</td>
+                      </tr>
+                      <tr
+                        v-for="node in remediationDependencyGraphInspector.nodes"
+                        :key="`remediation-dependency-node-${node.id}`"
+                        :class="{ 'queue-row-active': remediationDependencyGraphInspector.activeNodeId === node.id }"
+                      >
+                        <td>{{ node.classWeight }}</td>
+                        <td><code>{{ node.blockerClass }}</code></td>
+                        <td>{{ node.issueIdentifier }}</td>
+                        <td>{{ node.createdAt }}</td>
+                        <td>{{ node.summary }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div v-if="remediationManifestExportOpen">
+                <h5>Deterministic Handoff Export</h5>
+                <label>
+                  Export Packet (byte-stable for identical fixtures)
+                  <textarea :value="remediationManifestExportPacket" rows="10" readonly />
                 </label>
               </div>
             </div>

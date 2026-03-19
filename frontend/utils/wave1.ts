@@ -522,6 +522,54 @@ export type RegressionGateOverrideSimulator = {
   reasonCodeCounts: Record<RegressionGateOverrideReasonCode, number>;
 };
 
+export type RemediationDependencyBlockerClass =
+  | 'credential_blocker'
+  | 'contract_gap'
+  | 'artifact_missing'
+  | 'qa_gate_pending'
+  | 'link_noncanonical';
+
+export type RemediationManifestShortcut =
+  | 'focus_manifest_table'
+  | 'next_row'
+  | 'prev_row'
+  | 'open_dependency_graph'
+  | 'export_handoff_packet';
+
+export type RemediationManifestDrillboardRow = {
+  id: string;
+  issueIdentifier: string;
+  runbookStepCode: string;
+  artifactPath: string;
+  priorityWeight: number;
+  dependencyDepth: number;
+  blockerClass: RemediationDependencyBlockerClass;
+  createdAt: string;
+  summary: string;
+};
+
+export type RemediationManifestDrillboard = {
+  contract: 'settlement-remediation-manifest-drillboard.v1';
+  rows: RemediationManifestDrillboardRow[];
+  activeRowId: string;
+};
+
+export type RemediationDependencyGraphNode = {
+  id: string;
+  issueIdentifier: string;
+  blockerClass: RemediationDependencyBlockerClass;
+  classWeight: number;
+  createdAt: string;
+  summary: string;
+};
+
+export type RemediationDependencyGraphInspector = {
+  contract: 'settlement-remediation-dependency-graph-inspector.v1';
+  nodes: RemediationDependencyGraphNode[];
+  activeNodeId: string;
+  classCounts: Record<RemediationDependencyBlockerClass, number>;
+};
+
 export type EvidenceTimelineGapCode =
   | 'MISSING_BRANCH'
   | 'MISSING_FULL_SHA'
@@ -1157,6 +1205,13 @@ const REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER: RegressionGateOverrideReasonCo
   'dependency_open',
   'link_noncanonical',
   'artifact_gap',
+];
+const REMEDIATION_DEPENDENCY_BLOCKER_CLASS_ORDER: RemediationDependencyBlockerClass[] = [
+  'credential_blocker',
+  'contract_gap',
+  'artifact_missing',
+  'qa_gate_pending',
+  'link_noncanonical',
 ];
 const DIAGNOSTICS_TREND_REASON_LABEL: Record<DiagnosticsTrendDigestReasonCode, string> = {
   spike_in_breaking_changes: 'Spike in breaking changes',
@@ -3760,6 +3815,223 @@ export function resolveDiagnosticsBaselineCompareShortcut(input: {
     return 'validate_handoff_packet';
   }
   return null;
+}
+
+function normalizeRemediationDependencyBlockerClass(input: unknown): RemediationDependencyBlockerClass {
+  if (typeof input !== 'string') {
+    return 'artifact_missing';
+  }
+  const normalized = input.trim().toLowerCase().replace(/-/g, '_');
+  if ((REMEDIATION_DEPENDENCY_BLOCKER_CLASS_ORDER as string[]).includes(normalized)) {
+    return normalized as RemediationDependencyBlockerClass;
+  }
+  if (normalized === 'credential') {
+    return 'credential_blocker';
+  }
+  if (normalized === 'contract') {
+    return 'contract_gap';
+  }
+  if (normalized === 'artifact') {
+    return 'artifact_missing';
+  }
+  if (normalized === 'qa') {
+    return 'qa_gate_pending';
+  }
+  if (normalized === 'link') {
+    return 'link_noncanonical';
+  }
+  return 'artifact_missing';
+}
+
+function parseRemediationManifestDrillboardRow(raw: unknown, index: number): RemediationManifestDrillboardRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier.toUpperCase()
+      : String(row.issueIdentifier ?? '').toUpperCase(),
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const runbookStepCode = normalizeOptional(
+    typeof row.runbookStepCode === 'string'
+      ? row.runbookStepCode.toUpperCase()
+      : String(row.runbookStepCode ?? '').toUpperCase(),
+  ) ?? `STEP-${String(index + 1).padStart(2, '0')}`;
+  const artifactPath = normalizeOptional(
+    typeof row.artifactPath === 'string'
+      ? row.artifactPath
+      : String(row.artifactPath ?? ''),
+  ) ?? `artifacts/${issueIdentifier.toLowerCase()}/remediation-pack.md`;
+  const priorityWeight = Math.max(0, Math.trunc(parseFiniteNumber(row.priorityWeight) ?? Number.MAX_SAFE_INTEGER));
+  const dependencyDepth = Math.max(0, Math.trunc(parseFiniteNumber(row.dependencyDepth) ?? 0));
+  const blockerClass = normalizeRemediationDependencyBlockerClass(row.blockerClass);
+  const createdAt = normalizeOptional(
+    typeof row.createdAt === 'string'
+      ? row.createdAt
+      : String(row.createdAt ?? ''),
+  ) ?? '1970-01-01T00:00:00.000Z';
+  const summary = normalizeOptional(
+    typeof row.summary === 'string'
+      ? row.summary
+      : String(row.summary ?? ''),
+  ) ?? `${issueIdentifier} requires deterministic remediation handoff evidence.`;
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}|${runbookStepCode}|${artifactPath}`,
+  ) ?? `${issueIdentifier}|${runbookStepCode}|${artifactPath}`;
+  return {
+    id,
+    issueIdentifier,
+    runbookStepCode,
+    artifactPath,
+    priorityWeight,
+    dependencyDepth,
+    blockerClass,
+    createdAt,
+    summary,
+  };
+}
+
+export function buildRemediationManifestDrillboard(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): RemediationManifestDrillboard {
+  const rows = input.rows
+    .map((row, index) => parseRemediationManifestDrillboardRow(row, index))
+    .filter((row): row is RemediationManifestDrillboardRow => Boolean(row))
+    .sort((left, right) => (
+      left.priorityWeight - right.priorityWeight
+      || left.dependencyDepth - right.dependencyDepth
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.runbookStepCode.localeCompare(right.runbookStepCode)
+      || left.artifactPath.localeCompare(right.artifactPath)
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeRowId = idSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-manifest-drillboard.v1',
+    rows,
+    activeRowId,
+  };
+}
+
+export function moveRemediationManifestRowSelection(input: {
+  rows: RemediationManifestDrillboardRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (!input.rows.length) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationManifestShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationManifestShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'm') {
+    return 'focus_manifest_table';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_row';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_row';
+  }
+  if (normalizedKey === 'g' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_dependency_graph';
+  }
+  if (normalizedKey === 'e' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'export_handoff_packet';
+  }
+  return null;
+}
+
+export function buildRemediationDependencyGraphInspector(input: {
+  rows: unknown[];
+  activeNodeId: string;
+}): RemediationDependencyGraphInspector {
+  const classRank = new Map(REMEDIATION_DEPENDENCY_BLOCKER_CLASS_ORDER.map((value, index) => [value, index]));
+  const nodes = input.rows
+    .map((row, index) => parseRemediationManifestDrillboardRow(row, index))
+    .filter((row): row is RemediationManifestDrillboardRow => Boolean(row))
+    .map((row) => ({
+      id: row.id,
+      issueIdentifier: row.issueIdentifier,
+      blockerClass: row.blockerClass,
+      classWeight: classRank.get(row.blockerClass) ?? Number.MAX_SAFE_INTEGER,
+      createdAt: row.createdAt,
+      summary: row.summary,
+    }))
+    .sort((left, right) => (
+      left.classWeight - right.classWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.createdAt.localeCompare(right.createdAt)
+      || left.id.localeCompare(right.id)
+    ));
+  const classCounts: Record<RemediationDependencyBlockerClass, number> = {
+    credential_blocker: 0,
+    contract_gap: 0,
+    artifact_missing: 0,
+    qa_gate_pending: 0,
+    link_noncanonical: 0,
+  };
+  for (const node of nodes) {
+    classCounts[node.blockerClass] += 1;
+  }
+  const idSet = new Set(nodes.map((node) => node.id));
+  const activeNodeId = idSet.has(input.activeNodeId)
+    ? input.activeNodeId
+    : (nodes[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-dependency-graph-inspector.v1',
+    nodes,
+    activeNodeId,
+    classCounts,
+  };
+}
+
+export function buildRemediationManifestHandoffPacket(input: {
+  drillboardRows: RemediationManifestDrillboardRow[];
+  dependencyLinksText: string;
+}): string {
+  const canonicalLinks = normalizeMultilineEntries(input.dependencyLinksText)
+    .map((link) => canonicalizePaperclipIssueLink(link) ?? link)
+    .sort((left, right) => left.localeCompare(right));
+  const lines = [
+    '## Remediation Manifest Handoff Packet',
+    '',
+    '### Manifest Rows',
+    ...(input.drillboardRows.length
+      ? input.drillboardRows.map((row) => (
+        `- ${row.issueIdentifier} | ${row.runbookStepCode} | ${row.artifactPath} | priority=${row.priorityWeight} | depth=${row.dependencyDepth} | class=${row.blockerClass}`
+      ))
+      : ['- (none)']),
+    '',
+    '### Canonical Dependency Links',
+    ...(canonicalLinks.length ? canonicalLinks.map((link) => `- ${link}`) : ['- (none)']),
+  ];
+  return lines.join('\n');
 }
 
 function normalizeRegressionGateOverrideReasonCode(input: unknown): RegressionGateOverrideReasonCode | null {
