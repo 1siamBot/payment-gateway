@@ -18,6 +18,12 @@ const links = [
     to: '/payment-flow/status-tracker',
     cta: 'Open Status Tracker',
   },
+  {
+    title: 'Offline Fixture Harness',
+    description: 'Switch deterministic end-to-end scenarios without backend dependency.',
+    to: '/payment-flow/fixture-harness?scenario=success',
+    cta: 'Open Fixture Harness',
+  },
 ];
 </script>
 
