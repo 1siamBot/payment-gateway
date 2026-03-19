@@ -109,6 +109,9 @@ import {
   buildPublicationHandoffBundleViewer,
   buildPublicationHandoffExportValidator,
   buildPublicationHandoffCanonicalAutofixPreview,
+  buildPublicationBlockerDependencyGraphBoard,
+  buildPublicationBlockerEvidenceDigest,
+  buildPublicationBlockerCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -134,6 +137,7 @@ import {
   moveRemediationQueueSelection,
   moveReleaseGateVerdictSelection,
   movePublicationHandoffBundleSelection,
+  movePublicationBlockerDependencySelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -150,6 +154,7 @@ import {
   resolveRemediationQueueShortcut,
   resolveReleaseGateVerdictShortcut,
   resolvePublicationHandoffBundleShortcut,
+  resolvePublicationBlockerDependencyShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -4645,5 +4650,201 @@ describe('frontend wave1 helpers', () => {
       activeSectionId: 'section-1',
       direction: 'next_section',
     })).toBe('section-2');
+  });
+
+  it('builds publication blocker dependency graph board with deterministic node and edge ordering', () => {
+    const first = buildPublicationBlockerDependencyGraphBoard({
+      rows: [
+        {
+          id: 'bf-c',
+          issueIdentifier: 'ONE-309',
+          blockerWeight: 2,
+          dependencyDepthWeight: 2,
+          blockerTypeWeight: 2,
+          blockerType: 'evidence_digest',
+          evidencePath: 'artifacts/one-309/evidence-digest.md',
+          upstreamDependencies: ['/issues/ONE-307', 'ONE-306'],
+        },
+        {
+          id: 'bf-a',
+          issueIdentifier: 'ONE-304',
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          blockerTypeWeight: 1,
+          blockerType: 'backend_contract',
+          evidencePath: 'artifacts/one-304/backend-contract.md',
+          upstreamDependencies: [],
+        },
+        {
+          id: 'bf-b',
+          issueIdentifier: 'ONE-305',
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          blockerTypeWeight: 2,
+          blockerType: 'qa_handoff',
+          evidencePath: 'artifacts/one-305/qa-handoff.md',
+          upstreamDependencies: ['/ONE/issues/ONE-304', 'ONE-306'],
+        },
+      ],
+      activeNodeId: '',
+    });
+    const second = buildPublicationBlockerDependencyGraphBoard({
+      rows: [
+        {
+          id: 'bf-b',
+          issueIdentifier: 'ONE-305',
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          blockerTypeWeight: 2,
+          blockerType: 'qa_handoff',
+          evidencePath: 'artifacts/one-305/qa-handoff.md',
+          upstreamDependencies: ['/ONE/issues/ONE-304', 'ONE-306'],
+        },
+        {
+          id: 'bf-c',
+          issueIdentifier: 'ONE-309',
+          blockerWeight: 2,
+          dependencyDepthWeight: 2,
+          blockerTypeWeight: 2,
+          blockerType: 'evidence_digest',
+          evidencePath: 'artifacts/one-309/evidence-digest.md',
+          upstreamDependencies: ['/issues/ONE-307', 'ONE-306'],
+        },
+        {
+          id: 'bf-a',
+          issueIdentifier: 'ONE-304',
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          blockerTypeWeight: 1,
+          blockerType: 'backend_contract',
+          evidencePath: 'artifacts/one-304/backend-contract.md',
+          upstreamDependencies: [],
+        },
+      ],
+      activeNodeId: '',
+    });
+
+    expect(first.contract).toBe('settlement-publication-blocker-dependency-graph-board.v1');
+    expect(first.nodes.map((node) => node.id)).toEqual(['bf-a', 'bf-b', 'bf-c']);
+    expect(first.edges.map((edge) => edge.id)).toEqual([
+      'ONE-305->ONE-304',
+      'ONE-305->ONE-306',
+      'ONE-309->ONE-306',
+      'ONE-309->ONE-307',
+    ]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits stable publication blocker evidence digest machine fields', () => {
+    const board = buildPublicationBlockerDependencyGraphBoard({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-304',
+          blockerWeight: 1,
+          dependencyDepthWeight: 1,
+          blockerTypeWeight: 1,
+          branch: 'feature/one-304',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/304',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-304/test.log',
+          nextOwner: 'qa',
+          requiredArtifacts: [],
+          upstreamDependencies: [],
+          canonicalLinks: ['/ONE/issues/ONE-304', '/ONE/issues/ONE-305#document-plan'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-309',
+          blockerWeight: 1,
+          dependencyDepthWeight: 2,
+          blockerTypeWeight: 1,
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          nextOwner: 'frontend engineer',
+          requiredArtifacts: ['dependencyMapSnapshot'],
+          upstreamDependencies: ['ONE-307', 'ONE-306'],
+          canonicalLinks: ['/issues/ONE-309'],
+        },
+      ],
+      activeNodeId: '',
+    });
+    const digest = buildPublicationBlockerEvidenceDigest({ nodes: board.nodes });
+
+    expect(board.nodes.find((node) => node.id === 'ready')?.machineFields).toEqual({
+      blockerFingerprint: expect.stringMatching(/^blocker-[a-f0-9]{8}$/),
+      upstreamDependencies: [],
+      requiredArtifacts: [],
+      canonicalLinkViolations: [],
+      nextOwner: 'qa',
+      readyForQA: true,
+    });
+    expect(board.nodes.find((node) => node.id === 'blocked')?.machineFields).toEqual({
+      blockerFingerprint: expect.stringMatching(/^blocker-[a-f0-9]{8}$/),
+      upstreamDependencies: ['ONE-306', 'ONE-307'],
+      requiredArtifacts: ['artifactPath', 'branch', 'dependencyMapSnapshot', 'fullSha', 'prLink', 'testCommand'],
+      canonicalLinkViolations: ['/issues/ONE-309'],
+      nextOwner: 'frontend engineer',
+      readyForQA: false,
+    });
+    expect(digest.contract).toBe('settlement-publication-blocker-evidence-digest.v1');
+    expect(digest.markdown).toContain('/ONE/issues/ONE-304');
+    expect(digest.markdown).toContain('blocker-');
+  });
+
+  it('builds publication blocker canonical autofix preview and keyboard workflow deterministically', () => {
+    const preview = buildPublicationBlockerCanonicalAutofixPreview({
+      markdown: [
+        '- blocker board source: /issues/ONE-309',
+        '- queue context: /ONE/issues/ONE-306#document-plan',
+        '- dependency comment: https://paperclip.dev/issues/ONE-307#comment-3',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-publication-blocker-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-309',
+      '/ONE/issues/ONE-306#document-plan',
+      '/ONE/issues/ONE-307#comment-3',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-309');
+    expect(resolvePublicationBlockerDependencyShortcut({ key: 'd', altKey: true })).toBe('focus_dependency_board');
+    expect(resolvePublicationBlockerDependencyShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_blocker');
+    expect(resolvePublicationBlockerDependencyShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_blocker');
+    expect(resolvePublicationBlockerDependencyShortcut({ key: 'g', ctrlKey: true, shiftKey: true }))
+      .toBe('open_evidence_digest');
+    expect(resolvePublicationBlockerDependencyShortcut({ key: 'l', ctrlKey: true, shiftKey: true }))
+      .toBe('run_canonical_link_validation');
+    expect(movePublicationBlockerDependencySelection({
+      nodes: buildPublicationBlockerDependencyGraphBoard({
+        rows: [
+          {
+            id: 'node-1',
+            issueIdentifier: 'ONE-304',
+            blockerWeight: 1,
+            dependencyDepthWeight: 1,
+            blockerTypeWeight: 1,
+            evidencePath: 'artifacts/one-304/blocker.md',
+          },
+          {
+            id: 'node-2',
+            issueIdentifier: 'ONE-309',
+            blockerWeight: 2,
+            dependencyDepthWeight: 1,
+            blockerTypeWeight: 1,
+            evidencePath: 'artifacts/one-309/blocker.md',
+          },
+        ],
+        activeNodeId: '',
+      }).nodes,
+      activeNodeId: 'node-1',
+      direction: 'next_blocker',
+    })).toBe('node-2');
   });
 });
