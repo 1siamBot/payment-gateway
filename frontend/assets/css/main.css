@@ -82,6 +82,7 @@ label {
 
 input,
 select,
+textarea,
 button {
   width: 100%;
   font: inherit;
@@ -614,6 +615,67 @@ button.danger {
   margin-top: 0.65rem;
 }
 
+.rail-handoff-grid {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.rail-panel,
+.handoff-panel {
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 0.7rem;
+}
+
+.evidence-rail-list-wrap {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.evidence-rail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.rail-item {
+  text-align: left;
+  display: grid;
+  gap: 0.15rem;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.rail-item.active {
+  border-color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.rail-item small {
+  color: #334155;
+}
+
+.rail-item span {
+  color: #1e3a8a;
+}
+
+.shortcut-hint {
+  margin-top: 0;
+}
+
+.handoff-artifacts {
+  grid-column: 1 / -1;
+}
+
 .note-clamped {
   margin: 0 0 0.25rem;
   display: -webkit-box;
@@ -718,6 +780,10 @@ td small {
   }
 
   .bulk-preview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .rail-handoff-grid {
     grid-template-columns: 1fr;
   }
 
