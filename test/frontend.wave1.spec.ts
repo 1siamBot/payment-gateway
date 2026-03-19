@@ -92,6 +92,7 @@ import {
   buildPublicationWindowPlanBoard,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
+  buildDiagnosticsDriftSummaryChips,
   buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
@@ -1639,8 +1640,14 @@ describe('frontend wave1 helpers', () => {
     expect(moveDiagnosticsBaselineDeltaSelection({
       rows: workspace.rows,
       activeDeltaId: workspace.rows[0].id,
-      direction: 'next_delta',
+      direction: 'next_section',
     })).toBe(workspace.rows[1].id);
+    expect(workspace.rows[0]).toMatchObject({
+      sectionWeight: 1,
+      fieldPath: 'regressionRiskScore',
+      fieldTypeWeight: 2,
+      sourceIssueIdentifier: 'ONE-273',
+    });
   });
 
   it('builds regression gate override simulator outcomes with deterministic machine reason handling', () => {
@@ -1693,16 +1700,97 @@ describe('frontend wave1 helpers', () => {
     });
   });
 
-  it('resolves diagnostics baseline compare keyboard shortcuts for compare/simulator workflow', () => {
-    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'd', altKey: true })).toBe('focus_baseline_compare');
-    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_delta');
-    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_delta');
-    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'o', ctrlKey: true, shiftKey: true })).toBe('open_override_simulator');
-    expect(resolveDiagnosticsBaselineCompareShortcut({
-      key: 'Enter',
-      ctrlKey: true,
-      shiftKey: true,
-    })).toBe('validate_active_scenario');
+  it('resolves diagnostics contract-bundle explorer shortcuts for explorer/composer workflow', () => {
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'e', altKey: true })).toBe('focus_contract_bundle_explorer');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_section');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_section');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 'h', ctrlKey: true, shiftKey: true })).toBe('open_handoff_composer');
+    expect(resolveDiagnosticsBaselineCompareShortcut({ key: 's', ctrlKey: true, shiftKey: true })).toBe('validate_handoff_packet');
+  });
+
+  it('builds deterministic diagnostics drift-summary chips in canonical reason-code order', () => {
+    const workspace = buildDiagnosticsBaselineCompareWorkspace({
+      baselineDigest: [
+        {
+          sourceIssueIdentifier: 'ONE-300',
+          bundleCode: 'bundle-a',
+          sectionWeight: 2,
+          fieldPath: 'payload.enum',
+          fieldTypeWeight: 2,
+          driftReasonCode: 'enum_drift',
+          value: 'A',
+        },
+        {
+          sourceIssueIdentifier: 'ONE-301',
+          bundleCode: 'bundle-b',
+          sectionWeight: 1,
+          fieldPath: 'payload.checksum',
+          fieldTypeWeight: 3,
+          driftReasonCode: 'checksum_mismatch',
+          value: 'x',
+        },
+      ],
+      candidateDigest: [
+        {
+          sourceIssueIdentifier: 'ONE-300',
+          bundleCode: 'bundle-a',
+          sectionWeight: 2,
+          fieldPath: 'payload.enum',
+          fieldTypeWeight: 2,
+          driftReasonCode: 'enum_drift',
+          value: 'B',
+        },
+        {
+          sourceIssueIdentifier: 'ONE-301',
+          bundleCode: 'bundle-b',
+          sectionWeight: 1,
+          fieldPath: 'payload.checksum',
+          fieldTypeWeight: 3,
+          driftReasonCode: 'checksum_mismatch',
+          value: 'y',
+        },
+      ],
+      activeDeltaId: '',
+    });
+    const chips = buildDiagnosticsDriftSummaryChips(workspace.rows);
+    expect(chips.map((chip) => chip.code)).toEqual(['enum_drift', 'checksum_mismatch']);
+    expect(chips.map((chip) => chip.count)).toEqual([1, 1]);
+  });
+
+  it('keeps canonical-link autofix and checklist validation stable for diagnostics handoff packet inputs', () => {
+    const linksText = [
+      '/issues/ONE-280',
+      '/issues/ONE-280#comment-42',
+      '/issues/ONE-280#document-plan',
+    ].join('\n');
+    const firstPreview = buildCanonicalLinkAutofixPreview({ linksText });
+    const secondPreview = buildCanonicalLinkAutofixPreview({ linksText });
+    expect(firstPreview).toEqual(secondPreview);
+    expect(firstPreview.changedCount).toBe(3);
+    expect(firstPreview.correctedOutput).toContain('/ONE/issues/ONE-280#comment-42');
+
+    const firstValidation = validateEvidencePacketLintChecklistDraft({
+      branch: 'feature/one-280-contract-bundle-explorer',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet',
+      testCommand: 'npm run test -- frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-280/diagnostics-handoff.md',
+      dependencyIssueLinksText: firstPreview.correctedOutput,
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-20T18:00:00.000Z',
+    });
+    const secondValidation = validateEvidencePacketLintChecklistDraft({
+      branch: 'feature/one-280-contract-bundle-explorer',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet',
+      testCommand: 'npm run test -- frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-280/diagnostics-handoff.md',
+      dependencyIssueLinksText: secondPreview.correctedOutput,
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-20T18:00:00.000Z',
+    });
+    expect(firstValidation).toEqual(secondValidation);
+    expect(firstValidation.isComplete).toBe(true);
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {

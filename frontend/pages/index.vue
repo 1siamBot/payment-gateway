@@ -90,6 +90,7 @@ import {
   buildReleaseReadinessSimulator,
   buildPublicationWindowPlanBoard,
   buildDiagnosticsBaselineCompareWorkspace,
+  buildDiagnosticsDriftSummaryChips,
   buildRegressionGateOverrideSimulator,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
@@ -604,6 +605,9 @@ const activeDiagnosticsDeltaId = ref('');
 const activeOverrideScenarioId = ref('');
 const overrideScenarioLinksText = ref('');
 const overrideSimulatorOpen = ref(false);
+const diagnosticsHandoffComposerOpen = ref(false);
+const diagnosticsHandoffDraft = ref(getDefaultEvidencePacketLintChecklistDraft());
+const diagnosticsHandoffMissingFields = ref<Set<string>>(new Set());
 const releaseReadinessSnapshots = ref<Array<{
   laneId: string;
   issueIdentifier: string;
@@ -959,27 +963,82 @@ const filteredReviewQueueLedgerRows = computed(() => filterReviewQueueLedgerRows
 ));
 const activeReviewQueueRow = computed(() => reviewQueueLedger.value.rows
   .find((row) => row.id === activeReviewQueueRowId.value) ?? null);
-const diagnosticsBaselineDigestRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => ({
-  issueIdentifier: row.id.toUpperCase(),
-  bundleCode: index % 2 === 0 ? 'baseline-core' : 'baseline-edge',
-  fieldPath: 'recommendedGate',
-  value: row.priority === 'critical' ? 'block' : row.priority === 'high' ? 'warn' : 'pass',
-  deltaSeverityWeight: row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4,
-  scoreBandShiftWeight: index + 1,
-})));
-const diagnosticsCandidateDigestRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => ({
-  issueIdentifier: row.id.toUpperCase(),
-  bundleCode: index % 2 === 0 ? 'baseline-core' : 'baseline-edge',
-  fieldPath: 'recommendedGate',
-  value: row.priority === 'critical' || index % 3 === 0 ? 'block' : row.priority === 'high' ? 'warn' : 'pass',
-  deltaSeverityWeight: row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4,
-  scoreBandShiftWeight: index + 1,
-})));
+const diagnosticsBaselineDigestRows = computed(() => reviewQueueLedger.value.rows.flatMap((row, index) => {
+  const sourceIssueIdentifier = row.id.toUpperCase();
+  const sectionWeight = row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4;
+  const bundleCode = index % 2 === 0 ? 'contract-core' : 'contract-edge';
+  return [
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.requiredField',
+      fieldTypeWeight: 1,
+      driftReasonCode: 'missing_required_field',
+      value: `required:${sourceIssueIdentifier.toLowerCase().replace('-', '_')}`,
+    },
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.eventType',
+      fieldTypeWeight: 2,
+      driftReasonCode: 'enum_drift',
+      value: row.priority === 'critical' ? 'capture_failed' : 'capture_pending',
+    },
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.payloadChecksum',
+      fieldTypeWeight: 3,
+      driftReasonCode: 'checksum_mismatch',
+      value: `baseline-${index + 1}-${sectionWeight}`,
+    },
+  ];
+}));
+const diagnosticsCandidateDigestRows = computed(() => reviewQueueLedger.value.rows.flatMap((row, index) => {
+  const sourceIssueIdentifier = row.id.toUpperCase();
+  const sectionWeight = row.priority === 'critical' ? 1 : row.priority === 'high' ? 2 : row.priority === 'medium' ? 3 : 4;
+  const bundleCode = index % 2 === 0 ? 'contract-core' : 'contract-edge';
+  return [
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.requiredField',
+      fieldTypeWeight: 1,
+      driftReasonCode: 'missing_required_field',
+      value: index % 3 === 0 ? `required:${sourceIssueIdentifier.toLowerCase().replace('-', '_')}:v2` : `required:${sourceIssueIdentifier.toLowerCase().replace('-', '_')}`,
+    },
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.eventType',
+      fieldTypeWeight: 2,
+      driftReasonCode: 'enum_drift',
+      value: row.priority === 'critical' || index % 2 === 0 ? 'capture_failed' : 'capture_pending',
+    },
+    {
+      sourceIssueIdentifier,
+      bundleCode,
+      sectionWeight,
+      fieldPath: 'sections.payloadChecksum',
+      fieldTypeWeight: 3,
+      driftReasonCode: 'checksum_mismatch',
+      value: index % 2 === 0 ? `candidate-${index + 1}-${sectionWeight}` : `baseline-${index + 1}-${sectionWeight}`,
+    },
+  ];
+}));
 const diagnosticsBaselineCompareWorkspace = computed(() => buildDiagnosticsBaselineCompareWorkspace({
   baselineDigest: diagnosticsBaselineDigestRows.value,
   candidateDigest: diagnosticsCandidateDigestRows.value,
   activeDeltaId: activeDiagnosticsDeltaId.value,
 }));
+const diagnosticsDriftSummaryChips = computed(() => buildDiagnosticsDriftSummaryChips(
+  diagnosticsBaselineCompareWorkspace.value.rows,
+));
 const activeDiagnosticsDelta = computed(() => diagnosticsBaselineCompareWorkspace.value.rows
   .find((row) => row.id === activeDiagnosticsDeltaId.value) ?? null);
 const regressionGateOverrideSimulator = computed(() => buildRegressionGateOverrideSimulator({
@@ -1002,6 +1061,36 @@ const activeOverrideScenario = computed(() => regressionGateOverrideSimulator.va
 const overrideScenarioLinkPreview = computed(() => buildCanonicalLinkAutofixPreview({
   linksText: overrideScenarioLinksText.value,
 }));
+const diagnosticsHandoffLinkPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: diagnosticsHandoffDraft.value.dependencyIssueLinksText,
+}));
+const diagnosticsHandoffPacketMarkdown = computed(() => {
+  const normalizedLinks = diagnosticsHandoffLinkPreview.value.rows.map((row) => row.normalized);
+  const activeIssue = activeDiagnosticsDelta.value?.sourceIssueIdentifier || 'UNKNOWN-0';
+  const bundleCode = activeDiagnosticsDelta.value?.bundleCode || 'contract-core';
+  const lines = [
+    '## Diagnostics Handoff Evidence Packet',
+    '',
+    `- Issue: ${activeIssue}`,
+    `- Bundle: ${bundleCode}`,
+    `- Branch: ${diagnosticsHandoffDraft.value.branch.trim() || '-'}`,
+    `- Full SHA: ${diagnosticsHandoffDraft.value.fullSha.trim() || '-'}`,
+    `- Test Command: ${diagnosticsHandoffDraft.value.testCommand.trim() || '-'}`,
+    `- Artifact Path: ${diagnosticsHandoffDraft.value.artifactPath.trim() || '-'}`,
+    '',
+    '### Canonical Links',
+    ...(normalizedLinks.length ? normalizedLinks.map((link) => `- ${link}`) : ['- (none)']),
+  ];
+  if (diagnosticsHandoffDraft.value.prMode === 'no_pr_yet') {
+    lines.push(
+      '',
+      '### No PR Yet Blocker',
+      `- Blocker Owner: ${diagnosticsHandoffDraft.value.blockerOwner.trim() || '-'}`,
+      `- Blocker ETA: ${diagnosticsHandoffDraft.value.blockerEta.trim() || '-'}`,
+    );
+  }
+  return lines.join('\n');
+});
 const evidencePacketLintFindingSourceRows = computed(() => {
   const baseRows = reviewQueueLedger.value.rows;
   if (!baseRows.length) {
@@ -2173,6 +2262,10 @@ function focusDiagnosticsBaselineCompare() {
   diagnosticsBaselinePanelRef.value?.focus();
 }
 
+function isDiagnosticsHandoffFieldMissing(fieldKey: string): boolean {
+  return diagnosticsHandoffMissingFields.value.has(fieldKey);
+}
+
 function validateActiveOverrideScenario() {
   diagnosticsBaselineState.error = '';
   diagnosticsBaselineState.message = '';
@@ -2186,6 +2279,32 @@ function validateActiveOverrideScenario() {
     return;
   }
   diagnosticsBaselineState.message = `Scenario ${scenario.issueIdentifier} validated with simulated outcome ${scenario.whatIfOutcome}.`;
+}
+
+function validateDiagnosticsHandoffPacket() {
+  diagnosticsBaselineState.error = '';
+  diagnosticsBaselineState.message = '';
+  diagnosticsHandoffMissingFields.value = new Set();
+  const activeRow = activeDiagnosticsDelta.value;
+  if (!activeRow) {
+    diagnosticsBaselineState.error = 'Select a contract-bundle section before validating handoff evidence.';
+    return;
+  }
+  if (diagnosticsHandoffLinkPreview.value.changedCount > 0) {
+    diagnosticsBaselineState.error = `Canonicalize ${diagnosticsHandoffLinkPreview.value.changedCount} link(s) before validating packet.`;
+    return;
+  }
+  const validation = validateEvidencePacketLintChecklistDraft(diagnosticsHandoffDraft.value);
+  diagnosticsHandoffMissingFields.value = new Set(validation.missingFields);
+  if (validation.errors.length > 0) {
+    diagnosticsBaselineState.error = validation.errors[0];
+    return;
+  }
+  if (!validation.isComplete) {
+    diagnosticsBaselineState.error = `Packet is incomplete. Missing fields: ${validation.missingFields.join(', ')}.`;
+    return;
+  }
+  diagnosticsBaselineState.message = `Handoff packet validated for ${activeRow.sourceIssueIdentifier} (${activeRow.fieldPath}).`;
 }
 
 function saveReleaseReadinessSnapshot() {
@@ -3436,31 +3555,31 @@ function onDiagnosticsBaselineKeydown(event: KeyboardEvent) {
   }
   const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
   if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
-    && shortcut !== 'open_override_simulator'
-    && shortcut !== 'validate_active_scenario') {
+    && shortcut !== 'open_handoff_composer'
+    && shortcut !== 'validate_handoff_packet') {
     return;
   }
   event.preventDefault();
   diagnosticsBaselineState.error = '';
-  if (shortcut === 'focus_baseline_compare') {
+  if (shortcut === 'focus_contract_bundle_explorer') {
     focusDiagnosticsBaselineCompare();
     return;
   }
-  if (shortcut === 'next_delta' || shortcut === 'prev_delta') {
+  if (shortcut === 'next_section' || shortcut === 'prev_section') {
     activeDiagnosticsDeltaId.value = moveDiagnosticsBaselineDeltaSelection({
       rows: diagnosticsBaselineCompareWorkspace.value.rows,
       activeDeltaId: activeDiagnosticsDeltaId.value,
       direction: shortcut,
     });
-    diagnosticsBaselineState.message = `Selected delta ${activeDiagnosticsDeltaId.value || 'none'}.`;
+    diagnosticsBaselineState.message = `Selected contract section ${activeDiagnosticsDeltaId.value || 'none'}.`;
     return;
   }
-  if (shortcut === 'open_override_simulator') {
-    overrideSimulatorOpen.value = true;
-    diagnosticsBaselineState.message = 'Override simulator opened.';
+  if (shortcut === 'open_handoff_composer') {
+    diagnosticsHandoffComposerOpen.value = true;
+    diagnosticsBaselineState.message = 'Handoff evidence composer opened.';
     return;
   }
-  validateActiveOverrideScenario();
+  validateDiagnosticsHandoffPacket();
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
@@ -5335,22 +5454,32 @@ onMounted(() => {
               tabindex="0"
               @keydown="onDiagnosticsBaselineKeydown"
             >
-              <h4>Diagnostics Baseline-Compare Workspace</h4>
+              <h4>Diagnostics Contract-Bundle Explorer</h4>
               <p class="state" :class="{ error: diagnosticsBaselineState.error }">
                 {{ diagnosticsBaselineState.error
                   || diagnosticsBaselineState.message
-                  || 'Deterministic order: deltaSeverityWeight, scoreBandShiftWeight, issueIdentifier, bundleCode, fieldPath. Keyboard: Alt+D focus, Alt+Shift+J next delta, Alt+Shift+K previous delta, Ctrl+Shift+O open override simulator, Ctrl+Shift+Enter validate scenario.' }}
+                  || 'Deterministic order: (sectionWeight, fieldPath, fieldTypeWeight, sourceIssueIdentifier). Keyboard: Alt+E focus explorer, Alt+Shift+N next section, Alt+Shift+P previous section, Ctrl+Shift+H open handoff composer, Ctrl+Shift+S validate packet.' }}
               </p>
-              <p class="state">Active delta: {{ activeDiagnosticsDelta?.id || 'none' }}</p>
+              <p class="state">Active section: {{ activeDiagnosticsDelta?.id || 'none' }}</p>
+              <p class="state">
+                Drift summary chips:
+                <span v-if="!diagnosticsDriftSummaryChips.length"> none </span>
+                <template v-else>
+                  <span v-for="chip in diagnosticsDriftSummaryChips" :key="`drift-chip-${chip.code}`">
+                    {{ chip.label }}={{ chip.count }}
+                  </span>
+                </template>
+              </p>
               <div class="queue-table-wrap">
                 <table class="queue-table">
                   <thead>
                     <tr>
-                      <th>Severity</th>
-                      <th>Band Shift</th>
-                      <th>Issue</th>
-                      <th>Bundle</th>
+                      <th>Section W</th>
                       <th>Field</th>
+                      <th>Type W</th>
+                      <th>Source Issue</th>
+                      <th>Reason Code</th>
+                      <th>Bundle</th>
                       <th>Baseline</th>
                       <th>Candidate</th>
                       <th>Changed</th>
@@ -5358,7 +5487,7 @@ onMounted(() => {
                   </thead>
                   <tbody>
                     <tr v-if="!diagnosticsBaselineCompareWorkspace.rows.length">
-                      <td colspan="8">No diagnostics baseline/candidate rows available.</td>
+                      <td colspan="9">No diagnostics baseline/candidate rows available.</td>
                     </tr>
                     <tr
                       v-for="row in diagnosticsBaselineCompareWorkspace.rows"
@@ -5366,11 +5495,12 @@ onMounted(() => {
                       :class="{ 'queue-row-active': activeDiagnosticsDeltaId === row.id }"
                       @click="activeDiagnosticsDeltaId = row.id"
                     >
-                      <td>{{ row.deltaSeverityWeight }}</td>
-                      <td>{{ row.scoreBandShiftWeight }}</td>
-                      <td>{{ row.issueIdentifier }}</td>
-                      <td>{{ row.bundleCode }}</td>
+                      <td>{{ row.sectionWeight }}</td>
                       <td><code>{{ row.fieldPath }}</code></td>
+                      <td>{{ row.fieldTypeWeight }}</td>
+                      <td>{{ row.sourceIssueIdentifier }}</td>
+                      <td><code>{{ row.driftReasonCode }}</code></td>
+                      <td>{{ row.bundleCode }}</td>
                       <td><code>{{ row.baselineValue || '-' }}</code></td>
                       <td><code>{{ row.candidateValue || '-' }}</code></td>
                       <td>{{ row.changed ? 'yes' : 'no' }}</td>
@@ -5380,8 +5510,79 @@ onMounted(() => {
               </div>
 
               <div class="inline-actions">
+                <button type="button" class="link" @click="diagnosticsHandoffComposerOpen = true">Open Handoff Composer</button>
+                <button type="button" class="link" @click="validateDiagnosticsHandoffPacket">Validate Handoff Packet</button>
                 <button type="button" class="link" @click="overrideSimulatorOpen = true">Open Override Simulator</button>
-                <button type="button" class="link" @click="validateActiveOverrideScenario">Validate Active Scenario</button>
+              </div>
+
+              <div v-if="diagnosticsHandoffComposerOpen" class="card">
+                <h5>Handoff Evidence Composer</h5>
+                <div class="triage-grid">
+                  <label :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('branch') }">
+                    Branch
+                    <input v-model="diagnosticsHandoffDraft.branch" placeholder="feature/one-280-contract-bundle-explorer" />
+                  </label>
+                  <label :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('fullSha') }">
+                    Full SHA
+                    <input v-model="diagnosticsHandoffDraft.fullSha" placeholder="40-char commit SHA" />
+                  </label>
+                  <label>
+                    Mode
+                    <select v-model="diagnosticsHandoffDraft.prMode">
+                      <option value="pr_link">PR</option>
+                      <option value="no_pr_yet">No PR yet</option>
+                    </select>
+                  </label>
+                  <label :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('testCommand') }">
+                    Test Command
+                    <input v-model="diagnosticsHandoffDraft.testCommand" placeholder="npm run test -- frontend.wave1.spec.ts" />
+                  </label>
+                  <label :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('artifactPath') }">
+                    Artifact Path
+                    <input v-model="diagnosticsHandoffDraft.artifactPath" placeholder="artifacts/one-280/diagnostics-handoff.md" />
+                  </label>
+                  <label v-if="diagnosticsHandoffDraft.prMode === 'no_pr_yet'" :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('blockerOwner') }">
+                    Blocker Owner
+                    <input v-model="diagnosticsHandoffDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                  </label>
+                  <label v-if="diagnosticsHandoffDraft.prMode === 'no_pr_yet'" :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('blockerEta') }">
+                    Blocker ETA
+                    <input v-model="diagnosticsHandoffDraft.blockerEta" placeholder="2026-03-20T18:00:00.000Z" />
+                  </label>
+                </div>
+                <label :class="{ 'field-missing': isDiagnosticsHandoffFieldMissing('dependencyIssueLinks') }">
+                  Canonical Issue/Comment/Document Links (one per line)
+                  <textarea
+                    v-model="diagnosticsHandoffDraft.dependencyIssueLinksText"
+                    rows="4"
+                    placeholder="/issues/ONE-280&#10;/issues/ONE-280#comment-1&#10;/issues/ONE-280#document-plan"
+                  />
+                </label>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Original</th>
+                        <th>Autofix</th>
+                        <th>Changed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!diagnosticsHandoffLinkPreview.rows.length">
+                        <td colspan="3">Add links to preview canonical normalization.</td>
+                      </tr>
+                      <tr v-for="row in diagnosticsHandoffLinkPreview.rows" :key="`handoff-link-${row.id}`">
+                        <td><code>{{ row.original }}</code></td>
+                        <td><code>{{ row.normalized }}</code></td>
+                        <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <label>
+                  Markdown-ready Handoff Packet
+                  <textarea :value="diagnosticsHandoffPacketMarkdown" rows="10" readonly />
+                </label>
               </div>
 
               <div v-if="overrideSimulatorOpen">

@@ -456,14 +456,25 @@ export type DiagnosticsTrendDigestExplorer = {
 };
 
 export type DiagnosticsBaselineCompareShortcut =
-  | 'focus_baseline_compare'
-  | 'next_delta'
-  | 'prev_delta'
-  | 'open_override_simulator'
-  | 'validate_active_scenario';
+  | 'focus_contract_bundle_explorer'
+  | 'next_section'
+  | 'prev_section'
+  | 'open_handoff_composer'
+  | 'validate_handoff_packet';
+
+export type DiagnosticsCanonicalReasonCode =
+  | 'missing_required_field'
+  | 'enum_drift'
+  | 'type_mismatch'
+  | 'ordering_regression'
+  | 'checksum_mismatch';
 
 export type DiagnosticsBaselineCompareRow = {
   id: string;
+  sectionWeight: number;
+  fieldTypeWeight: number;
+  sourceIssueIdentifier: string;
+  driftReasonCode: DiagnosticsCanonicalReasonCode;
   deltaSeverityWeight: number;
   scoreBandShiftWeight: number;
   issueIdentifier: string;
@@ -478,6 +489,12 @@ export type DiagnosticsBaselineCompareWorkspace = {
   contract: 'settlement-diagnostics-baseline-compare-workspace.v1';
   rows: DiagnosticsBaselineCompareRow[];
   activeDeltaId: string;
+};
+
+export type DiagnosticsDriftSummaryChip = {
+  code: DiagnosticsCanonicalReasonCode;
+  label: string;
+  count: number;
 };
 
 export type RegressionGateOverrideReasonCode =
@@ -1127,6 +1144,13 @@ const DIAGNOSTICS_TREND_REASON_CODE_ORDER: DiagnosticsTrendDigestReasonCode[] = 
   'severity_escalation',
   'missing_snapshot_window',
 ];
+const DIAGNOSTICS_CANONICAL_REASON_CODE_ORDER: DiagnosticsCanonicalReasonCode[] = [
+  'missing_required_field',
+  'enum_drift',
+  'type_mismatch',
+  'ordering_regression',
+  'checksum_mismatch',
+];
 const REGRESSION_GATE_OVERRIDE_REASON_CODE_ORDER: RegressionGateOverrideReasonCode[] = [
   'missing_evidence',
   'eta_drift',
@@ -1140,6 +1164,13 @@ const DIAGNOSTICS_TREND_REASON_LABEL: Record<DiagnosticsTrendDigestReasonCode, s
   checksum_instability: 'Checksum instability',
   severity_escalation: 'Severity escalation',
   missing_snapshot_window: 'Missing snapshot window',
+};
+const DIAGNOSTICS_CANONICAL_REASON_LABEL: Record<DiagnosticsCanonicalReasonCode, string> = {
+  missing_required_field: 'missing_required_field',
+  enum_drift: 'enum_drift',
+  type_mismatch: 'type_mismatch',
+  ordering_regression: 'ordering_regression',
+  checksum_mismatch: 'checksum_mismatch',
 };
 const DIAGNOSTICS_TREND_MAX_SEVERITY_ORDER: DiagnosticsTrendDigestMaxSeverity[] = ['critical', 'high', 'medium', 'low'];
 const RELEASE_READINESS_EVIDENCE_FIELD_ORDER: ReleaseReadinessEvidenceField[] = [
@@ -3487,9 +3518,38 @@ type DiagnosticsCompareDigestEntry = {
   bundleCode: string;
   fieldPath: string;
   value: string;
-  deltaSeverityWeight: number;
-  scoreBandShiftWeight: number;
+  sectionWeight: number;
+  fieldTypeWeight: number;
+  driftReasonCode: DiagnosticsCanonicalReasonCode;
 };
+
+function normalizeDiagnosticsCanonicalReasonCode(input: unknown): DiagnosticsCanonicalReasonCode | null {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  const normalized = input.trim().toLowerCase().replace(/-/g, '_');
+  if ((DIAGNOSTICS_CANONICAL_REASON_CODE_ORDER as string[]).includes(normalized)) {
+    return normalized as DiagnosticsCanonicalReasonCode;
+  }
+  return null;
+}
+
+function inferDiagnosticsReasonCodeFromFieldPath(fieldPath: string): DiagnosticsCanonicalReasonCode {
+  const normalized = fieldPath.toLowerCase();
+  if (normalized.includes('required')) {
+    return 'missing_required_field';
+  }
+  if (normalized.includes('enum')) {
+    return 'enum_drift';
+  }
+  if (normalized.includes('type')) {
+    return 'type_mismatch';
+  }
+  if (normalized.includes('order')) {
+    return 'ordering_regression';
+  }
+  return 'checksum_mismatch';
+}
 
 function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDigestEntry[] {
   if (!raw || typeof raw !== 'object') {
@@ -3513,13 +3573,18 @@ function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDig
         ? row.bundle
         : 'core',
   ) ?? 'core';
-  const deltaSeverityWeight = parseDiagnosticsCompareNumber(
-    row.deltaSeverityWeight ?? row.severityWeight ?? row.severity ?? row.priority,
+  const sectionWeight = parseDiagnosticsCompareNumber(
+    row.sectionWeight ?? row.deltaSeverityWeight ?? row.severityWeight ?? row.severity ?? row.priority,
     99,
   );
-  const scoreBandShiftWeight = parseDiagnosticsCompareNumber(
-    row.scoreBandShiftWeight ?? row.bandShiftWeight ?? row.scoreBandShift ?? row.scoreBandDelta,
+  const fieldTypeWeight = parseDiagnosticsCompareNumber(
+    row.fieldTypeWeight ?? row.scoreBandShiftWeight ?? row.bandShiftWeight ?? row.scoreBandShift ?? row.scoreBandDelta,
     99,
+  );
+  const driftReasonCode = normalizeDiagnosticsCanonicalReasonCode(
+    row.driftReasonCode
+    ?? row.reasonCode
+    ?? row.driftCode,
   );
 
   const directFieldPath = normalizeOptional(
@@ -3536,8 +3601,9 @@ function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDig
       bundleCode,
       fieldPath: directFieldPath,
       value: directValue,
-      deltaSeverityWeight,
-      scoreBandShiftWeight,
+      sectionWeight,
+      fieldTypeWeight,
+      driftReasonCode: driftReasonCode ?? inferDiagnosticsReasonCodeFromFieldPath(directFieldPath),
     }];
   }
 
@@ -3548,8 +3614,9 @@ function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDig
       bundleCode,
       fieldPath: 'regressionRiskScore',
       value: normalizeDiagnosticsCompareValue(row.regressionRiskScore),
-      deltaSeverityWeight,
-      scoreBandShiftWeight,
+      sectionWeight,
+      fieldTypeWeight,
+      driftReasonCode: driftReasonCode ?? inferDiagnosticsReasonCodeFromFieldPath('regressionRiskScore'),
     });
   }
   if (row.recommendedGate !== undefined) {
@@ -3558,8 +3625,9 @@ function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDig
       bundleCode,
       fieldPath: 'recommendedGate',
       value: normalizeDiagnosticsCompareValue(row.recommendedGate),
-      deltaSeverityWeight,
-      scoreBandShiftWeight,
+      sectionWeight,
+      fieldTypeWeight,
+      driftReasonCode: driftReasonCode ?? inferDiagnosticsReasonCodeFromFieldPath('recommendedGate'),
     });
   }
   if (row.maxSeverity !== undefined) {
@@ -3568,8 +3636,9 @@ function parseDiagnosticsCompareDigestEntry(raw: unknown): DiagnosticsCompareDig
       bundleCode,
       fieldPath: 'maxSeverity',
       value: normalizeDiagnosticsCompareValue(row.maxSeverity),
-      deltaSeverityWeight,
-      scoreBandShiftWeight,
+      sectionWeight,
+      fieldTypeWeight,
+      driftReasonCode: driftReasonCode ?? inferDiagnosticsReasonCodeFromFieldPath('maxSeverity'),
     });
   }
   return entries;
@@ -3597,22 +3666,31 @@ export function buildDiagnosticsBaselineCompareWorkspace(input: {
     .map((key): DiagnosticsBaselineCompareRow => {
       const baseline = baselineByKey.get(key);
       const candidate = candidateByKey.get(key);
-      const issueIdentifier = candidate?.issueIdentifier ?? baseline?.issueIdentifier ?? 'UNKNOWN-0';
+      const sourceIssueIdentifier = candidate?.issueIdentifier ?? baseline?.issueIdentifier ?? 'UNKNOWN-0';
       const bundleCode = candidate?.bundleCode ?? baseline?.bundleCode ?? 'core';
       const fieldPath = candidate?.fieldPath ?? baseline?.fieldPath ?? 'unknown';
       const baselineValue = baseline?.value ?? '';
       const candidateValue = candidate?.value ?? '';
+      const sectionWeight = Math.min(
+        baseline?.sectionWeight ?? Number.MAX_SAFE_INTEGER,
+        candidate?.sectionWeight ?? Number.MAX_SAFE_INTEGER,
+      );
+      const fieldTypeWeight = Math.min(
+        baseline?.fieldTypeWeight ?? Number.MAX_SAFE_INTEGER,
+        candidate?.fieldTypeWeight ?? Number.MAX_SAFE_INTEGER,
+      );
+      const driftReasonCode = candidate?.driftReasonCode
+        ?? baseline?.driftReasonCode
+        ?? inferDiagnosticsReasonCodeFromFieldPath(fieldPath);
       return {
-        id: `${issueIdentifier}|${bundleCode}|${fieldPath}`,
-        deltaSeverityWeight: Math.min(
-          baseline?.deltaSeverityWeight ?? Number.MAX_SAFE_INTEGER,
-          candidate?.deltaSeverityWeight ?? Number.MAX_SAFE_INTEGER,
-        ),
-        scoreBandShiftWeight: Math.min(
-          baseline?.scoreBandShiftWeight ?? Number.MAX_SAFE_INTEGER,
-          candidate?.scoreBandShiftWeight ?? Number.MAX_SAFE_INTEGER,
-        ),
-        issueIdentifier,
+        id: `${sourceIssueIdentifier}|${bundleCode}|${fieldPath}`,
+        sectionWeight,
+        fieldTypeWeight,
+        sourceIssueIdentifier,
+        driftReasonCode,
+        deltaSeverityWeight: sectionWeight,
+        scoreBandShiftWeight: fieldTypeWeight,
+        issueIdentifier: sourceIssueIdentifier,
         bundleCode,
         fieldPath,
         baselineValue,
@@ -3621,11 +3699,11 @@ export function buildDiagnosticsBaselineCompareWorkspace(input: {
       };
     })
     .sort((left, right) => (
-      left.deltaSeverityWeight - right.deltaSeverityWeight
-      || left.scoreBandShiftWeight - right.scoreBandShiftWeight
-      || left.issueIdentifier.localeCompare(right.issueIdentifier)
-      || left.bundleCode.localeCompare(right.bundleCode)
+      left.sectionWeight - right.sectionWeight
       || left.fieldPath.localeCompare(right.fieldPath)
+      || left.fieldTypeWeight - right.fieldTypeWeight
+      || left.sourceIssueIdentifier.localeCompare(right.sourceIssueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
       || left.id.localeCompare(right.id)
     ));
 
@@ -3643,7 +3721,7 @@ export function buildDiagnosticsBaselineCompareWorkspace(input: {
 export function moveDiagnosticsBaselineDeltaSelection(input: {
   rows: DiagnosticsBaselineCompareRow[];
   activeDeltaId: string;
-  direction: 'next_delta' | 'prev_delta';
+  direction: 'next_section' | 'prev_section';
 }): string {
   if (!input.rows.length) {
     return '';
@@ -3652,7 +3730,7 @@ export function moveDiagnosticsBaselineDeltaSelection(input: {
   if (currentIndex < 0) {
     return input.rows[0].id;
   }
-  if (input.direction === 'next_delta') {
+  if (input.direction === 'next_section') {
     return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
   }
   return input.rows[Math.max(currentIndex - 1, 0)].id;
@@ -3666,20 +3744,20 @@ export function resolveDiagnosticsBaselineCompareShortcut(input: {
   metaKey?: boolean;
 }): DiagnosticsBaselineCompareShortcut | null {
   const normalizedKey = input.key.toLowerCase();
-  if (input.altKey && !input.shiftKey && normalizedKey === 'd') {
-    return 'focus_baseline_compare';
+  if (input.altKey && !input.shiftKey && normalizedKey === 'e') {
+    return 'focus_contract_bundle_explorer';
   }
-  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
-    return 'next_delta';
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_section';
   }
-  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
-    return 'prev_delta';
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_section';
   }
-  if (normalizedKey === 'o' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
-    return 'open_override_simulator';
+  if (normalizedKey === 'h' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_composer';
   }
-  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
-    return 'validate_active_scenario';
+  if (normalizedKey === 's' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_handoff_packet';
   }
   return null;
 }
@@ -3791,6 +3869,20 @@ export function buildRegressionGateOverrideSimulator(input: {
     activeScenarioId,
     reasonCodeCounts,
   };
+}
+
+export function buildDiagnosticsDriftSummaryChips(rows: DiagnosticsBaselineCompareRow[]): DiagnosticsDriftSummaryChip[] {
+  const counts = new Map<DiagnosticsCanonicalReasonCode, number>();
+  for (const row of rows) {
+    counts.set(row.driftReasonCode, (counts.get(row.driftReasonCode) ?? 0) + 1);
+  }
+  return DIAGNOSTICS_CANONICAL_REASON_CODE_ORDER
+    .map((code) => ({
+      code,
+      label: DIAGNOSTICS_CANONICAL_REASON_LABEL[code],
+      count: counts.get(code) ?? 0,
+    }))
+    .filter((chip) => chip.count > 0);
 }
 
 export function buildChecklistAutofixHints(): ChecklistAutofixHint[] {
