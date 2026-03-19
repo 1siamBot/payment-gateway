@@ -29,6 +29,7 @@ import { BuildSettlementRemediationPublicationReadinessEnvelopeDto } from './dto
 import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
+import { ListReconciliationDiscrepanciesDto } from './dto/list-reconciliation-discrepancies.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
 import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
@@ -55,6 +56,16 @@ export class SettlementsController {
       merchantId,
       transactionReference,
     });
+  }
+
+  @Get('reconciliation/discrepancies')
+  listDiscrepancies(@Query() query: ListReconciliationDiscrepanciesDto) {
+    return this.settlements.listReconciliationDiscrepancies(query);
+  }
+
+  @Get('reconciliation/discrepancies/:discrepancyId')
+  getDiscrepancy(@Param('discrepancyId') discrepancyId: string) {
+    return this.settlements.getReconciliationDiscrepancy(discrepancyId);
   }
 
   @Get('daily-summary')

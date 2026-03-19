@@ -63,6 +63,14 @@ import {
   SETTLEMENT_EXCEPTION_QA_FIXTURES,
   SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
 } from './exception-qa-fixtures';
+import {
+  RECONCILIATION_DISCREPANCY_CONTRACT_VERSION,
+  RECONCILIATION_DISCREPANCY_FIXTURES,
+  RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP,
+  type ReconciliationDiscrepancyFixture,
+  type ReconciliationDiscrepancyPath,
+  type ReconciliationDiscrepancyState,
+} from './reconciliation-discrepancy-fixtures';
 import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
 import { buildSettlementEvidenceLineage, SettlementEvidenceLineageContract } from './evidence-lineage';
 import { buildSettlementEvidenceGapSummary, SettlementEvidenceGapSummary } from './evidence-gap-summary';
@@ -158,6 +166,7 @@ import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
 } from './dto/detect-settlement-exceptions.dto';
+import { ListReconciliationDiscrepanciesDto } from './dto/list-reconciliation-discrepancies.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
 import { ListSettlementExceptionsDto } from './dto/list-settlement-exceptions.dto';
 import { UpdateSettlementExceptionDto } from './dto/update-settlement-exception.dto';
@@ -278,6 +287,34 @@ type ExceptionQaFixtureItem = {
   version: number;
 };
 
+type ReconciliationDiscrepancyListItem = {
+  id: string;
+  transactionReference: string;
+  merchantId: string;
+  paymentId: string;
+  state: ReconciliationDiscrepancyState;
+  path: Exclude<ReconciliationDiscrepancyPath, 'empty'>;
+  currency: string;
+  ledgerAmount: number;
+  providerAmount: number;
+  deltaAmount: number;
+  captureReference: string | null;
+  duplicateEventCount: number;
+  providerEventCount: number;
+  observedAt: string;
+};
+
+type ReconciliationDiscrepancyDetail = ReconciliationDiscrepancyListItem & {
+  notes: string[];
+  timeline: Array<{
+    eventId: string;
+    stage: 'ledger_recorded' | 'provider_authorized' | 'provider_captured' | 'provider_webhook_received';
+    status: 'ok' | 'warning';
+    occurredAt: string;
+    metadata: Record<string, string | number | boolean | null>;
+  }>;
+};
+
 type SettlementBulkActionPreviewContractWarning = {
   code: BulkSettlementPreviewWarningCode;
   message: string;
@@ -389,6 +426,56 @@ export class SettlementsService {
         }
         return true;
       }),
+    };
+  }
+
+  listReconciliationDiscrepancies(query: ListReconciliationDiscrepanciesDto): {
+    contract: string;
+    generatedAt: string;
+    total: number;
+    data: ReconciliationDiscrepancyListItem[];
+  } {
+    const records = RECONCILIATION_DISCREPANCY_FIXTURES
+      .filter((row) => {
+        if (query.path === 'empty') {
+          return false;
+        }
+        if (query.path && row.path !== query.path) {
+          return false;
+        }
+        if (query.merchantId && row.merchantId !== query.merchantId) {
+          return false;
+        }
+        if (query.transactionReference && row.transactionReference !== query.transactionReference) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((row) => this.toReconciliationDiscrepancyListItem(row));
+
+    return {
+      contract: `${RECONCILIATION_DISCREPANCY_CONTRACT_VERSION}.list`,
+      generatedAt: RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP,
+      total: records.length,
+      data: records,
+    };
+  }
+
+  getReconciliationDiscrepancy(discrepancyId: string): {
+    contract: string;
+    generatedAt: string;
+    discrepancy: ReconciliationDiscrepancyDetail;
+  } {
+    const fixture = RECONCILIATION_DISCREPANCY_FIXTURES.find((row) => row.id === discrepancyId);
+    if (!fixture) {
+      throw new NotFoundException('Reconciliation discrepancy not found');
+    }
+
+    return {
+      contract: `${RECONCILIATION_DISCREPANCY_CONTRACT_VERSION}.detail`,
+      generatedAt: RECONCILIATION_DISCREPANCY_FIXTURE_TIMESTAMP,
+      discrepancy: this.toReconciliationDiscrepancyDetail(fixture),
     };
   }
 
@@ -1424,6 +1511,80 @@ export class SettlementsService {
         actor: audit.actor,
         createdAt: audit.createdAt.toISOString(),
       })),
+    };
+  }
+
+  private toReconciliationDiscrepancyListItem(
+    fixture: ReconciliationDiscrepancyFixture,
+  ): ReconciliationDiscrepancyListItem {
+    return {
+      id: fixture.id,
+      transactionReference: fixture.transactionReference,
+      merchantId: fixture.merchantId,
+      paymentId: fixture.paymentId,
+      state: fixture.state,
+      path: fixture.path,
+      currency: fixture.currency,
+      ledgerAmount: fixture.ledgerAmount,
+      providerAmount: fixture.providerAmount,
+      deltaAmount: fixture.deltaAmount,
+      captureReference: fixture.captureReference,
+      duplicateEventCount: fixture.duplicateEventCount,
+      providerEventCount: fixture.providerEventCount,
+      observedAt: fixture.observedAt,
+    };
+  }
+
+  private toReconciliationDiscrepancyDetail(
+    fixture: ReconciliationDiscrepancyFixture,
+  ): ReconciliationDiscrepancyDetail {
+    const listItem = this.toReconciliationDiscrepancyListItem(fixture);
+    const timeline: ReconciliationDiscrepancyDetail['timeline'] = [
+      {
+        eventId: `${fixture.id}_evt_ledger`,
+        stage: 'ledger_recorded',
+        status: 'ok',
+        occurredAt: fixture.observedAt,
+        metadata: {
+          amount: fixture.ledgerAmount,
+          currency: fixture.currency,
+        },
+      },
+      {
+        eventId: `${fixture.id}_evt_provider_auth`,
+        stage: 'provider_authorized',
+        status: 'ok',
+        occurredAt: fixture.observedAt,
+        metadata: {
+          providerEventCount: fixture.providerEventCount,
+        },
+      },
+      {
+        eventId: `${fixture.id}_evt_provider_capture`,
+        stage: 'provider_captured',
+        status: fixture.captureReference ? 'ok' : 'warning',
+        occurredAt: fixture.observedAt,
+        metadata: {
+          captureReference: fixture.captureReference,
+          providerAmount: fixture.providerAmount,
+        },
+      },
+      {
+        eventId: `${fixture.id}_evt_webhook`,
+        stage: 'provider_webhook_received',
+        status: fixture.duplicateEventCount > 0 ? 'warning' : 'ok',
+        occurredAt: fixture.observedAt,
+        metadata: {
+          duplicateEventCount: fixture.duplicateEventCount,
+          deltaAmount: fixture.deltaAmount,
+        },
+      },
+    ];
+
+    return {
+      ...listItem,
+      notes: [...fixture.notes],
+      timeline,
     };
   }
 
