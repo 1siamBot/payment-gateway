@@ -1,0 +1,9 @@
+ONE-254 frontend helper verification
+
+Command:
+- npm test -- test/frontend.wave1.spec.ts
+
+Result:
+- PASS test/frontend.wave1.spec.ts
+- Test Suites: 1 passed, 1 total
+- Tests: 59 passed, 59 total
