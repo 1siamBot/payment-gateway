@@ -275,6 +275,47 @@ export type ReviewQueueHandoffPacketValidation = {
   dependentIssueLinks: string[];
 };
 
+export type EvidenceDiffRailFilterKey = 'all' | 'changed' | 'unchanged';
+export type EvidenceDiffRailShortcut =
+  | 'next_row'
+  | 'prev_row'
+  | 'focus_blocker_register'
+  | 'validate_blocker_register';
+
+export type EvidenceDiffRailRow = {
+  id: string;
+  sectionPriority: number;
+  fieldKey: string;
+  currentValue: string;
+  previousValue: string;
+  changed: boolean;
+};
+
+export type EvidenceDiffRail = {
+  contract: 'settlement-evidence-diff-rail.v1';
+  rows: EvidenceDiffRailRow[];
+  changedCount: number;
+  unchangedCount: number;
+  activeRowId: string;
+  activeFilter: EvidenceDiffRailFilterKey;
+};
+
+export type BlockerOwnershipRegisterDraft = {
+  blockerOwner: string;
+  eta: string;
+  dependencyIssueLinksText: string;
+  retryTimestamp: string;
+  note: string;
+};
+
+export type BlockerOwnershipRegisterValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+  serializedDraft: string;
+};
+
 export type IncidentBookmarkSeverity = 'critical' | 'high' | 'medium' | 'low';
 export type IncidentBookmarkFilterKey = 'all' | IncidentBookmarkSeverity;
 
@@ -1697,6 +1738,348 @@ function formatUtcEta(inputIso: string): string {
   }
   const nextDay = new Date(parsed.getTime() + (24 * 60 * 60 * 1000));
   return `${nextDay.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+function normalizeSerializedUnknown(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeSerializedUnknown(entry));
+  }
+  if (value && typeof value === 'object') {
+    const input = value as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(input).sort((left, right) => left.localeCompare(right))) {
+      normalized[key] = normalizeSerializedUnknown(input[key]);
+    }
+    return normalized;
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    return null;
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return value;
+}
+
+function serializeDeterministicUnknown(value: unknown): string {
+  return JSON.stringify(normalizeSerializedUnknown(value));
+}
+
+type EvidencePacketEntry = {
+  id: string;
+  sectionPriority: number;
+  fieldKey: string;
+  value: string;
+};
+
+function normalizeEvidencePacketValue(value: unknown): string {
+  if (value === null || typeof value === 'undefined') {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return serializeDeterministicUnknown(value);
+}
+
+function normalizeEvidencePacketEntries(
+  packet: unknown,
+  source: 'current' | 'previous',
+): EvidencePacketEntry[] {
+  if (!packet || typeof packet !== 'object') {
+    return [];
+  }
+  const entries: EvidencePacketEntry[] = [];
+  if (Array.isArray(packet)) {
+    packet.forEach((raw, index) => {
+      if (!raw || typeof raw !== 'object') {
+        return;
+      }
+      const row = raw as Record<string, unknown>;
+      const fieldKey = normalizeOptional(
+        typeof row.fieldKey === 'string'
+          ? row.fieldKey
+          : typeof row.key === 'string'
+            ? row.key
+            : typeof row.name === 'string'
+              ? row.name
+              : '',
+      );
+      if (!fieldKey) {
+        return;
+      }
+      const id = normalizeOptional(
+        typeof row.id === 'string'
+          ? row.id
+          : typeof row.fieldId === 'string'
+            ? row.fieldId
+            : `${fieldKey}-${String(index + 1).padStart(4, '0')}`,
+      ) ?? `${fieldKey}-${String(index + 1).padStart(4, '0')}`;
+      const sectionPriorityRaw = parseFiniteNumber(row.sectionPriority ?? row.priority);
+      const sectionPriority = sectionPriorityRaw !== null
+        ? Math.max(0, Math.trunc(sectionPriorityRaw))
+        : 999;
+      const preferredValue = source === 'current'
+        ? (row.currentValue ?? row.value)
+        : (row.previousValue ?? row.value);
+      const value = normalizeEvidencePacketValue(preferredValue);
+      entries.push({
+        id,
+        sectionPriority,
+        fieldKey,
+        value,
+      });
+    });
+    return entries;
+  }
+
+  const packetObject = packet as Record<string, unknown>;
+  for (const fieldKey of Object.keys(packetObject).sort((left, right) => left.localeCompare(right))) {
+    const raw = packetObject[fieldKey];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const row = raw as Record<string, unknown>;
+      const id = normalizeOptional(typeof row.id === 'string' ? row.id : fieldKey) ?? fieldKey;
+      const sectionPriorityRaw = parseFiniteNumber(row.sectionPriority ?? row.priority);
+      const sectionPriority = sectionPriorityRaw !== null
+        ? Math.max(0, Math.trunc(sectionPriorityRaw))
+        : 999;
+      const preferredValue = source === 'current'
+        ? (row.currentValue ?? row.value)
+        : (row.previousValue ?? row.value);
+      entries.push({
+        id,
+        sectionPriority,
+        fieldKey,
+        value: normalizeEvidencePacketValue(preferredValue),
+      });
+      continue;
+    }
+    entries.push({
+      id: fieldKey,
+      sectionPriority: 999,
+      fieldKey,
+      value: normalizeEvidencePacketValue(raw),
+    });
+  }
+  return entries;
+}
+
+function buildEvidenceEntryKey(entry: Pick<EvidencePacketEntry, 'sectionPriority' | 'fieldKey' | 'id'>): string {
+  return `${String(entry.sectionPriority).padStart(6, '0')}|${entry.fieldKey}|${entry.id}`;
+}
+
+export function filterEvidenceDiffRailRows(
+  rows: EvidenceDiffRailRow[],
+  filter: EvidenceDiffRailFilterKey,
+): EvidenceDiffRailRow[] {
+  if (filter === 'all') {
+    return [...rows];
+  }
+  const changed = filter === 'changed';
+  return rows.filter((row) => row.changed === changed);
+}
+
+export function buildEvidenceDiffRail(input: {
+  currentPacket: unknown;
+  previousPacket: unknown;
+  activeRowId: string;
+  activeFilter?: EvidenceDiffRailFilterKey;
+}): EvidenceDiffRail {
+  const activeFilter = input.activeFilter ?? 'all';
+  const currentEntries = normalizeEvidencePacketEntries(input.currentPacket, 'current');
+  const previousEntries = normalizeEvidencePacketEntries(input.previousPacket, 'previous');
+  const currentByKey = new Map<string, EvidencePacketEntry>();
+  const previousByKey = new Map<string, EvidencePacketEntry>();
+  for (const entry of currentEntries) {
+    currentByKey.set(buildEvidenceEntryKey(entry), entry);
+  }
+  for (const entry of previousEntries) {
+    previousByKey.set(buildEvidenceEntryKey(entry), entry);
+  }
+  const keys = Array.from(new Set([
+    ...currentByKey.keys(),
+    ...previousByKey.keys(),
+  ])).sort((left, right) => left.localeCompare(right));
+  const rows = keys.map((key): EvidenceDiffRailRow => {
+    const currentEntry = currentByKey.get(key);
+    const previousEntry = previousByKey.get(key);
+    const meta = currentEntry ?? previousEntry ?? {
+      id: '',
+      sectionPriority: 999,
+      fieldKey: '',
+    };
+    const currentValue = currentEntry?.value ?? '';
+    const previousValue = previousEntry?.value ?? '';
+    return {
+      id: meta.id,
+      sectionPriority: meta.sectionPriority,
+      fieldKey: meta.fieldKey,
+      currentValue,
+      previousValue,
+      changed: currentValue !== previousValue,
+    };
+  });
+  const changedCount = rows.filter((row) => row.changed).length;
+  const unchangedCount = rows.length - changedCount;
+  const filteredRows = filterEvidenceDiffRailRows(rows, activeFilter);
+  const rowIdSet = new Set(filteredRows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (filteredRows[0]?.id ?? '');
+
+  return {
+    contract: 'settlement-evidence-diff-rail.v1',
+    rows: filteredRows,
+    changedCount,
+    unchangedCount,
+    activeRowId,
+    activeFilter,
+  };
+}
+
+export function moveEvidenceDiffRailSelection(input: {
+  rows: EvidenceDiffRailRow[];
+  activeRowId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveEvidenceDiffRailShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): EvidenceDiffRailShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'j') {
+    return 'next_row';
+  }
+  if (input.altKey && normalizedKey === 'k') {
+    return 'prev_row';
+  }
+  if (input.shiftKey && normalizedKey === 'b') {
+    return 'focus_blocker_register';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_blocker_register';
+  }
+  return null;
+}
+
+export function getDefaultBlockerOwnershipRegisterDraft(): BlockerOwnershipRegisterDraft {
+  return {
+    blockerOwner: '',
+    eta: '',
+    dependencyIssueLinksText: '',
+    retryTimestamp: '',
+    note: '',
+  };
+}
+
+function normalizeDependencyIssueLinks(input: string): string[] {
+  return Array.from(new Set(normalizeMultilineEntries(input)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function isValidIssueLink(input: string): boolean {
+  return /^\/[A-Z0-9_-]+\/issues\/[A-Z0-9-]+$/i.test(input)
+    || /^https?:\/\/[^ ]+$/i.test(input);
+}
+
+export function serializeBlockerOwnershipRegisterDraft(draft: BlockerOwnershipRegisterDraft): string {
+  const normalized = {
+    blockerOwner: draft.blockerOwner.trim(),
+    eta: draft.eta.trim(),
+    dependencyIssueLinks: normalizeDependencyIssueLinks(draft.dependencyIssueLinksText),
+    retryTimestamp: draft.retryTimestamp.trim(),
+    note: draft.note.trim(),
+  };
+  return serializeDeterministicUnknown(normalized);
+}
+
+export function validateBlockerOwnershipRegisterDraft(
+  draft: BlockerOwnershipRegisterDraft,
+): BlockerOwnershipRegisterValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const blockerOwner = draft.blockerOwner.trim();
+  const eta = draft.eta.trim();
+  const retryTimestamp = draft.retryTimestamp.trim();
+  const dependencyIssueLinks = normalizeDependencyIssueLinks(draft.dependencyIssueLinksText);
+
+  if (!blockerOwner) {
+    missingFields.push('blockerOwner');
+  }
+  if (!eta) {
+    missingFields.push('eta');
+  } else if (!Number.isFinite(new Date(eta).getTime())) {
+    errors.push('ETA must be a valid date-time string.');
+  }
+  if (!retryTimestamp) {
+    missingFields.push('retryTimestamp');
+  } else if (!Number.isFinite(new Date(retryTimestamp).getTime())) {
+    errors.push('Retry timestamp must be a valid date-time string.');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!isValidIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks,
+    serializedDraft: serializeBlockerOwnershipRegisterDraft(draft),
+  };
+}
+
+export function resetBlockerOwnershipRegisterDraftSafe(input: {
+  activeDiffFilter: EvidenceDiffRailFilterKey;
+  activeDiffRowId: string;
+  confirmFullReset: boolean;
+}): {
+  draft: BlockerOwnershipRegisterDraft;
+  activeDiffFilter: EvidenceDiffRailFilterKey;
+  activeDiffRowId: string;
+  didFullReset: boolean;
+  message: string;
+} {
+  if (input.confirmFullReset) {
+    return {
+      draft: getDefaultBlockerOwnershipRegisterDraft(),
+      activeDiffFilter: 'all',
+      activeDiffRowId: '',
+      didFullReset: true,
+      message: 'Blocker register draft cleared. Diff filter and active row reset to default.',
+    };
+  }
+  return {
+    draft: getDefaultBlockerOwnershipRegisterDraft(),
+    activeDiffFilter: input.activeDiffFilter,
+    activeDiffRowId: input.activeDiffRowId,
+    didFullReset: false,
+    message: 'Blocker register draft cleared. Diff filter and active row preserved.',
+  };
 }
 
 export function buildReviewQueueHandoffPacketDraftFromLedgerRow(input: {

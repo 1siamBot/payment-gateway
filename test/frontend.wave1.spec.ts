@@ -72,6 +72,12 @@ import {
   buildReviewQueueHandoffPacketDraftFromLedgerRow,
   validateReviewQueueHandoffPacketDraft,
   resetReviewQueueHandoffPacketDraftSafe,
+  buildEvidenceDiffRail,
+  moveEvidenceDiffRailSelection,
+  resolveEvidenceDiffRailShortcut,
+  validateBlockerOwnershipRegisterDraft,
+  serializeBlockerOwnershipRegisterDraft,
+  resetBlockerOwnershipRegisterDraftSafe,
 } from '../frontend/utils/wave1';
 
 describe('frontend wave1 helpers', () => {
@@ -701,6 +707,125 @@ describe('frontend wave1 helpers', () => {
     expect(full.didFullReset).toBe(true);
     expect(full.activeFilter).toBe('all');
     expect(full.activeRowId).toBe('');
+  });
+
+  it('builds deterministic evidence diff rail ordering by sectionPriority/fieldKey/id', () => {
+    const rail = buildEvidenceDiffRail({
+      currentPacket: [
+        { id: 'row-3', sectionPriority: 3, fieldKey: 'eta', value: '2026-03-21T09:00:00.000Z' },
+        { id: 'row-1', sectionPriority: 1, fieldKey: 'owner', value: 'Platform Team' },
+        { id: 'row-2', sectionPriority: 1, fieldKey: 'dependency', value: '/ONE/issues/ONE-248' },
+      ],
+      previousPacket: [
+        { id: 'row-3', sectionPriority: 3, fieldKey: 'eta', value: '2026-03-20T09:00:00.000Z' },
+        { id: 'row-1', sectionPriority: 1, fieldKey: 'owner', value: 'Platform Team' },
+        { id: 'row-2', sectionPriority: 1, fieldKey: 'dependency', value: '/ONE/issues/ONE-242' },
+      ],
+      activeRowId: '',
+      activeFilter: 'all',
+    });
+
+    expect(rail.contract).toBe('settlement-evidence-diff-rail.v1');
+    expect(rail.rows.map((row) => row.id)).toEqual(['row-2', 'row-1', 'row-3']);
+    expect(rail.changedCount).toBe(2);
+    expect(rail.unchangedCount).toBe(1);
+  });
+
+  it('supports evidence diff keyboard workflow for navigation and blocker register actions', () => {
+    expect(resolveEvidenceDiffRailShortcut({ key: 'j', altKey: true })).toBe('next_row');
+    expect(resolveEvidenceDiffRailShortcut({ key: 'k', altKey: true })).toBe('prev_row');
+    expect(resolveEvidenceDiffRailShortcut({ key: 'B', shiftKey: true })).toBe('focus_blocker_register');
+    expect(resolveEvidenceDiffRailShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_blocker_register');
+
+    const rail = buildEvidenceDiffRail({
+      currentPacket: [
+        { id: 'row-1', sectionPriority: 1, fieldKey: 'owner', value: 'Ops' },
+        { id: 'row-2', sectionPriority: 2, fieldKey: 'eta', value: '2026-03-21T09:00:00.000Z' },
+      ],
+      previousPacket: [
+        { id: 'row-1', sectionPriority: 1, fieldKey: 'owner', value: 'Ops' },
+        { id: 'row-2', sectionPriority: 2, fieldKey: 'eta', value: '2026-03-20T09:00:00.000Z' },
+      ],
+      activeRowId: 'row-1',
+      activeFilter: 'all',
+    });
+    expect(moveEvidenceDiffRailSelection({
+      rows: rail.rows,
+      activeRowId: 'row-1',
+      direction: 'next',
+    })).toBe('row-2');
+    expect(moveEvidenceDiffRailSelection({
+      rows: rail.rows,
+      activeRowId: 'row-2',
+      direction: 'prev',
+    })).toBe('row-1');
+  });
+
+  it('validates blocker register required fields and preserves diff state on safe reset', () => {
+    const incomplete = validateBlockerOwnershipRegisterDraft({
+      blockerOwner: '',
+      eta: '',
+      dependencyIssueLinksText: '',
+      retryTimestamp: '',
+      note: 'Follow up after publish credential restore.',
+    });
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.missingFields).toEqual([
+      'blockerOwner',
+      'eta',
+      'retryTimestamp',
+      'dependencyIssueLinks',
+    ]);
+
+    const complete = validateBlockerOwnershipRegisterDraft({
+      blockerOwner: 'GitHub Admin / DevOps',
+      eta: '2026-03-20T18:00:00.000Z',
+      dependencyIssueLinksText: '/ONE/issues/ONE-248\n/ONE/issues/ONE-241',
+      retryTimestamp: '2026-03-20T17:30:00.000Z',
+      note: 'Credentials pending rotation.',
+    });
+    expect(complete.isComplete).toBe(true);
+    expect(complete.errors).toEqual([]);
+    expect(complete.dependencyIssueLinks).toEqual(['/ONE/issues/ONE-241', '/ONE/issues/ONE-248']);
+
+    const serializedFirst = serializeBlockerOwnershipRegisterDraft({
+      blockerOwner: 'GitHub Admin / DevOps',
+      eta: '2026-03-20T18:00:00.000Z',
+      dependencyIssueLinksText: '/ONE/issues/ONE-248\n/ONE/issues/ONE-241',
+      retryTimestamp: '2026-03-20T17:30:00.000Z',
+      note: 'Credentials pending rotation.',
+    });
+    const serializedSecond = serializeBlockerOwnershipRegisterDraft({
+      blockerOwner: 'GitHub Admin / DevOps',
+      eta: '2026-03-20T18:00:00.000Z',
+      dependencyIssueLinksText: '/ONE/issues/ONE-241\n/ONE/issues/ONE-248',
+      retryTimestamp: '2026-03-20T17:30:00.000Z',
+      note: 'Credentials pending rotation.',
+    });
+    expect(serializedFirst).toBe(serializedSecond);
+
+    const safeReset = resetBlockerOwnershipRegisterDraftSafe({
+      activeDiffFilter: 'changed',
+      activeDiffRowId: 'row-2',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.activeDiffFilter).toBe('changed');
+    expect(safeReset.activeDiffRowId).toBe('row-2');
+    expect(safeReset.message).toContain('preserved');
+
+    const fullReset = resetBlockerOwnershipRegisterDraftSafe({
+      activeDiffFilter: 'changed',
+      activeDiffRowId: 'row-2',
+      confirmFullReset: true,
+    });
+    expect(fullReset.didFullReset).toBe(true);
+    expect(fullReset.activeDiffFilter).toBe('all');
+    expect(fullReset.activeDiffRowId).toBe('');
   });
 
   it('builds deterministic bookmark shelf ordering by severity, updatedAt, and id', () => {

@@ -1,0 +1,7 @@
+Issue: ONE-250
+Date: 2026-03-19
+Command: npm test -- test/frontend.wave1.spec.ts
+Result: PASS (1 suite, 56 tests)
+Updated files:
+- frontend/utils/wave1.ts
+- test/frontend.wave1.spec.ts
