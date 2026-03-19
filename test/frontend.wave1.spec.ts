@@ -106,6 +106,9 @@ import {
   buildReleaseGateVerdictExplorer,
   buildReleaseGateRemediationActionMatrix,
   buildReleaseGateCanonicalAutofixPreview,
+  buildRemediationPlanExplorer,
+  buildRemediationExecutionChecklistComposer,
+  buildRemediationPlanCanonicalAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -130,6 +133,7 @@ import {
   moveOfflinePublicationEvidenceLaneSelection,
   moveRemediationQueueSelection,
   moveReleaseGateVerdictSelection,
+  moveRemediationPlanSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -145,6 +149,7 @@ import {
   resolveOfflinePublicationEvidenceShortcut,
   resolveRemediationQueueShortcut,
   resolveReleaseGateVerdictShortcut,
+  resolveRemediationPlanShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -4449,5 +4454,190 @@ describe('frontend wave1 helpers', () => {
       activeVerdictId: 'gate-1',
       direction: 'next_verdict',
     })).toBe('gate-2');
+  });
+
+  it('builds remediation plan explorer in deterministic section/order tuple order', () => {
+    const first = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'plan-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-c',
+          requiredActions: ['validate deterministic export'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 2,
+          planFingerprint: 'fingerprint-a',
+          requiredActions: ['align contract shape'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-b',
+          requiredActions: ['prepare QA evidence'],
+          owner: 'qa',
+        },
+      ],
+      activePlanItemId: '',
+    });
+    const second = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'plan-b',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-b',
+          requiredActions: ['prepare QA evidence'],
+          owner: 'qa',
+        },
+        {
+          id: 'plan-c',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'fingerprint-c',
+          requiredActions: ['validate deterministic export'],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'plan-a',
+          issueIdentifier: 'ONE-338',
+          sectionKey: 'contract_alignment',
+          sectionWeight: 1,
+          itemOrder: 2,
+          planFingerprint: 'fingerprint-a',
+          requiredActions: ['align contract shape'],
+          owner: 'frontend engineer',
+        },
+      ],
+      activePlanItemId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-plan-explorer.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['plan-b', 'plan-a', 'plan-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 'contract_alignment', 1, 'ONE-339', 'fingerprint-b']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('builds execution checklist machine fields with stable readiness behavior', () => {
+    const explorer = buildRemediationPlanExplorer({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-340',
+          sectionKey: 'execution',
+          sectionWeight: 1,
+          itemOrder: 1,
+          planFingerprint: 'one340-fingerprint',
+          requiredActions: ['confirm output tuple'],
+          blockedDependencies: [],
+          evidenceGaps: [],
+          owner: 'frontend engineer',
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-339',
+          sectionKey: 'qa_handoff',
+          sectionWeight: 2,
+          itemOrder: 1,
+          planFingerprint: 'one339-fingerprint',
+          requiredActions: ['attach QA packet'],
+          blockedDependencies: ['ONE-286 credential unblock'],
+          evidenceGaps: ['qa_signoff'],
+          owner: 'qa',
+        },
+      ],
+      activePlanItemId: '',
+    });
+    const checklist = buildRemediationExecutionChecklistComposer({ rows: explorer.rows });
+
+    expect(explorer.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      planFingerprint: 'one340-fingerprint',
+      requiredActions: ['confirm output tuple'],
+      blockedDependencies: [],
+      evidenceGaps: [],
+      owner: 'frontend engineer',
+      readyForQA: true,
+    });
+    expect(explorer.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      planFingerprint: 'one339-fingerprint',
+      requiredActions: ['attach QA packet'],
+      blockedDependencies: ['ONE-286 credential unblock'],
+      evidenceGaps: ['qa_signoff'],
+      owner: 'qa',
+      readyForQA: false,
+    });
+    expect(checklist.contract).toBe('settlement-remediation-execution-checklist-composer.v1');
+    expect(checklist.markdown).toContain('/ONE/issues/ONE-340');
+    expect(checklist.markdown).toContain('ONE-286 credential unblock');
+    expect(JSON.stringify(checklist)).toBe(JSON.stringify(buildRemediationExecutionChecklistComposer({ rows: explorer.rows })));
+  });
+
+  it('builds remediation plan canonical autofix preview and shortcut workflow deterministically', () => {
+    const preview = buildRemediationPlanCanonicalAutofixPreview({
+      markdown: [
+        '- parent issue: /issues/ONE-340',
+        '- plan doc: /ONE/issues/ONE-339#document-plan',
+        '- comment: https://paperclip.dev/issues/ONE-338#comment-9',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-remediation-plan-canonical-autofix-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-340',
+      '/ONE/issues/ONE-339#document-plan',
+      '/ONE/issues/ONE-338#comment-9',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-340');
+    expect(resolveRemediationPlanShortcut({ key: 'r', altKey: true })).toBe('focus_plan_explorer');
+    expect(resolveRemediationPlanShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_plan_item');
+    expect(resolveRemediationPlanShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_plan_item');
+    expect(resolveRemediationPlanShortcut({ key: 'k', ctrlKey: true, shiftKey: true })).toBe('open_checklist_composer');
+    expect(resolveRemediationPlanShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveRemediationPlanSelection({
+      rows: buildRemediationPlanExplorer({
+        rows: [
+          {
+            id: 'plan-1',
+            issueIdentifier: 'ONE-340',
+            sectionKey: 'execution',
+            sectionWeight: 1,
+            itemOrder: 1,
+            requiredActions: ['a'],
+            owner: 'frontend engineer',
+          },
+          {
+            id: 'plan-2',
+            issueIdentifier: 'ONE-339',
+            sectionKey: 'qa_handoff',
+            sectionWeight: 2,
+            itemOrder: 1,
+            requiredActions: ['b'],
+            owner: 'qa',
+          },
+        ],
+        activePlanItemId: '',
+      }).rows,
+      activePlanItemId: 'plan-1',
+      direction: 'next_plan_item',
+    })).toBe('plan-2');
   });
 });

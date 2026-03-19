@@ -627,6 +627,62 @@ export type ReleaseGateCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type RemediationPlanShortcut =
+  | 'focus_plan_explorer'
+  | 'next_plan_item'
+  | 'prev_plan_item'
+  | 'open_checklist_composer'
+  | 'run_deterministic_validation_pass';
+
+export type RemediationPlanExplorerMachineFields = {
+  planFingerprint: string;
+  requiredActions: string[];
+  blockedDependencies: string[];
+  evidenceGaps: string[];
+  owner: string;
+  readyForQA: boolean;
+};
+
+export type RemediationPlanExplorerRow = {
+  id: string;
+  issueIdentifier: string;
+  sectionKey: string;
+  sectionWeight: number;
+  itemOrder: number;
+  title: string;
+  orderingKey: [number, string, number, string, string];
+  machineFields: RemediationPlanExplorerMachineFields;
+};
+
+export type RemediationPlanExplorer = {
+  contract: 'settlement-remediation-plan-explorer.v1';
+  rows: RemediationPlanExplorerRow[];
+  activePlanItemId: string;
+  readyForQaCount: number;
+  blockedCount: number;
+};
+
+export type RemediationExecutionChecklistComposer = {
+  contract: 'settlement-remediation-execution-checklist-composer.v1';
+  items: Array<{
+    id: string;
+    issueIdentifier: string;
+    sectionKey: string;
+    orderingKey: [number, string, number, string, string];
+    machineFields: RemediationPlanExplorerMachineFields;
+  }>;
+  markdown: string;
+};
+
+export type RemediationPlanCanonicalAutofixPreview = {
+  contract: 'settlement-remediation-plan-canonical-autofix-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -4714,6 +4770,249 @@ export function buildReleaseGateCanonicalAutofixPreview(input: {
   const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
   return {
     contract: 'settlement-release-gate-canonical-autofix-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
+  };
+}
+
+function normalizeRemediationPlanIdentifier(raw: unknown, fallbackIndex: number): string {
+  if (typeof raw === 'string') {
+    const value = raw.trim().toUpperCase();
+    if (/^[A-Z0-9]+-\d+$/.test(value)) {
+      return value;
+    }
+  }
+  return `ONE-${1300 + fallbackIndex}`;
+}
+
+function normalizeRemediationPlanWeight(raw: unknown, fallback: number): number {
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  return fallback;
+}
+
+function parseRemediationPlanExplorerRow(row: unknown, index: number): RemediationPlanExplorerRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizeRemediationPlanIdentifier(payload.issueIdentifier, index);
+  const id = normalizeOptional(typeof payload.id === 'string' ? payload.id : '') ?? `remediation-plan-${index + 1}`;
+  const sectionKey = normalizeOptional(typeof payload.sectionKey === 'string' ? payload.sectionKey : '') ?? 'general';
+  const sectionWeight = normalizeRemediationPlanWeight(payload.sectionWeight, 5);
+  const itemOrder = Math.max(1, Math.floor(normalizeRemediationPlanWeight(payload.itemOrder, index + 1)));
+  const title = normalizeOptional(typeof payload.title === 'string' ? payload.title : '')
+    ?? `${issueIdentifier} remediation plan item`;
+  const owner = normalizeOptional(typeof payload.owner === 'string' ? payload.owner : '') ?? 'unassigned';
+  const planFingerprint = normalizeOptional(typeof payload.planFingerprint === 'string' ? payload.planFingerprint : '')
+    ?? `${issueIdentifier.toLowerCase()}-${sectionKey}-${itemOrder}`;
+
+  const requiredActions = Array.from(
+    new Set(
+      (Array.isArray(payload.requiredActions) ? payload.requiredActions : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const blockedDependencies = Array.from(
+    new Set(
+      (Array.isArray(payload.blockedDependencies) ? payload.blockedDependencies : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const evidenceGaps = Array.from(
+    new Set(
+      (Array.isArray(payload.evidenceGaps) ? payload.evidenceGaps : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+
+  return {
+    id,
+    issueIdentifier,
+    sectionKey,
+    sectionWeight,
+    itemOrder,
+    title,
+    orderingKey: [sectionWeight, sectionKey, itemOrder, issueIdentifier, planFingerprint],
+    machineFields: {
+      planFingerprint,
+      requiredActions,
+      blockedDependencies,
+      evidenceGaps,
+      owner,
+      readyForQA: requiredActions.length > 0
+        && blockedDependencies.length === 0
+        && evidenceGaps.length === 0
+        && owner !== 'unassigned',
+    },
+  };
+}
+
+export function buildRemediationPlanExplorer(input: {
+  rows: unknown[];
+  activePlanItemId: string;
+}): RemediationPlanExplorer {
+  const rows = input.rows
+    .map((row, index) => parseRemediationPlanExplorerRow(row, index))
+    .filter((row): row is RemediationPlanExplorerRow => Boolean(row))
+    .sort((left, right) => (
+      left.sectionWeight - right.sectionWeight
+      || left.sectionKey.localeCompare(right.sectionKey)
+      || left.itemOrder - right.itemOrder
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.machineFields.planFingerprint.localeCompare(right.machineFields.planFingerprint)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activePlanItemId = rowIds.has(input.activePlanItemId)
+    ? input.activePlanItemId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-plan-explorer.v1',
+    rows,
+    activePlanItemId,
+    readyForQaCount: rows.filter((row) => row.machineFields.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForQA).length,
+  };
+}
+
+export function moveRemediationPlanSelection(input: {
+  rows: RemediationPlanExplorerRow[];
+  activePlanItemId: string;
+  direction: 'next_plan_item' | 'prev_plan_item';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activePlanItemId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_plan_item') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationPlanShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationPlanShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'r') {
+    return 'focus_plan_explorer';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_plan_item';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_plan_item';
+  }
+  if (normalizedKey === 'k' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_checklist_composer';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_validation_pass';
+  }
+  return null;
+}
+
+function buildRemediationExecutionChecklistMarkdown(rows: RemediationPlanExplorerRow[]): string {
+  const lines = [
+    '# Remediation Execution Checklist',
+    '',
+    '| Issue | sectionKey | planFingerprint | requiredActions[] | blockedDependencies[] | evidenceGaps[] | owner | readyForQA |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.sectionKey,
+      '|',
+      row.machineFields.planFingerprint,
+      '|',
+      row.machineFields.requiredActions.join(', ') || 'none',
+      '|',
+      row.machineFields.blockedDependencies.join(', ') || 'none',
+      '|',
+      row.machineFields.evidenceGaps.join(', ') || 'none',
+      '|',
+      row.machineFields.owner,
+      '|',
+      row.machineFields.readyForQA ? 'yes' : 'no',
+      '|',
+    ].join(' '));
+  }
+  return lines.join('\n');
+}
+
+export function buildRemediationExecutionChecklistComposer(input: {
+  rows: RemediationPlanExplorerRow[];
+}): RemediationExecutionChecklistComposer {
+  const items = input.rows.map((row) => ({
+    id: row.id,
+    issueIdentifier: row.issueIdentifier,
+    sectionKey: row.sectionKey,
+    orderingKey: [...row.orderingKey] as [number, string, number, string, string],
+    machineFields: {
+      planFingerprint: row.machineFields.planFingerprint,
+      requiredActions: [...row.machineFields.requiredActions],
+      blockedDependencies: [...row.machineFields.blockedDependencies],
+      evidenceGaps: [...row.machineFields.evidenceGaps],
+      owner: row.machineFields.owner,
+      readyForQA: row.machineFields.readyForQA,
+    },
+  }));
+  return {
+    contract: 'settlement-remediation-execution-checklist-composer.v1',
+    items,
+    markdown: buildRemediationExecutionChecklistMarkdown(input.rows),
+  };
+}
+
+export function buildRemediationPlanCanonicalAutofixPreview(input: {
+  markdown: string;
+}): RemediationPlanCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `remediation-plan-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-remediation-plan-canonical-autofix-preview.v1',
     rows,
     patchedMarkdown,
     changedCount,
