@@ -89,6 +89,7 @@ import {
   buildRemediationRunbookTimelineBoard,
   buildBlockerAwareDispatchCockpit,
   buildReleaseReadinessSimulator,
+  buildPublicationWindowPlanBoard,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
   filterReplayDiffInspectorRows,
@@ -99,6 +100,7 @@ import {
   moveReplayDiffInspectorSelection,
   moveDispatchCockpitSelection,
   moveReleaseReadinessLaneSelection,
+  movePublicationWindowLaneSelection,
   moveRemediationRunbookTimelineSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
@@ -108,6 +110,8 @@ import {
   resolveReplayDiffInspectorShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
+  resolvePublicationWindowPlanShortcut,
+  resolvePublicationWindowScoreBandFromFinalScore,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   getDefaultDispatchEvidenceDraft,
@@ -1368,6 +1372,108 @@ describe('frontend wave1 helpers', () => {
     });
     const requiredBadges = badges.filter((badge) => badge.required);
     expect(requiredBadges.every((badge) => badge.complete)).toBe(true);
+  });
+
+  it('builds publication-window board rows in deterministic tuple order', () => {
+    const board = buildPublicationWindowPlanBoard({
+      rows: [
+        {
+          id: 'lane-z',
+          issueIdentifier: 'ONE-272',
+          bundleCode: 'bundle-c',
+          windowPriorityWeight: 2,
+          blockerRisk: 50,
+          etaDriftMinutes: 30,
+          releaseBundleScore: { completenessScore: 90, blockerDriftPenalty: 10, dependencyRiskPenalty: 0, finalScore: 80 },
+          dependencyGates: [],
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-270',
+          bundleCode: 'bundle-a',
+          windowPriorityWeight: 1,
+          blockerRisk: 40,
+          etaDriftMinutes: 20,
+          releaseBundleScore: { completenessScore: 96, blockerDriftPenalty: 6, dependencyRiskPenalty: 0, finalScore: 90 },
+          dependencyGates: [],
+        },
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-271',
+          bundleCode: 'bundle-b',
+          windowPriorityWeight: 1,
+          blockerRisk: 40,
+          etaDriftMinutes: 25,
+          releaseBundleScore: { completenessScore: 84, blockerDriftPenalty: 9, dependencyRiskPenalty: 0, finalScore: 75 },
+          dependencyGates: [],
+        },
+      ],
+      activeLaneId: '',
+    });
+    expect(board.contract).toBe('settlement-publication-window-plan-board.v1');
+    expect(board.rows.map((row) => row.id)).toEqual(['lane-a', 'lane-b', 'lane-z']);
+    expect(board.scoreBandCounts.ready_now).toBe(1);
+    expect(board.scoreBandCounts.ready_soon).toBe(2);
+    expect(board.scoreBandCounts.hold).toBe(0);
+  });
+
+  it('resolves publication score-band boundaries and keyboard shortcuts', () => {
+    expect(resolvePublicationWindowScoreBandFromFinalScore(85)).toBe('ready_now');
+    expect(resolvePublicationWindowScoreBandFromFinalScore(84)).toBe('ready_soon');
+    expect(resolvePublicationWindowScoreBandFromFinalScore(60)).toBe('ready_soon');
+    expect(resolvePublicationWindowScoreBandFromFinalScore(59)).toBe('hold');
+    expect(resolvePublicationWindowPlanShortcut({ key: 'w', altKey: true })).toBe('focus_publication_window_board');
+    expect(resolvePublicationWindowPlanShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_lane');
+    expect(resolvePublicationWindowPlanShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_lane');
+    expect(resolvePublicationWindowPlanShortcut({ key: 'e', ctrlKey: true, shiftKey: true })).toBe('open_score_explainer');
+    expect(resolvePublicationWindowPlanShortcut({ key: 'g', ctrlKey: true, shiftKey: true })).toBe('open_dependency_gates');
+  });
+
+  it('normalizes and validates dependency-gate links for publication-window rows', () => {
+    const board = buildPublicationWindowPlanBoard({
+      rows: [
+        {
+          id: 'lane-links',
+          issueIdentifier: 'ONE-272',
+          bundleCode: 'bundle-links',
+          windowPriorityWeight: 1,
+          blockerRisk: 35,
+          etaDriftMinutes: 10,
+          releaseBundleScore: { completenessScore: 92, blockerDriftPenalty: 2, dependencyRiskPenalty: 0, finalScore: 90 },
+          dependencyGates: [
+            {
+              issueIdentifier: 'ONE-241',
+              status: 'unresolved',
+              unresolvedReason: 'Awaiting QA sign-off.',
+              issueLink: '/issues/ONE-241',
+              documentLink: '/issues/ONE-241#document-plan',
+              commentLink: '/issues/ONE-241#comment-123',
+            },
+            {
+              issueIdentifier: 'ONE-999',
+              status: 'resolved',
+              issueLink: 'not-a-link',
+              documentLink: '/issues/not-valid',
+              commentLink: '',
+            },
+          ],
+        },
+      ],
+      activeLaneId: '',
+    });
+
+    const lane = board.rows[0];
+    expect(lane.dependencyGates[0].issueLink).toBe('/ONE/issues/ONE-241');
+    expect(lane.dependencyGates[0].documentLink).toBe('/ONE/issues/ONE-241#document-plan');
+    expect(lane.dependencyGates[0].commentLink).toBe('/ONE/issues/ONE-241#comment-123');
+    expect(lane.dependencyGates[0].linksValid).toBe(true);
+    expect(lane.dependencyGates[1].linksValid).toBe(false);
+    expect(lane.dependencyGateErrors.length).toBe(1);
+    expect(movePublicationWindowLaneSelection({
+      rows: board.rows,
+      activeLaneId: '',
+      direction: 'next_lane',
+    })).toBe('lane-links');
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {

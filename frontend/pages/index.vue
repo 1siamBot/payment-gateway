@@ -64,6 +64,7 @@ import {
   resolveReviewQueueLedgerShortcut,
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
+  resolvePublicationWindowPlanShortcut,
   resolveEvidencePacketLintShortcut,
   resolveManifestDiffShortcut,
   resolveAnomalyTriageShortcut,
@@ -86,12 +87,14 @@ import {
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
   buildReleaseReadinessSimulator,
+  buildPublicationWindowPlanBoard,
   buildReleaseReadinessEvidenceBadges,
   classifyBlockerEtaDrift,
   moveEvidencePacketLintSelection,
   moveManifestDiffSelection,
   moveEvidenceTimelineHeatmapSelection,
   moveRemediationRunbookTimelineSelection,
+  movePublicationWindowLaneSelection,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
@@ -583,12 +586,19 @@ const releaseReadinessState = reactive({
   message: '',
   error: '',
 });
+const publicationWindowState = reactive({
+  message: '',
+  error: '',
+});
 const activeReleaseReadinessLaneId = ref('');
+const activePublicationWindowLaneId = ref('');
 const releaseReadinessSnapshots = ref<Array<{
   laneId: string;
   issueIdentifier: string;
   savedAt: string;
 }>>([]);
+const publicationWindowScoreExplainerOpen = ref(false);
+const publicationWindowDependencyGatesOpen = ref(false);
 const activeDispatchCockpitRowId = ref('');
 const dispatchDraftBank = ref<Array<ReturnType<typeof getDefaultDispatchEvidenceDraft>>>([]);
 const dispatchDraft = ref(getDefaultDispatchEvidenceDraft({
@@ -619,6 +629,7 @@ const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
 const dispatchCockpitPanelRef = ref<HTMLElement | null>(null);
 const releaseReadinessPanelRef = ref<HTMLElement | null>(null);
+const publicationWindowPanelRef = ref<HTMLElement | null>(null);
 const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
@@ -773,6 +784,40 @@ const releaseReadinessSimulator = computed(() => buildReleaseReadinessSimulator(
   lanes: releaseReadinessSourceLanes.value,
   activeLaneId: activeReleaseReadinessLaneId.value,
 }));
+const publicationWindowSourceRows = computed(() => releaseReadinessSimulator.value.rows.map((lane, index) => {
+  const prefix = lane.issueIdentifier.split('-')[0] ?? 'ONE';
+  return {
+    id: `pub-window-${lane.id}`,
+    issueIdentifier: lane.issueIdentifier,
+    bundleCode: `bundle-${String(index + 1).padStart(2, '0')}`,
+    windowPriorityWeight: index + 1,
+    blockerRisk: lane.blockerRisk,
+    etaDriftMinutes: lane.etaDriftMinutes,
+    releaseBundleScore: {
+      completenessScore: lane.readinessScore,
+      blockerDriftPenalty: Math.min(40, Math.round(Math.max(0, lane.etaDriftMinutes) / 15)),
+      dependencyRiskPenalty: index % 3 === 0 ? 0 : index % 3 === 1 ? 15 : 30,
+      finalScore: Math.max(0, Math.min(100, lane.readinessScore - (index % 3 === 0 ? 0 : index % 3 === 1 ? 15 : 30))),
+      scoreBand: index % 3 === 0 ? 'ready_now' : index % 3 === 1 ? 'ready_soon' : 'hold',
+    },
+    dependencyGates: [
+      {
+        issueIdentifier: `ONE-${241 + (index % 4)}`,
+        status: index % 2 === 0 ? 'resolved' : 'unresolved',
+        unresolvedReason: index % 2 === 0 ? '' : 'Awaiting upstream QA evidence sign-off.',
+        issueLink: `/${prefix}/issues/ONE-${241 + (index % 4)}`,
+        documentLink: `/${prefix}/issues/ONE-${241 + (index % 4)}#document-plan`,
+        commentLink: index % 2 === 0 ? '' : `/${prefix}/issues/ONE-${241 + (index % 4)}#comment-${100 + index}`,
+      },
+    ],
+  };
+}));
+const publicationWindowPlanBoard = computed(() => buildPublicationWindowPlanBoard({
+  rows: publicationWindowSourceRows.value,
+  activeLaneId: activePublicationWindowLaneId.value,
+}));
+const activePublicationWindowLane = computed(() => publicationWindowPlanBoard.value.rows
+  .find((lane) => lane.id === activePublicationWindowLaneId.value) ?? null);
 const activeReleaseReadinessLane = computed(() => releaseReadinessSimulator.value.rows
   .find((row) => row.id === activeReleaseReadinessLaneId.value) ?? null);
 const activeDispatchCockpitRow = computed(() => dispatchCockpit.value.rows
@@ -1421,6 +1466,7 @@ onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
   window.addEventListener('keydown', onDispatchCockpitKeydown);
+  window.addEventListener('keydown', onPublicationWindowKeydown);
   window.addEventListener('keydown', onManifestDiffKeydown);
   window.addEventListener('keydown', onAnomalyTriageKeydown);
 });
@@ -1428,6 +1474,7 @@ onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
   window.removeEventListener('keydown', onDispatchCockpitKeydown);
+  window.removeEventListener('keydown', onPublicationWindowKeydown);
   window.removeEventListener('keydown', onManifestDiffKeydown);
   window.removeEventListener('keydown', onAnomalyTriageKeydown);
 });
@@ -1807,6 +1854,11 @@ function resetReleaseReadinessState() {
   releaseReadinessState.error = '';
 }
 
+function resetPublicationWindowState() {
+  publicationWindowState.message = '';
+  publicationWindowState.error = '';
+}
+
 function resetReviewQueueHandoffValidation() {
   reviewQueueHandoffValidation.message = '';
   reviewQueueHandoffValidation.error = '';
@@ -1930,6 +1982,18 @@ watch(releaseReadinessSimulator, (simulator) => {
   }
 }, { deep: true, immediate: true });
 
+watch(publicationWindowPlanBoard, (board) => {
+  if (!board.rows.length) {
+    activePublicationWindowLaneId.value = '';
+    publicationWindowScoreExplainerOpen.value = false;
+    publicationWindowDependencyGatesOpen.value = false;
+    return;
+  }
+  if (!board.rows.some((row) => row.id === activePublicationWindowLaneId.value)) {
+    activePublicationWindowLaneId.value = board.activeLaneId;
+  }
+}, { deep: true, immediate: true });
+
 watch(evidencePacketLintConsole, (consoleData) => {
   if (!consoleData.rows.length) {
     activeEvidencePacketLintFindingId.value = '';
@@ -2011,9 +2075,19 @@ function setActiveReleaseReadinessLane(laneId: string) {
   activeReleaseReadinessLaneId.value = laneId;
 }
 
+function setActivePublicationWindowLane(laneId: string) {
+  resetPublicationWindowState();
+  activePublicationWindowLaneId.value = laneId;
+}
+
 function focusReleaseReadinessSimulator() {
   releaseReadinessPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   releaseReadinessPanelRef.value?.focus();
+}
+
+function focusPublicationWindowPlanBoard() {
+  publicationWindowPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  publicationWindowPanelRef.value?.focus();
 }
 
 function saveReleaseReadinessSnapshot() {
@@ -3209,6 +3283,46 @@ function onAnomalyTriageKeydown(event: KeyboardEvent) {
     return;
   }
   validateActiveRemediationPlaybook();
+}
+
+function onPublicationWindowKeydown(event: KeyboardEvent) {
+  const shortcut = resolvePublicationWindowPlanShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'open_score_explainer'
+    && shortcut !== 'open_dependency_gates') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_publication_window_board') {
+    focusPublicationWindowPlanBoard();
+    return;
+  }
+  if (shortcut === 'next_lane' || shortcut === 'prev_lane') {
+    const nextLaneId = movePublicationWindowLaneSelection({
+      rows: publicationWindowPlanBoard.value.rows,
+      activeLaneId: activePublicationWindowLaneId.value,
+      direction: shortcut,
+    });
+    setActivePublicationWindowLane(nextLaneId);
+    return;
+  }
+  if (shortcut === 'open_score_explainer') {
+    publicationWindowScoreExplainerOpen.value = true;
+    publicationWindowState.message = 'Release-bundle score explainer opened for active lane.';
+    return;
+  }
+  publicationWindowDependencyGatesOpen.value = true;
+  publicationWindowState.message = 'Dependency-gate panel opened for active lane.';
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
@@ -5077,6 +5191,130 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="publicationWindowPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onPublicationWindowKeydown"
+            >
+              <h4>Publication-Window Plan Board</h4>
+              <p class="state" :class="{ error: publicationWindowState.error }">
+                {{ publicationWindowState.error
+                  || publicationWindowState.message
+                  || 'Deterministic order: windowPriorityWeight, blockerRisk, etaDriftMinutes, issueIdentifier, bundleCode. Keyboard: Alt+W focus, Alt+Shift+J next lane, Alt+Shift+K previous lane, Ctrl+Shift+E open score explainer, Ctrl+Shift+G open dependency gates.' }}
+              </p>
+              <p class="state">
+                Lanes: {{ publicationWindowPlanBoard.rows.length }}
+                | Ready now: {{ publicationWindowPlanBoard.scoreBandCounts.ready_now }}
+                | Ready soon: {{ publicationWindowPlanBoard.scoreBandCounts.ready_soon }}
+                | Hold: {{ publicationWindowPlanBoard.scoreBandCounts.hold }}
+              </p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Issue</th>
+                      <th>Bundle</th>
+                      <th>Window Priority</th>
+                      <th>Blocker Risk</th>
+                      <th>ETA Drift</th>
+                      <th>Final Score</th>
+                      <th>Score Band</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!publicationWindowPlanBoard.rows.length">
+                      <td colspan="7">No publication-window rows available.</td>
+                    </tr>
+                    <tr
+                      v-for="row in publicationWindowPlanBoard.rows"
+                      :key="`publication-window-${row.id}`"
+                      :class="{ 'queue-row-active': activePublicationWindowLaneId === row.id }"
+                      @click="setActivePublicationWindowLane(row.id)"
+                    >
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.bundleCode }}</td>
+                      <td>{{ row.windowPriorityWeight }}</td>
+                      <td>{{ row.blockerRisk }}</td>
+                      <td>{{ row.etaDriftMinutes }}m</td>
+                      <td>{{ row.releaseBundleScore.finalScore }}</td>
+                      <td>{{ row.releaseBundleScore.scoreBandLabel }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="publicationWindowScoreExplainerOpen = true">
+                  Open Score Explainer
+                </button>
+                <button type="button" class="link" @click="publicationWindowDependencyGatesOpen = true">
+                  Open Dependency Gates
+                </button>
+              </div>
+              <div v-if="publicationWindowScoreExplainerOpen && activePublicationWindowLane">
+                <h5>Release-Bundle Score Explainer</h5>
+                <div class="triage-grid">
+                  <label>
+                    Completeness Score
+                    <input :value="activePublicationWindowLane.releaseBundleScore.completenessScore" readonly />
+                  </label>
+                  <label>
+                    Blocker Drift Penalty
+                    <input :value="activePublicationWindowLane.releaseBundleScore.blockerDriftPenalty" readonly />
+                  </label>
+                  <label>
+                    Dependency Risk Penalty
+                    <input :value="activePublicationWindowLane.releaseBundleScore.dependencyRiskPenalty" readonly />
+                  </label>
+                  <label>
+                    Final Score
+                    <input :value="activePublicationWindowLane.releaseBundleScore.finalScore" readonly />
+                  </label>
+                  <label>
+                    Score Band
+                    <input :value="activePublicationWindowLane.releaseBundleScore.scoreBandLabel" readonly />
+                  </label>
+                </div>
+              </div>
+              <div v-if="publicationWindowDependencyGatesOpen && activePublicationWindowLane">
+                <h5>Dependency Gates</h5>
+                <p class="state" v-if="activePublicationWindowLane.dependencyGateErrors.length">
+                  {{ activePublicationWindowLane.dependencyGateErrors.join(' | ') }}
+                </p>
+                <div class="queue-table-wrap">
+                  <table class="queue-table">
+                    <thead>
+                      <tr>
+                        <th>Dependency</th>
+                        <th>Status</th>
+                        <th>Unresolved Reason</th>
+                        <th>Issue</th>
+                        <th>Document</th>
+                        <th>Comment</th>
+                        <th>Canonical</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-if="!activePublicationWindowLane.dependencyGates.length">
+                        <td colspan="7">No dependency gates for active lane.</td>
+                      </tr>
+                      <tr
+                        v-for="gate in activePublicationWindowLane.dependencyGates"
+                        :key="`publication-dependency-${gate.id}`"
+                      >
+                        <td>{{ gate.issueIdentifier }}</td>
+                        <td>{{ gate.status }}</td>
+                        <td>{{ gate.unresolvedReason || '-' }}</td>
+                        <td><code>{{ gate.issueLink }}</code></td>
+                        <td><code>{{ gate.documentLink }}</code></td>
+                        <td><code>{{ gate.commentLink }}</code></td>
+                        <td>{{ gate.linksValid ? 'yes' : 'no' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
             <div
               ref="releaseReadinessPanelRef"
               class="simulation-outcome-panel"

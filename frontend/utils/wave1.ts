@@ -316,6 +316,12 @@ export type ReleaseReadinessShortcut =
   | 'prev_lane'
   | 'save_snapshot'
   | 'validate_active_lane_packet';
+export type PublicationWindowPlanShortcut =
+  | 'focus_publication_window_board'
+  | 'next_lane'
+  | 'prev_lane'
+  | 'open_score_explainer'
+  | 'open_dependency_gates';
 export type ReleaseReadinessEvidenceField =
   | 'branch'
   | 'fullSha'
@@ -352,6 +358,45 @@ export type ReleaseReadinessSimulator = {
   contract: 'settlement-release-readiness-simulator.v1';
   rows: ReleaseReadinessSimulatorLane[];
   activeLaneId: string;
+};
+
+export type PublicationWindowScoreBand = 'ready_now' | 'ready_soon' | 'hold';
+
+export type PublicationWindowDependencyGateRow = {
+  id: string;
+  issueIdentifier: string;
+  status: 'resolved' | 'unresolved';
+  unresolvedReason: string;
+  issueLink: string;
+  documentLink: string;
+  commentLink: string;
+  linksValid: boolean;
+};
+
+export type PublicationWindowPlanLane = {
+  id: string;
+  issueIdentifier: string;
+  bundleCode: string;
+  windowPriorityWeight: number;
+  blockerRisk: number;
+  etaDriftMinutes: number;
+  releaseBundleScore: {
+    completenessScore: number;
+    blockerDriftPenalty: number;
+    dependencyRiskPenalty: number;
+    finalScore: number;
+    scoreBand: PublicationWindowScoreBand;
+    scoreBandLabel: string;
+  };
+  dependencyGates: PublicationWindowDependencyGateRow[];
+  dependencyGateErrors: string[];
+};
+
+export type PublicationWindowPlanBoard = {
+  contract: 'settlement-publication-window-plan-board.v1';
+  rows: PublicationWindowPlanLane[];
+  activeLaneId: string;
+  scoreBandCounts: Record<PublicationWindowScoreBand, number>;
 };
 
 export type EvidenceTimelineGapCode =
@@ -2785,6 +2830,241 @@ export function moveReleaseReadinessLaneSelection(input: {
     return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
   }
   return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+function normalizePublicationWindowScoreBand(input: unknown): PublicationWindowScoreBand {
+  const normalized = typeof input === 'string' ? input.trim().toLowerCase() : '';
+  if (normalized === 'ready_now' || normalized === 'ready_soon' || normalized === 'hold') {
+    return normalized;
+  }
+  return 'hold';
+}
+
+export function resolvePublicationWindowScoreBandFromFinalScore(finalScore: number): PublicationWindowScoreBand {
+  if (finalScore >= 85) {
+    return 'ready_now';
+  }
+  if (finalScore >= 60) {
+    return 'ready_soon';
+  }
+  return 'hold';
+}
+
+export function resolvePublicationWindowScoreBandLabel(scoreBand: PublicationWindowScoreBand): string {
+  if (scoreBand === 'ready_now') {
+    return 'Ready now';
+  }
+  if (scoreBand === 'ready_soon') {
+    return 'Ready soon';
+  }
+  return 'Hold';
+}
+
+function normalizePublicationWindowDependencyGate(
+  value: unknown,
+  laneIssueIdentifier: string,
+  laneBundleCode: string,
+  gateIndex: number,
+): PublicationWindowDependencyGateRow {
+  const gate = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {};
+  const issueIdentifier = normalizeOptional(
+    typeof gate.issueIdentifier === 'string'
+      ? gate.issueIdentifier
+      : typeof gate.issueId === 'string'
+        ? gate.issueId
+        : '',
+  )?.toUpperCase() ?? `UNKNOWN-${gateIndex + 1}`;
+  const status = gate.status === 'resolved' ? 'resolved' : 'unresolved';
+  const unresolvedReason = normalizeOptional(
+    typeof gate.unresolvedReason === 'string'
+      ? gate.unresolvedReason
+      : typeof gate.reason === 'string'
+        ? gate.reason
+        : '',
+  ) ?? (status === 'unresolved' ? 'No unresolved reason supplied.' : '');
+
+  const issueLink = normalizeOptional(typeof gate.issueLink === 'string' ? gate.issueLink : '')
+    ?? `/${issueIdentifier.split('-')[0] ?? 'ONE'}/issues/${issueIdentifier}`;
+  const documentLink = normalizeOptional(typeof gate.documentLink === 'string' ? gate.documentLink : '')
+    ?? `${issueLink}#document-plan`;
+  const commentLink = normalizeOptional(typeof gate.commentLink === 'string' ? gate.commentLink : '')
+    ?? '';
+
+  const issueCanonical = canonicalizePaperclipIssueLink(issueLink);
+  const documentCanonical = canonicalizePaperclipIssueLink(documentLink);
+  const commentCanonical = commentLink ? canonicalizePaperclipIssueLink(commentLink) : '';
+  const linksValid = Boolean(issueCanonical && documentCanonical && (!commentLink || commentCanonical));
+
+  const id = `${laneIssueIdentifier}|${laneBundleCode}|${issueIdentifier}|${gateIndex}`;
+  return {
+    id,
+    issueIdentifier,
+    status,
+    unresolvedReason,
+    issueLink: issueCanonical ?? issueLink,
+    documentLink: documentCanonical ?? documentLink,
+    commentLink: commentCanonical || commentLink || '-',
+    linksValid,
+  };
+}
+
+function parsePublicationWindowPlanLane(raw: unknown): PublicationWindowPlanLane | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.issueId === 'string'
+        ? row.issueId
+        : '',
+  )?.toUpperCase();
+  const bundleCode = normalizeOptional(
+    typeof row.bundleCode === 'string'
+      ? row.bundleCode
+      : typeof row.artifactCode === 'string'
+        ? row.artifactCode
+        : '',
+  );
+  if (!issueIdentifier || !bundleCode) {
+    return null;
+  }
+
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : `${issueIdentifier}:${bundleCode}`)
+    ?? `${issueIdentifier}:${bundleCode}`;
+  const windowPriorityWeight = parseFiniteNumber(row.windowPriorityWeight) ?? 999;
+  const blockerRisk = parseFiniteNumber(row.blockerRisk) ?? 0;
+  const etaDriftMinutes = parseFiniteNumber(row.etaDriftMinutes) ?? 0;
+
+  const releaseBundleScoreRaw = row.releaseBundleScore && typeof row.releaseBundleScore === 'object'
+    ? row.releaseBundleScore as Record<string, unknown>
+    : {};
+  const completenessScore = parseFiniteNumber(releaseBundleScoreRaw.completenessScore) ?? 0;
+  const blockerDriftPenalty = parseFiniteNumber(releaseBundleScoreRaw.blockerDriftPenalty) ?? 0;
+  const dependencyRiskPenalty = parseFiniteNumber(releaseBundleScoreRaw.dependencyRiskPenalty) ?? 0;
+  const finalScore = parseFiniteNumber(releaseBundleScoreRaw.finalScore) ?? Math.max(
+    0,
+    Math.round(completenessScore - blockerDriftPenalty - dependencyRiskPenalty),
+  );
+  const normalizedFinalScore = Math.max(0, Math.min(100, Math.round(finalScore)));
+  const scoreBand = releaseBundleScoreRaw.scoreBand
+    ? normalizePublicationWindowScoreBand(releaseBundleScoreRaw.scoreBand)
+    : resolvePublicationWindowScoreBandFromFinalScore(normalizedFinalScore);
+  const scoreBandLabel = resolvePublicationWindowScoreBandLabel(scoreBand);
+
+  const dependencyGates = Array.isArray(row.dependencyGates)
+    ? row.dependencyGates.map((gate, gateIndex) => (
+      normalizePublicationWindowDependencyGate(gate, issueIdentifier, bundleCode, gateIndex)
+    ))
+    : [];
+  const dependencyGateErrors = dependencyGates
+    .filter((gate) => !gate.linksValid || (gate.status === 'unresolved' && !normalizeOptional(gate.unresolvedReason)))
+    .map((gate) => (
+      !gate.linksValid
+        ? `${gate.issueIdentifier}: canonical issue/document/comment link required`
+        : `${gate.issueIdentifier}: unresolved dependency requires unresolvedReason`
+    ));
+
+  return {
+    id,
+    issueIdentifier,
+    bundleCode,
+    windowPriorityWeight,
+    blockerRisk,
+    etaDriftMinutes,
+    releaseBundleScore: {
+      completenessScore,
+      blockerDriftPenalty,
+      dependencyRiskPenalty,
+      finalScore: normalizedFinalScore,
+      scoreBand,
+      scoreBandLabel,
+    },
+    dependencyGates,
+    dependencyGateErrors,
+  };
+}
+
+export function buildPublicationWindowPlanBoard(input: {
+  rows: unknown[];
+  activeLaneId: string;
+}): PublicationWindowPlanBoard {
+  const rows = input.rows
+    .map((row) => parsePublicationWindowPlanLane(row))
+    .filter((row): row is PublicationWindowPlanLane => Boolean(row))
+    .sort((left, right) => (
+      left.windowPriorityWeight - right.windowPriorityWeight
+      || left.blockerRisk - right.blockerRisk
+      || left.etaDriftMinutes - right.etaDriftMinutes
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.bundleCode.localeCompare(right.bundleCode)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIdSet = new Set(rows.map((row) => row.id));
+  const activeLaneId = rowIdSet.has(input.activeLaneId)
+    ? input.activeLaneId
+    : (rows[0]?.id ?? '');
+  const scoreBandCounts: Record<PublicationWindowScoreBand, number> = {
+    ready_now: 0,
+    ready_soon: 0,
+    hold: 0,
+  };
+  rows.forEach((row) => {
+    scoreBandCounts[row.releaseBundleScore.scoreBand] += 1;
+  });
+  return {
+    contract: 'settlement-publication-window-plan-board.v1',
+    rows,
+    activeLaneId,
+    scoreBandCounts,
+  };
+}
+
+export function movePublicationWindowLaneSelection(input: {
+  rows: PublicationWindowPlanLane[];
+  activeLaneId: string;
+  direction: 'next_lane' | 'prev_lane';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeLaneId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_lane') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolvePublicationWindowPlanShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): PublicationWindowPlanShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'w') {
+    return 'focus_publication_window_board';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_lane';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_lane';
+  }
+  if (normalizedKey === 'e' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_score_explainer';
+  }
+  if (normalizedKey === 'g' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_dependency_gates';
+  }
+  return null;
 }
 
 export function buildChecklistAutofixHints(): ChecklistAutofixHint[] {
