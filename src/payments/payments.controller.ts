@@ -66,6 +66,12 @@ export class PaymentsController {
     return this.payments.getTransaction(reference, request.auth?.merchantId);
   }
 
+  @Get('payments/:reference/status')
+  @Authorize('merchant', 'support', 'ops', 'admin')
+  status(@Req() request: AuthenticatedRequest, @Param('reference') reference: string) {
+    return this.payments.getPaymentStatus(reference, request.auth?.merchantId);
+  }
+
   @Get('payments/:reference/routing-telemetry')
   @Authorize('merchant', 'support', 'ops', 'admin')
   routingTelemetry(@Req() request: AuthenticatedRequest, @Param('reference') reference: string) {

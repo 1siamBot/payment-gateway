@@ -14,6 +14,7 @@ function createPrismaMock() {
   const callbackStore = new Set<string>();
   const txStore = new Map<string, any>();
   const txByRef = new Map<string, any>();
+  const refundStore = new Map<string, any>();
   const auditLogStore: any[] = [];
   let txCounter = 0;
 
@@ -58,6 +59,14 @@ function createPrismaMock() {
         findUnique: jest.fn(async ({ where, include }) => {
           const tx = where.reference ? txByRef.get(where.reference) ?? null : txStore.get(where.id) ?? null;
           if (!tx || !include?.audits) {
+            if (!tx) return null;
+            if (include?.callbackEvents || include?.webhookDeliveries) {
+              return {
+                ...tx,
+                callbackEvents: include?.callbackEvents ? [...(tx.callbackEvents ?? [])] : undefined,
+                webhookDeliveries: include?.webhookDeliveries ? [...(tx.webhookDeliveries ?? [])] : undefined,
+              };
+            }
             return tx;
           }
           return { ...tx, audits: [] };
@@ -90,6 +99,54 @@ function createPrismaMock() {
           return rows;
         }),
       },
+      refund: {
+        findUnique: jest.fn(async ({ where, include }) => {
+          if (where.id) {
+            const refund = refundStore.get(where.id) ?? null;
+            if (!refund) return null;
+            if (!include?.transaction) return refund;
+            const tx = txStore.get(refund.transactionId);
+            return { ...refund, transaction: { reference: tx?.reference } };
+          }
+          if (where.merchantId_idempotencyKey) {
+            const refund = [...refundStore.values()].find(
+              (row) => row.merchantId === where.merchantId_idempotencyKey.merchantId
+                && row.idempotencyKey === where.merchantId_idempotencyKey.idempotencyKey,
+            ) ?? null;
+            if (!refund) return null;
+            if (!include?.transaction) return refund;
+            const tx = txStore.get(refund.transactionId);
+            return { ...refund, transaction: { reference: tx?.reference } };
+          }
+          return null;
+        }),
+        create: jest.fn(async ({ data }) => {
+          const id = `refund-${refundStore.size + 1}`;
+          const row = { id, createdAt: new Date(), updatedAt: new Date(), status: 'SUCCEEDED', ...data };
+          refundStore.set(id, row);
+          return row;
+        }),
+        findMany: jest.fn(async ({ where, include, orderBy, take }) => {
+          let rows = [...refundStore.values()].filter((row) => {
+            if (where?.merchantId && row.merchantId !== where.merchantId) return false;
+            if (where?.transaction?.reference?.contains) {
+              const tx = txStore.get(row.transactionId);
+              if (!tx?.reference?.includes(where.transaction.reference.contains)) return false;
+            }
+            return true;
+          });
+
+          if (orderBy?.createdAt === 'desc') {
+            rows = rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          }
+          rows = rows.slice(0, take ?? rows.length);
+          if (!include?.transaction) return rows;
+          return rows.map((row) => {
+            const tx = txStore.get(row.transactionId);
+            return { ...row, transaction: { reference: tx?.reference } };
+          });
+        }),
+      },
       callbackEvent: {
         findUnique: jest.fn(async ({ where }) => {
           const key = `${where.providerName_eventId.providerName}:${where.providerName_eventId.eventId}`;
@@ -97,6 +154,15 @@ function createPrismaMock() {
         }),
         create: jest.fn(async ({ data }) => {
           callbackStore.add(`${data.providerName}:${data.eventId}`);
+          const tx = txStore.get(data.transactionId);
+          if (tx) {
+            tx.callbackEvents = [
+              { ...data, createdAt: new Date() },
+              ...(tx.callbackEvents ?? []),
+            ];
+            txStore.set(tx.id, tx);
+            txByRef.set(tx.reference, tx);
+          }
           return data;
         }),
       },
@@ -256,8 +322,30 @@ describe('Frontend endpoint integration', () => {
     expect(callback.status).toBe(201);
     expect(callback.body.applied).toBe(true);
 
-    const refund = await request(app.getHttpServer()).post(`/payments/${create.body.reference}/refund`);
+    const paymentStatus = await request(app.getHttpServer()).get(`/payments/${create.body.reference}/status`);
+    expect(paymentStatus.status).toBe(200);
+    expect(paymentStatus.body.status).toBe('PAID');
+    expect(paymentStatus.body.callbacks).toEqual(expect.objectContaining({
+      total: 1,
+      lastEventId: 'evt-ui',
+      lastStatus: 'succeeded',
+    }));
+
+    const refund = await request(app.getHttpServer())
+      .post(`/payments/${create.body.reference}/refund`)
+      .send({ idempotencyKey: 'refund-ui-1' });
     expect(refund.status).toBe(201);
-    expect(refund.body.sourceReference).toBe(create.body.reference);
+    expect(refund.body.paymentReference).toBe(create.body.reference);
+
+    const refunds = await request(app.getHttpServer())
+      .get('/refunds')
+      .query({ merchantId: 'merchant-ui' });
+    expect(refunds.status).toBe(200);
+    expect(refunds.body[0].id).toBe(refund.body.id);
+
+    const refundDetail = await request(app.getHttpServer())
+      .get(`/refunds/${refund.body.id}`);
+    expect(refundDetail.status).toBe(200);
+    expect(refundDetail.body.paymentReference).toBe(create.body.reference);
   });
 });

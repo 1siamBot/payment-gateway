@@ -10,6 +10,7 @@ import {
   RefundStatus,
   TransactionStatus,
   TransactionType,
+  WebhookDeliveryStatus,
 } from '@prisma/client';
 import { createHmac, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -111,6 +112,35 @@ type PaymentAttemptTimelineResponse = {
       description: string;
       remediationHint: string;
     }>;
+  };
+};
+
+type PaymentStatusSnapshotResponse = {
+  reference: string;
+  transactionId: string;
+  merchantId: string;
+  type: TransactionType;
+  status: TransactionStatus;
+  amount: number;
+  currency: string;
+  providerName: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  callbacks: {
+    total: number;
+    lastEventId: string | null;
+    lastStatus: string | null;
+    lastReceivedAt: string | null;
+  };
+  webhooks: {
+    total: number;
+    delivered: number;
+    pending: number;
+    failed: number;
+    lastEventType: string | null;
+    lastStatus: WebhookDeliveryStatus | null;
+    lastAttemptAt: string | null;
   };
 };
 
@@ -246,6 +276,58 @@ export class PaymentsService {
     this.assertMerchantScope(tx.merchantId, actorMerchantId);
 
     return tx;
+  }
+
+  async getPaymentStatus(reference: string, actorMerchantId?: string): Promise<PaymentStatusSnapshotResponse> {
+    const tx = await this.prisma.transaction.findUnique({
+      where: { reference },
+      include: {
+        callbackEvents: {
+          orderBy: { createdAt: 'desc' },
+        },
+        webhookDeliveries: {
+          orderBy: { updatedAt: 'desc' },
+        },
+      },
+    });
+
+    if (!tx) {
+      throw new NotFoundException('Transaction not found');
+    }
+
+    this.assertMerchantScope(tx.merchantId, actorMerchantId);
+
+    const latestCallback = tx.callbackEvents[0] ?? null;
+    const latestWebhook = tx.webhookDeliveries[0] ?? null;
+
+    return {
+      reference: tx.reference,
+      transactionId: tx.id,
+      merchantId: tx.merchantId,
+      type: tx.type,
+      status: tx.status,
+      amount: Number(tx.amount),
+      currency: tx.currency,
+      providerName: tx.providerName,
+      failureReason: tx.failureReason,
+      createdAt: tx.createdAt.toISOString(),
+      updatedAt: tx.updatedAt.toISOString(),
+      callbacks: {
+        total: tx.callbackEvents.length,
+        lastEventId: latestCallback?.eventId ?? null,
+        lastStatus: latestCallback?.status ?? null,
+        lastReceivedAt: latestCallback?.createdAt.toISOString() ?? null,
+      },
+      webhooks: {
+        total: tx.webhookDeliveries.length,
+        delivered: tx.webhookDeliveries.filter((row) => row.status === WebhookDeliveryStatus.DELIVERED).length,
+        pending: tx.webhookDeliveries.filter((row) => row.status === WebhookDeliveryStatus.PENDING).length,
+        failed: tx.webhookDeliveries.filter((row) => row.status === WebhookDeliveryStatus.FAILED).length,
+        lastEventType: latestWebhook?.eventType ?? null,
+        lastStatus: latestWebhook?.status ?? null,
+        lastAttemptAt: latestWebhook?.updatedAt.toISOString() ?? null,
+      },
+    };
   }
 
   async getRoutingTelemetry(reference: string, actorMerchantId?: string): Promise<RoutingTelemetryFeed> {

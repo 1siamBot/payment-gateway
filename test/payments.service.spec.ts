@@ -1,5 +1,5 @@
 import { createHmac } from 'crypto';
-import { TransactionStatus, TransactionType } from '@prisma/client';
+import { TransactionStatus, TransactionType, WebhookDeliveryStatus } from '@prisma/client';
 import { PaymentsService } from '../src/payments/payments.service';
 import {
   PAYMENT_ATTEMPT_TIMELINE_FIXTURES,
@@ -13,6 +13,7 @@ function createPrismaMock() {
   const txStore = new Map<string, any>();
   const txByRef = new Map<string, any>();
   const refundStore = new Map<string, any>();
+  const webhookDeliveryStore = new Map<string, any[]>();
   const auditLogStore: any[] = [];
   const merchantStore = new Map<string, any>([['merchant-1', { id: 'merchant-1', name: 'Demo Merchant' }]]);
   const customerStore = new Map<string, any>();
@@ -94,6 +95,8 @@ function createPrismaMock() {
             failureReason: null,
             ...data,
             audits: [],
+            callbackEvents: [],
+            webhookDeliveries: [],
           };
           txStore.set(tx.id, tx);
           txByRef.set(tx.reference, tx);
@@ -111,6 +114,15 @@ function createPrismaMock() {
           if (!tx) return null;
           if (include?.customer) {
             return { ...tx, customer: tx.customerId ? customerStore.get(tx.customerId) ?? null : null, audits: [] };
+          }
+          if (include?.callbackEvents || include?.webhookDeliveries) {
+            return {
+              ...tx,
+              callbackEvents: include?.callbackEvents ? [...(tx.callbackEvents ?? [])] : undefined,
+              webhookDeliveries: include?.webhookDeliveries
+                ? [...(webhookDeliveryStore.get(tx.id) ?? tx.webhookDeliveries ?? [])]
+                : undefined,
+            };
           }
           return tx;
         }),
@@ -214,7 +226,28 @@ function createPrismaMock() {
         }),
         create: jest.fn(async ({ data }) => {
           callbackStore.add(`${data.providerName}:${data.eventId}`);
+          const tx = txStore.get(data.transactionId);
+          if (tx) {
+            tx.callbackEvents = [
+              { ...data, createdAt: new Date() },
+              ...(tx.callbackEvents ?? []),
+            ];
+            txStore.set(tx.id, tx);
+            txByRef.set(tx.reference, tx);
+          }
           return data;
+        }),
+      },
+      webhookDelivery: {
+        findMany: jest.fn(async ({ where, orderBy }) => {
+          let rows = [...webhookDeliveryStore.values()].flat();
+          if (where?.transactionId) {
+            rows = rows.filter((row) => row.transactionId === where.transactionId);
+          }
+          if (orderBy?.updatedAt === 'desc') {
+            rows = rows.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+          }
+          return rows;
         }),
       },
       transactionAudit: {
@@ -245,6 +278,10 @@ function createPrismaMock() {
           return rows.slice(0, take ?? rows.length);
         }),
       },
+    },
+    stores: {
+      txStore,
+      webhookDeliveryStore,
     },
   };
 }
@@ -327,6 +364,63 @@ describe('PaymentsService', () => {
     expect(first.status).toBe(TransactionStatus.PAID);
     expect(second.applied).toBe(false);
     expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.paid');
+  });
+
+  it('returns payment status snapshot with callback and webhook counters', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const created = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 40,
+      currency: 'USD',
+      type: 'withdraw',
+      idempotencyKey: 'idem-status-1',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-status:${created.reference}:succeeded`)
+      .digest('hex');
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-status',
+      transactionReference: created.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    const txId = prismaMock.store.txByRef.get(created.reference).id;
+    const now = new Date('2026-03-19T15:00:00.000Z');
+    prismaMock.stores.webhookDeliveryStore.set(txId, [
+      {
+        id: 'wd-1',
+        transactionId: txId,
+        eventType: 'payment.paid',
+        status: WebhookDeliveryStatus.DELIVERED,
+        updatedAt: now,
+      },
+      {
+        id: 'wd-2',
+        transactionId: txId,
+        eventType: 'payment.failed',
+        status: WebhookDeliveryStatus.FAILED,
+        updatedAt: new Date('2026-03-19T14:00:00.000Z'),
+      },
+    ]);
+
+    const snapshot = await service.getPaymentStatus(created.reference);
+    expect(snapshot.reference).toBe(created.reference);
+    expect(snapshot.status).toBe(TransactionStatus.PAID);
+    expect(snapshot.callbacks.total).toBe(1);
+    expect(snapshot.callbacks.lastEventId).toBe('evt-status');
+    expect(snapshot.webhooks.total).toBe(2);
+    expect(snapshot.webhooks.delivered).toBe(1);
+    expect(snapshot.webhooks.failed).toBe(1);
+    expect(snapshot.webhooks.pending).toBe(0);
+    expect(snapshot.webhooks.lastEventType).toBe('payment.paid');
   });
 
   it('lists payments with filtering', async () => {
