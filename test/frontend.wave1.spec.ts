@@ -582,29 +582,29 @@ describe('frontend wave1 helpers', () => {
     expect(resolveOperatorDecisionQueueShortcut('Backspace')).toBe('unstage');
   });
 
-  it('builds deterministic review queue ledger ordering by priority/eventTime/id', () => {
+  it('builds deterministic release digest ordering by lanePriority/updatedAt/id', () => {
     const ledger = buildReviewQueueLedger({
       rows: [
         {
           id: 'inc-3',
           merchantId: 'm-3',
           provider: 'mock-c',
-          priority: 'high',
-          eventTime: '2026-03-18T10:00:00.000Z',
+          lanePriority: 'high',
+          updatedAt: '2026-03-18T10:00:00.000Z',
         },
         {
           id: 'inc-1',
           merchantId: 'm-1',
           provider: 'mock-a',
-          priority: 'critical',
-          eventTime: '2026-03-18T10:05:00.000Z',
+          lanePriority: 'critical',
+          updatedAt: '2026-03-18T10:05:00.000Z',
         },
         {
           id: 'inc-2',
           merchantId: 'm-2',
           provider: 'mock-b',
-          priority: 'high',
-          eventTime: '2026-03-18T10:00:00.000Z',
+          lanePriority: 'high',
+          updatedAt: '2026-03-18T10:00:00.000Z',
         },
       ],
       activeRowId: '',
@@ -617,10 +617,10 @@ describe('frontend wave1 helpers', () => {
     expect(filterReviewQueueLedgerRows(ledger.rows, 'high').map((row) => row.id)).toEqual(['inc-2', 'inc-3']);
   });
 
-  it('supports review queue keyboard shortcuts for ledger navigation and packet actions', () => {
-    expect(resolveReviewQueueLedgerShortcut({ key: ']' })).toBe('next_row');
-    expect(resolveReviewQueueLedgerShortcut({ key: '[' })).toBe('prev_row');
-    expect(resolveReviewQueueLedgerShortcut({ key: 'H', shiftKey: true })).toBe('focus_handoff_packet');
+  it('supports release digest keyboard shortcuts for row navigation and packet actions', () => {
+    expect(resolveReviewQueueLedgerShortcut({ key: 'j' })).toBe('next_row');
+    expect(resolveReviewQueueLedgerShortcut({ key: 'k' })).toBe('prev_row');
+    expect(resolveReviewQueueLedgerShortcut({ key: 'P', shiftKey: true })).toBe('focus_handoff_packet');
     expect(resolveReviewQueueLedgerShortcut({
       key: 'Enter',
       shiftKey: true,
@@ -646,7 +646,7 @@ describe('frontend wave1 helpers', () => {
     })).toBe('inc-1');
   });
 
-  it('autofills handoff packet from active review queue row and validates completeness', () => {
+  it('autofills publish packet from active digest row and validates required guardrails', () => {
     const ledger = buildReviewQueueLedger({
       rows: [
         {
@@ -667,7 +667,8 @@ describe('frontend wave1 helpers', () => {
     const incomplete = validateReviewQueueHandoffPacketDraft(draft);
     expect(incomplete.isComplete).toBe(false);
     expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
-    expect(draft.dependentIssueLinksText).toContain('/ONE/issues/ONE-247');
+    expect(draft.artifactPathsText).toContain('artifacts/one-249/release-digest');
+    expect(draft.dependentIssueLinksText).toContain('/ONE/issues/ONE-248');
     expect(draft.dependentIssueLinksText).toContain('/ONE/issues/ONE-241');
 
     const complete = validateReviewQueueHandoffPacketDraft({

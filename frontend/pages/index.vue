@@ -468,6 +468,7 @@ const reviewQueueHandoffValidation = reactive({
   message: '',
   error: '',
 });
+const reviewQueueHandoffMissingFields = ref<Set<string>>(new Set());
 const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
 const queueDraftRowIds = ref<string[]>([]);
@@ -489,8 +490,8 @@ const reviewQueueLedger = computed(() => buildReviewQueueLedger({
       id: row.id,
       merchantId: row.merchantId,
       provider: row.provider,
-      priority,
-      eventTime: row.updatedAt,
+      lanePriority: priority,
+      updatedAt: row.updatedAt,
       title: `Exception ${row.id} (${row.status})`,
     };
   }),
@@ -1286,6 +1287,7 @@ function resetReviewQueueLedgerState() {
 function resetReviewQueueHandoffValidation() {
   reviewQueueHandoffValidation.message = '';
   reviewQueueHandoffValidation.error = '';
+  reviewQueueHandoffMissingFields.value = new Set();
 }
 
 watch(filteredBulkDiffRows, (rows) => {
@@ -1437,7 +1439,7 @@ function setActiveReviewQueueFilter(filter: ReviewQueueLedgerFilterKey) {
 function selectReviewQueueLedgerRow(rowId: string) {
   resetReviewQueueLedgerState();
   activeReviewQueueRowId.value = rowId;
-  reviewQueueLedgerState.message = `Selected review queue row ${rowId}.`;
+  reviewQueueLedgerState.message = `Selected digest row ${rowId}.`;
 }
 
 function autofillReviewQueueHandoffPacketFromActiveRow() {
@@ -1445,20 +1447,21 @@ function autofillReviewQueueHandoffPacketFromActiveRow() {
   resetReviewQueueHandoffValidation();
   const activeRow = activeReviewQueueRow.value;
   if (!activeRow) {
-    reviewQueueLedgerState.error = 'Select a review queue row before autofill.';
+    reviewQueueLedgerState.error = 'Select a digest row before autofill.';
     return;
   }
   reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({
     activeRow,
   });
-  reviewQueueLedgerState.message = `Autofilled handoff packet for ${activeRow.id}.`;
+  reviewQueueLedgerState.message = `Autofilled publish packet for ${activeRow.id}.`;
 }
 
 function validateReviewQueueHandoffPacket() {
   resetReviewQueueHandoffValidation();
   const validation = validateReviewQueueHandoffPacketDraft(reviewQueueHandoffDraft.value);
+  reviewQueueHandoffMissingFields.value = new Set(validation.missingFields);
   if (validation.isComplete) {
-    reviewQueueHandoffValidation.message = `Handoff packet validated. Artifacts: ${validation.artifactPaths.length}, dependencies: ${validation.dependentIssueLinks.length}.`;
+    reviewQueueHandoffValidation.message = `Publish packet validated. Artifacts: ${validation.artifactPaths.length}, related issues: ${validation.dependentIssueLinks.length}.`;
     return;
   }
   const errorParts: string[] = [];
@@ -1468,7 +1471,7 @@ function validateReviewQueueHandoffPacket() {
   if (validation.errors.length > 0) {
     errorParts.push(validation.errors.join(' '));
   }
-  reviewQueueHandoffValidation.error = errorParts.join(' | ') || 'Handoff packet is incomplete.';
+  reviewQueueHandoffValidation.error = errorParts.join(' | ') || 'Publish packet is incomplete.';
 }
 
 function clearReviewQueueHandoffPacketDraft(confirmFullReset: boolean) {
@@ -1495,6 +1498,10 @@ function clearReviewQueueHandoffPacketDraftWithConfirm() {
 function focusReviewQueueHandoffPacket() {
   reviewQueueHandoffPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   reviewQueueHandoffBranchInputRef.value?.focus();
+}
+
+function isPublishPacketFieldMissing(fieldKey: string): boolean {
+  return reviewQueueHandoffMissingFields.value.has(fieldKey);
 }
 
 function resetReplayCompareState() {
@@ -3401,11 +3408,11 @@ onMounted(() => {
             </div>
 
             <div class="simulation-outcome-panel">
-              <h4>Review Queue Ledger</h4>
+              <h4>Release-Readiness Digest Board</h4>
               <p class="state" :class="{ error: reviewQueueLedgerState.error }">
                 {{ reviewQueueLedgerState.error
                   || reviewQueueLedgerState.message
-                  || 'Deterministic order: priority, eventTime, id. Keyboard: [ previous, ] next, Shift+H focus packet, Ctrl+Shift+Enter validate packet.' }}
+                  || 'Deterministic order: lanePriority, updatedAt, id. Keyboard: J previous, K next, Shift+P focus packet, Ctrl+Shift+Enter validate packet.' }}
               </p>
               <div class="chip-row">
                 <button
@@ -3424,14 +3431,14 @@ onMounted(() => {
                   <thead>
                     <tr>
                       <th>Row</th>
-                      <th>Priority</th>
-                      <th>Event Time</th>
+                      <th>Lane Priority</th>
+                      <th>Updated At</th>
                       <th>Title</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-if="!filteredReviewQueueLedgerRows.length">
-                      <td colspan="4">No rows in current review queue filter.</td>
+                      <td colspan="4">No rows in current digest filter.</td>
                     </tr>
                     <tr
                       v-for="row in filteredReviewQueueLedgerRows"
@@ -3452,11 +3459,11 @@ onMounted(() => {
               </div>
 
               <div ref="reviewQueueHandoffPanelRef" class="simulation-outcome-panel">
-                <h4>Handoff Packet Autofill</h4>
+                <h4>Publish Packet Guardrails</h4>
                 <p class="state" :class="{ error: reviewQueueHandoffValidation.error }">
                   {{ reviewQueueHandoffValidation.error
                     || reviewQueueHandoffValidation.message
-                    || 'Autofill derives branch, SHA placeholder, mode, blocker owner, ETA, artifact paths, and dependent issue links from active queue row.' }}
+                    || 'Autofill derives branch, SHA placeholder, mode, blocker owner, ETA, evidence artifact paths, and related issue links from active digest row.' }}
                 </p>
                 <div class="inline-actions">
                   <button type="button" @click="autofillReviewQueueHandoffPacketFromActiveRow">Autofill From Active Row</button>
@@ -3471,15 +3478,15 @@ onMounted(() => {
                   </button>
                 </div>
                 <div class="triage-grid">
-                  <label>
+                  <label :class="{ 'field-missing': isPublishPacketFieldMissing('branch') }">
                     Branch
                     <input
                       ref="reviewQueueHandoffBranchInputRef"
                       v-model="reviewQueueHandoffDraft.branch"
-                      placeholder="feature/one-248-handoff-packet"
+                      placeholder="feature/one-249-release-packet"
                     />
                   </label>
-                  <label>
+                  <label :class="{ 'field-missing': isPublishPacketFieldMissing('fullSha') }">
                     Full SHA
                     <input v-model="reviewQueueHandoffDraft.fullSha" placeholder="40-char commit SHA" />
                   </label>
@@ -3490,26 +3497,26 @@ onMounted(() => {
                       <option value="no_pr">No PR</option>
                     </select>
                   </label>
-                  <label>
+                  <label :class="{ 'field-missing': isPublishPacketFieldMissing('prLink') }">
                     PR Link
                     <input v-model="reviewQueueHandoffDraft.prLink" placeholder="https://github.com/org/repo/pull/123" />
                   </label>
-                  <label>
+                  <label :class="{ 'field-missing': isPublishPacketFieldMissing('blockerOwner') }">
                     Blocker Owner
                     <input v-model="reviewQueueHandoffDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
                   </label>
-                  <label>
+                  <label :class="{ 'field-missing': isPublishPacketFieldMissing('eta') }">
                     ETA
                     <input v-model="reviewQueueHandoffDraft.eta" placeholder="2026-03-20 18:00 UTC" />
                   </label>
                 </div>
-                <label>
-                  Artifact Paths (one per line)
-                  <textarea v-model="reviewQueueHandoffDraft.artifactPathsText" rows="4" placeholder="artifacts/one-248/review-queue/inc-1.json"></textarea>
+                <label :class="{ 'field-missing': isPublishPacketFieldMissing('artifactPaths') }">
+                  Evidence Artifact Paths (one per line)
+                  <textarea v-model="reviewQueueHandoffDraft.artifactPathsText" rows="4" placeholder="artifacts/one-249/release-digest/inc-1.json"></textarea>
                 </label>
-                <label>
-                  Dependent Issue Links (one per line)
-                  <textarea v-model="reviewQueueHandoffDraft.dependentIssueLinksText" rows="4" placeholder="/ONE/issues/ONE-247"></textarea>
+                <label :class="{ 'field-missing': isPublishPacketFieldMissing('dependentIssueLinks') }">
+                  Related Issue Links (one per line)
+                  <textarea v-model="reviewQueueHandoffDraft.dependentIssueLinksText" rows="4" placeholder="/ONE/issues/ONE-248"></textarea>
                 </label>
               </div>
             </div>

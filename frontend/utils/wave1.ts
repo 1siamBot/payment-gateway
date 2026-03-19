@@ -1565,14 +1565,14 @@ function parseReviewQueueLedgerRow(raw: unknown): ReviewQueueLedgerRow | null {
   if (!id || !merchantId || !provider) {
     return null;
   }
-  const eventTime = resolveDateString(row.eventTime ?? row.updatedAt, DIFF_FALLBACK_TIMESTAMP);
+  const eventTime = resolveDateString(row.updatedAt ?? row.eventTime, DIFF_FALLBACK_TIMESTAMP);
   const title = normalizeOptional(typeof row.title === 'string' ? row.title : String(row.title ?? ''))
     ?? 'Deterministic review queue row';
   return {
     id,
     merchantId,
     provider,
-    priority: normalizeReviewQueuePriority(row.priority ?? row.severity),
+    priority: normalizeReviewQueuePriority(row.lanePriority ?? row.priority ?? row.severity),
     eventTime,
     title,
     sourceRowId: id,
@@ -1654,13 +1654,14 @@ export function resolveReviewQueueLedgerShortcut(input: {
   ctrlKey?: boolean;
   metaKey?: boolean;
 }): ReviewQueueLedgerShortcut | null {
-  if (input.key === ']') {
+  const normalizedKey = input.key.toLowerCase();
+  if (normalizedKey === 'j' || normalizedKey === 'arrowdown') {
     return 'next_row';
   }
-  if (input.key === '[') {
+  if (normalizedKey === 'k' || normalizedKey === 'arrowup') {
     return 'prev_row';
   }
-  if (input.key.toLowerCase() === 'h' && input.shiftKey) {
+  if (normalizedKey === 'p' && input.shiftKey) {
     return 'focus_handoff_packet';
   }
   if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
@@ -1708,8 +1709,7 @@ export function buildReviewQueueHandoffPacketDraftFromLedgerRow(input: {
   }
   const branchPrefix = normalizeOptional(input.branchPrefix) ?? 'feature';
   const dependentIssueLinks = (input.dependentIssueLinks ?? [
-    '/ONE/issues/ONE-247',
-    '/ONE/issues/ONE-245',
+    '/ONE/issues/ONE-248',
     '/ONE/issues/ONE-242',
     '/ONE/issues/ONE-241',
   ])
@@ -1723,8 +1723,8 @@ export function buildReviewQueueHandoffPacketDraftFromLedgerRow(input: {
     blockerOwner: 'GitHub Admin / DevOps',
     eta: formatUtcEta(input.activeRow.eventTime),
     artifactPathsText: [
-      `artifacts/one-248/review-queue/${input.activeRow.id}.json`,
-      `artifacts/one-248/handoff-packets/${input.activeRow.id}.md`,
+      `artifacts/one-249/release-digest/${input.activeRow.id}.json`,
+      `artifacts/one-249/publish-packets/${input.activeRow.id}.md`,
     ].join('\n'),
     dependentIssueLinksText: dependentIssueLinks.join('\n'),
   };
