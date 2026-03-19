@@ -455,6 +455,63 @@ export type PublicationReadinessCanonicalAutofixPreview = {
   invalidCount: number;
 };
 
+export type PublicationOwnerDispatchShortcut =
+  | 'focus_owner_dispatch_simulator'
+  | 'next_owner_transition'
+  | 'prev_owner_transition'
+  | 'open_handoff_composer'
+  | 'run_canonical_link_validation';
+
+export type PublicationOwnerDispatchState =
+  | 'pending'
+  | 'in_progress'
+  | 'blocked'
+  | 'resolved';
+export type PublicationOwnerDispatchSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+export type PublicationOwnerDispatchTransition = {
+  id: string;
+  issueIdentifier: string;
+  blockerCode: string;
+  ownerFrom: string;
+  ownerTo: string;
+  dispatchState: PublicationOwnerDispatchState;
+  blockerSeverity: PublicationOwnerDispatchSeverity;
+  priorityWeight: number;
+  blockerSeverityWeight: number;
+  updatedAt: string;
+  requiredArtifacts: string[];
+  resolvedDependencies: string[];
+  canonicalLinkViolations: string[];
+  dispatchFingerprint: string;
+  readyForQA: boolean;
+};
+
+export type PublicationOwnerDispatchSimulator = {
+  contract: 'settlement-publication-owner-dispatch-simulator.v1';
+  rows: PublicationOwnerDispatchTransition[];
+  activeTransitionId: string;
+};
+
+export type RemediationOwnerHandoffComposer = {
+  contract: 'settlement-remediation-owner-handoff-composer.v1';
+  dispatchFingerprint: string;
+  ownerTransitions: string[];
+  requiredArtifacts: string[];
+  resolvedDependencies: string[];
+  canonicalLinkViolations: string[];
+  readyForQA: boolean;
+  markdown: string;
+};
+
+export type OwnerDispatchCanonicalAutofixPreview = {
+  contract: 'settlement-owner-dispatch-canonical-autofix.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -1364,6 +1421,8 @@ const DISPATCH_LANE_TYPE_ORDER: DispatchCockpitLaneType[] = [
   'dispatch_queue',
   'custom',
 ];
+const OWNER_DISPATCH_SEVERITY_ORDER: PublicationOwnerDispatchSeverity[] = ['critical', 'high', 'medium', 'low'];
+const OWNER_DISPATCH_STATE_ORDER: PublicationOwnerDispatchState[] = ['blocked', 'in_progress', 'pending', 'resolved'];
 const DIAGNOSTICS_TREND_REASON_CODE_ORDER: DiagnosticsTrendDigestReasonCode[] = [
   'spike_in_breaking_changes',
   'new_drift_code',
@@ -3715,6 +3774,317 @@ export function buildPublicationReadinessCanonicalAutofixPreview(input: {
   const changedCount = rows.filter((row) => row.changed).length;
   return {
     contract: 'settlement-publication-readiness-canonical-autofix.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+  };
+}
+
+function normalizePublicationOwnerDispatchState(input: unknown): PublicationOwnerDispatchState {
+  if (typeof input !== 'string') {
+    return 'pending';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'blocked' || normalized === 'in_progress' || normalized === 'pending' || normalized === 'resolved') {
+    return normalized;
+  }
+  if (normalized === 'in-progress' || normalized === 'active') {
+    return 'in_progress';
+  }
+  if (normalized === 'done' || normalized === 'complete') {
+    return 'resolved';
+  }
+  return 'pending';
+}
+
+function normalizePublicationOwnerDispatchSeverity(input: unknown): PublicationOwnerDispatchSeverity {
+  if (typeof input !== 'string') {
+    return 'medium';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+    return normalized;
+  }
+  return 'medium';
+}
+
+function normalizeDispatchStringList(input: unknown): string[] {
+  const entries = Array.isArray(input)
+    ? input
+    : (typeof input === 'string' ? input.split(/\r?\n|,/g) : []);
+  const normalized = entries
+    .map((value) => normalizeOptional(typeof value === 'string' ? value : String(value ?? '')))
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set(normalized)).sort((left, right) => left.localeCompare(right));
+}
+
+function canonicalizeOwnerDispatchDependency(input: string): string | null {
+  const canonical = canonicalizePaperclipIssueLink(input);
+  if (canonical) {
+    return canonical;
+  }
+  const maybeIssueIdentifier = input.trim().toUpperCase();
+  if (!/^[A-Z0-9]+-\d+$/.test(maybeIssueIdentifier)) {
+    return null;
+  }
+  const prefix = maybeIssueIdentifier.split('-')[0];
+  return `/${prefix}/issues/${maybeIssueIdentifier}`;
+}
+
+function parsePublicationOwnerDispatchTransition(
+  raw: unknown,
+): PublicationOwnerDispatchTransition | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.issueId === 'string'
+        ? row.issueId
+        : '',
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const blockerCode = normalizeOptional(
+    typeof row.blockerCode === 'string'
+      ? row.blockerCode
+      : typeof row.blockerId === 'string'
+        ? row.blockerId
+        : '',
+  ) ?? `blocker-${issueIdentifier.toLowerCase()}`;
+  const ownerFrom = normalizeOptional(typeof row.ownerFrom === 'string' ? row.ownerFrom : '') ?? 'unassigned';
+  const ownerTo = normalizeOptional(typeof row.ownerTo === 'string' ? row.ownerTo : '') ?? 'frontend';
+  const dispatchState = normalizePublicationOwnerDispatchState(row.dispatchState ?? row.status);
+  const blockerSeverity = normalizePublicationOwnerDispatchSeverity(row.blockerSeverity ?? row.severity);
+  const priorityWeight = parseFiniteNumber(row.priorityWeight ?? row.queueWeight) ?? 999;
+  const blockerSeverityWeight = OWNER_DISPATCH_SEVERITY_ORDER.indexOf(blockerSeverity);
+  const updatedAt = normalizeOptional(typeof row.updatedAt === 'string' ? row.updatedAt : '') ?? '1970-01-01T00:00:00.000Z';
+
+  const requiredArtifacts = normalizeDispatchStringList(row.requiredArtifacts ?? row.artifactPaths ?? row.artifacts);
+  const dependencyInput = normalizeDispatchStringList(
+    row.resolvedDependencies ?? row.dependencyIssueLinks ?? row.dependencyLinks,
+  );
+  const resolvedDependencies = dependencyInput
+    .map((value) => canonicalizeOwnerDispatchDependency(value))
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => left.localeCompare(right));
+
+  const linkCandidates = [
+    ...normalizeDispatchStringList(row.canonicalLinkViolations),
+    ...normalizeDispatchStringList(row.canonicalLinks),
+    ...normalizeDispatchStringList(row.issueLink),
+    ...normalizeDispatchStringList(row.documentLink),
+    ...normalizeDispatchStringList(row.commentLink),
+    ...dependencyInput,
+  ];
+  const canonicalLinkViolations = Array.from(new Set(linkCandidates
+    .filter((candidate) => !canonicalizeOwnerDispatchDependency(candidate))
+    .map((candidate) => candidate.trim())))
+    .sort((left, right) => left.localeCompare(right));
+
+  const fingerprintInput = JSON.stringify({
+    issueIdentifier,
+    blockerCode,
+    ownerFrom,
+    ownerTo,
+    dispatchState,
+    blockerSeverity,
+    requiredArtifacts,
+    resolvedDependencies,
+    canonicalLinkViolations,
+  });
+  const dispatchFingerprint = normalizeOptional(typeof row.dispatchFingerprint === 'string' ? row.dispatchFingerprint : '')
+    ?? `dispatch-${hashFNV1a(fingerprintInput)}`;
+  const readyForQA = dispatchState === 'resolved'
+    && requiredArtifacts.length > 0
+    && resolvedDependencies.length > 0
+    && canonicalLinkViolations.length === 0;
+
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : '')
+    ?? `${issueIdentifier}|${ownerFrom}->${ownerTo}|${hashFNV1a(`${blockerCode}|${dispatchFingerprint}`)}`;
+  return {
+    id,
+    issueIdentifier,
+    blockerCode,
+    ownerFrom,
+    ownerTo,
+    dispatchState,
+    blockerSeverity,
+    priorityWeight,
+    blockerSeverityWeight,
+    updatedAt,
+    requiredArtifacts,
+    resolvedDependencies,
+    canonicalLinkViolations,
+    dispatchFingerprint,
+    readyForQA,
+  };
+}
+
+export function buildPublicationOwnerDispatchSimulator(input: {
+  rows: unknown[];
+  activeTransitionId: string;
+}): PublicationOwnerDispatchSimulator {
+  const rows = input.rows
+    .map((row) => parsePublicationOwnerDispatchTransition(row))
+    .filter((row): row is PublicationOwnerDispatchTransition => Boolean(row))
+    .sort((left, right) => (
+      left.priorityWeight - right.priorityWeight
+      || left.blockerSeverityWeight - right.blockerSeverityWeight
+      || OWNER_DISPATCH_STATE_ORDER.indexOf(left.dispatchState) - OWNER_DISPATCH_STATE_ORDER.indexOf(right.dispatchState)
+      || left.updatedAt.localeCompare(right.updatedAt)
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.ownerTo.localeCompare(right.ownerTo)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeTransitionId = rowIds.has(input.activeTransitionId)
+    ? input.activeTransitionId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-publication-owner-dispatch-simulator.v1',
+    rows,
+    activeTransitionId,
+  };
+}
+
+export function movePublicationOwnerDispatchTransitionSelection(input: {
+  rows: PublicationOwnerDispatchTransition[];
+  activeTransitionId: string;
+  direction: 'next_owner_transition' | 'prev_owner_transition';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeTransitionId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_owner_transition') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolvePublicationOwnerDispatchShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): PublicationOwnerDispatchShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'o') {
+    return 'focus_owner_dispatch_simulator';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_owner_transition';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_owner_transition';
+  }
+  if (normalizedKey === 'h' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_composer';
+  }
+  if (normalizedKey === 'l' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_canonical_link_validation';
+  }
+  return null;
+}
+
+export function buildRemediationOwnerHandoffComposer(input: {
+  rows: unknown[];
+  activeTransitionId: string;
+}): RemediationOwnerHandoffComposer {
+  const simulator = buildPublicationOwnerDispatchSimulator(input);
+  const transitions = simulator.rows
+    .map((row) => `${row.issueIdentifier}:${row.ownerFrom}->${row.ownerTo}`)
+    .filter((value, index, all) => all.indexOf(value) === index);
+  const requiredArtifacts = Array.from(new Set(
+    simulator.rows.flatMap((row) => row.requiredArtifacts),
+  )).sort((left, right) => left.localeCompare(right));
+  const resolvedDependencies = Array.from(new Set(
+    simulator.rows.flatMap((row) => row.resolvedDependencies),
+  )).sort((left, right) => left.localeCompare(right));
+  const canonicalLinkViolations = Array.from(new Set(
+    simulator.rows.flatMap((row) => row.canonicalLinkViolations),
+  )).sort((left, right) => left.localeCompare(right));
+  const readyForQA = simulator.rows.length > 0
+    && simulator.rows.every((row) => row.readyForQA)
+    && canonicalLinkViolations.length === 0;
+  const dispatchFingerprint = `dispatch-${hashFNV1a(JSON.stringify({
+    transitions: simulator.rows.map((row) => row.dispatchFingerprint),
+    activeTransitionId: simulator.activeTransitionId,
+    readyForQA,
+  }))}`;
+
+  const markdown = [
+    '## Remediation Handoff',
+    '',
+    '```json',
+    JSON.stringify({
+      dispatchFingerprint,
+      ownerTransitions: transitions,
+      requiredArtifacts,
+      resolvedDependencies,
+      canonicalLinkViolations,
+      readyForQA,
+    }, null, 2),
+    '```',
+    '',
+    '### Owner Transitions',
+    ...(transitions.length ? transitions.map((transition) => `- ${transition}`) : ['- (none)']),
+    '',
+    '### Required Artifacts',
+    ...(requiredArtifacts.length ? requiredArtifacts.map((artifact) => `- ${artifact}`) : ['- (none)']),
+    '',
+    '### Resolved Dependencies',
+    ...(resolvedDependencies.length ? resolvedDependencies.map((dependency) => `- ${dependency}`) : ['- (none)']),
+  ].join('\n');
+
+  return {
+    contract: 'settlement-remediation-owner-handoff-composer.v1',
+    dispatchFingerprint,
+    ownerTransitions: transitions,
+    requiredArtifacts,
+    resolvedDependencies,
+    canonicalLinkViolations,
+    readyForQA,
+    markdown,
+  };
+}
+
+export function buildOwnerDispatchCanonicalLinkAutofixPreview(input: {
+  markdown: string;
+}): OwnerDispatchCanonicalAutofixPreview {
+  const candidates: string[] = [];
+  const linkPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#(?:comment-[0-9]+|document-[a-z0-9_-]+))?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#(?:comment-[0-9]+|document-[a-z0-9_-]+))?|\/issues\/[A-Za-z0-9-]+(?:#(?:comment-[0-9]+|document-[a-z0-9_-]+))?)/gi;
+  const patchedMarkdown = input.markdown.replace(linkPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation ? match.slice(0, -trailingPunctuation.length) : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+  const rows = Array.from(new Set(candidates))
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `owner-dispatch-autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+  return {
+    contract: 'settlement-owner-dispatch-canonical-autofix.v1',
     rows,
     patchedMarkdown,
     changedCount,

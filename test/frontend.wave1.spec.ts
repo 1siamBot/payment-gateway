@@ -98,6 +98,11 @@ import {
   buildPublicationReadinessBoard,
   buildPublicationReadinessGapResolverPanel,
   buildPublicationReadinessCanonicalAutofixPreview,
+  buildPublicationOwnerDispatchSimulator,
+  movePublicationOwnerDispatchTransitionSelection,
+  resolvePublicationOwnerDispatchShortcut,
+  buildRemediationOwnerHandoffComposer,
+  buildOwnerDispatchCanonicalLinkAutofixPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -1677,6 +1682,168 @@ describe('frontend wave1 helpers', () => {
       activeLaneId: 'lane-b',
       direction: 'prev_lane',
     })).toBe('lane-a');
+  });
+
+  it('builds publication owner-dispatch simulator rows in deterministic transition tuple order with stable keys', () => {
+    const simulator = buildPublicationOwnerDispatchSimulator({
+      rows: [
+        {
+          issueIdentifier: 'ONE-319',
+          blockerCode: 'credential-lock',
+          ownerFrom: 'frontend',
+          ownerTo: 'qa',
+          dispatchState: 'resolved',
+          blockerSeverity: 'high',
+          priorityWeight: 2,
+          updatedAt: '2026-03-19T11:20:00.000Z',
+          requiredArtifacts: ['artifacts/one-319/summary.md'],
+          resolvedDependencies: ['/issues/ONE-309', '/ONE/issues/ONE-306'],
+        },
+        {
+          issueIdentifier: 'ONE-307',
+          blockerCode: 'canonical-link-gap',
+          ownerFrom: 'frontend',
+          ownerTo: 'pm',
+          dispatchState: 'blocked',
+          blockerSeverity: 'critical',
+          priorityWeight: 1,
+          updatedAt: '2026-03-19T11:05:00.000Z',
+          requiredArtifacts: ['artifacts/one-307/summary.md'],
+          resolvedDependencies: ['/issues/ONE-304'],
+        },
+        {
+          issueIdentifier: 'ONE-308',
+          blockerCode: 'qa-pending',
+          ownerFrom: 'qa',
+          ownerTo: 'pm',
+          dispatchState: 'in_progress',
+          blockerSeverity: 'critical',
+          priorityWeight: 1,
+          updatedAt: '2026-03-19T11:10:00.000Z',
+          requiredArtifacts: ['artifacts/one-308/summary.md'],
+          resolvedDependencies: ['/issues/ONE-305'],
+        },
+      ],
+      activeTransitionId: '',
+    });
+
+    expect(simulator.contract).toBe('settlement-publication-owner-dispatch-simulator.v1');
+    expect(simulator.rows.map((row) => row.issueIdentifier)).toEqual(['ONE-307', 'ONE-308', 'ONE-319']);
+    expect(simulator.rows.every((row) => row.id.length > 0)).toBe(true);
+  });
+
+  it('keeps remediation owner handoff machine fields byte-stable for identical fixtures', () => {
+    const rows = [
+      {
+        issueIdentifier: 'ONE-319',
+        ownerFrom: 'frontend',
+        ownerTo: 'qa',
+        dispatchState: 'resolved',
+        blockerSeverity: 'high',
+        priorityWeight: 1,
+        updatedAt: '2026-03-19T11:20:00.000Z',
+        requiredArtifacts: ['artifacts/one-319/summary.md', 'artifacts/one-319/summary.md'],
+        resolvedDependencies: ['/issues/ONE-309', '/ONE/issues/ONE-306'],
+      },
+      {
+        issueIdentifier: 'ONE-308',
+        ownerFrom: 'qa',
+        ownerTo: 'pm',
+        dispatchState: 'resolved',
+        blockerSeverity: 'medium',
+        priorityWeight: 2,
+        updatedAt: '2026-03-19T11:25:00.000Z',
+        requiredArtifacts: ['artifacts/one-308/summary.md'],
+        resolvedDependencies: ['ONE-305'],
+      },
+    ];
+
+    const first = buildRemediationOwnerHandoffComposer({
+      rows,
+      activeTransitionId: '',
+    });
+    const second = buildRemediationOwnerHandoffComposer({
+      rows: [...rows].reverse(),
+      activeTransitionId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-owner-handoff-composer.v1');
+    expect(first.readyForQA).toBe(true);
+    expect(first.ownerTransitions).toEqual(['ONE-319:frontend->qa', 'ONE-308:qa->pm']);
+    expect(first.resolvedDependencies).toEqual([
+      '/ONE/issues/ONE-305',
+      '/ONE/issues/ONE-306',
+      '/ONE/issues/ONE-309',
+    ]);
+    expect(first.requiredArtifacts).toEqual([
+      'artifacts/one-308/summary.md',
+      'artifacts/one-319/summary.md',
+    ]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.markdown).toContain('"dispatchFingerprint"');
+  });
+
+  it('builds owner-dispatch canonical-link autofix preview and required keyboard workflow', () => {
+    const preview = buildOwnerDispatchCanonicalLinkAutofixPreview({
+      markdown: [
+        'handoff: /issues/ONE-309#comment-12',
+        'plan: https://paperclip.local/issues/ONE-308#document-plan',
+        'issue root: /issues/ONE-307',
+      ].join('\n'),
+    });
+    expect(preview.contract).toBe('settlement-owner-dispatch-canonical-autofix.v1');
+    expect(preview.changedCount).toBe(3);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-309#comment-12');
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-308#document-plan');
+    expect(preview.patchedMarkdown).toContain('/ONE/issues/ONE-307');
+
+    expect(resolvePublicationOwnerDispatchShortcut({ key: 'o', altKey: true })).toBe('focus_owner_dispatch_simulator');
+    expect(resolvePublicationOwnerDispatchShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_owner_transition');
+    expect(resolvePublicationOwnerDispatchShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_owner_transition');
+    expect(resolvePublicationOwnerDispatchShortcut({ key: 'h', ctrlKey: true, shiftKey: true })).toBe('open_handoff_composer');
+    expect(resolvePublicationOwnerDispatchShortcut({ key: 'L', ctrlKey: true, shiftKey: true }))
+      .toBe('run_canonical_link_validation');
+
+    const simulator = buildPublicationOwnerDispatchSimulator({
+      rows: [
+        {
+          issueIdentifier: 'ONE-307',
+          ownerFrom: 'frontend',
+          ownerTo: 'pm',
+          dispatchState: 'blocked',
+          blockerSeverity: 'critical',
+          priorityWeight: 1,
+          updatedAt: '2026-03-19T11:05:00.000Z',
+          requiredArtifacts: ['artifacts/one-307/summary.md'],
+          resolvedDependencies: ['/issues/ONE-304'],
+        },
+        {
+          issueIdentifier: 'ONE-319',
+          ownerFrom: 'frontend',
+          ownerTo: 'qa',
+          dispatchState: 'resolved',
+          blockerSeverity: 'high',
+          priorityWeight: 2,
+          updatedAt: '2026-03-19T11:20:00.000Z',
+          requiredArtifacts: ['artifacts/one-319/summary.md'],
+          resolvedDependencies: ['/issues/ONE-309'],
+        },
+      ],
+      activeTransitionId: '',
+    });
+    const next = movePublicationOwnerDispatchTransitionSelection({
+      rows: simulator.rows,
+      activeTransitionId: simulator.rows[0].id,
+      direction: 'next_owner_transition',
+    });
+    const prev = movePublicationOwnerDispatchTransitionSelection({
+      rows: simulator.rows,
+      activeTransitionId: simulator.rows[1].id,
+      direction: 'prev_owner_transition',
+    });
+    expect(next).toBe(simulator.rows[1].id);
+    expect(prev).toBe(simulator.rows[0].id);
   });
 
   it('builds diagnostics trend digest rows in deterministic tuple order', () => {
