@@ -53,6 +53,7 @@ describe('MerchantsService', () => {
     const config = await service.getConfig(created.id);
 
     expect(config.id).toBe(created.id);
+    expect(config.mode).toBe('live');
     expect(config.name).toBe('Demo Merchant');
     expect(config.webhookUrl).toBe('https://merchant.example/hook');
     expect(config.webhookSecretPreview).toMatch(/^whsec_/);
@@ -73,11 +74,47 @@ describe('MerchantsService', () => {
     });
 
     expect(updated.name).toBe('Updated Merchant');
+    expect(updated.mode).toBe('live');
     expect(updated.webhookUrl).toBe('https://merchant.example/new-hook');
     expect(updated.webhookSecretPreview).not.toBe(firstConfig.webhookSecretPreview);
     expect(prismaMock.auditRows.at(-1)).toEqual(expect.objectContaining({
       eventType: 'merchant.config.updated',
       entityId: created.id,
     }));
+  });
+
+  it('returns deterministic fixture config when mode=fixture', async () => {
+    const prismaMock = createPrismaMock();
+    const service = new MerchantsService(prismaMock.prisma as any);
+
+    const fixture = await service.getConfig('merchant-fixture', { mode: 'fixture' });
+
+    expect(fixture).toEqual({
+      mode: 'fixture',
+      id: 'merchant-fixture',
+      name: 'Fixture Merchant mercha',
+      webhookUrl: 'https://fixtures.gateway.local/webhooks/merchant',
+      webhookSecretPreview: 'whsec_fixture***0001',
+      createdAt: '2026-03-19T00:00:00.000Z',
+      updatedAt: '2026-03-19T00:00:00.000Z',
+    });
+  });
+
+  it('returns machine-readable validation error when name is blank', async () => {
+    const prismaMock = createPrismaMock();
+    const service = new MerchantsService(prismaMock.prisma as any);
+
+    const created = await service.create('Validation Merchant');
+
+    await expect(
+      service.updateConfig(created.id, { name: '   ' }),
+    ).rejects.toMatchObject({
+      response: {
+        message: 'merchant config validation failed',
+        reasonCode: 'merchant_name_required',
+        field: 'name',
+      },
+      status: 400,
+    });
   });
 });

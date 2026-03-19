@@ -1,12 +1,17 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { Authorize } from '../common/authz.decorator';
-import { CreateApiKeyDto, RevokeApiKeyDto, RotateApiKeyDto } from './dto';
+import { CreateApiKeyDto, ListApiKeysDto, RevokeApiKeyDto, RotateApiKeyDto } from './dto';
 import { ApiKeysService } from './api-keys.service';
 
 @Controller('api-keys')
 @Authorize('admin', 'ops')
 export class ApiKeysController {
   constructor(private readonly apiKeys: ApiKeysService) {}
+
+  @Get()
+  list(@Query() query: ListApiKeysDto) {
+    return this.apiKeys.listKeys(query.merchantId, { mode: query.mode });
+  }
 
   @Post('create')
   create(@Body() body: CreateApiKeyDto) {

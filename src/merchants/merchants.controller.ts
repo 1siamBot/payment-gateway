@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString, IsUrl } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, IsUrl } from 'class-validator';
 import { Authorize } from '../common/authz.decorator';
 import { MerchantsService } from './merchants.service';
 
@@ -28,6 +28,12 @@ class UpdateMerchantConfigDto {
   regenerateWebhookSecret?: boolean;
 }
 
+class MerchantContractModeDto {
+  @IsOptional()
+  @IsIn(['live', 'fixture'])
+  mode?: 'live' | 'fixture';
+}
+
 @Controller('merchants')
 @Authorize('admin', 'ops')
 export class MerchantsController {
@@ -44,16 +50,20 @@ export class MerchantsController {
   }
 
   @Get(':merchantId/config')
-  getConfig(@Param('merchantId') merchantId: string) {
-    return this.merchants.getConfig(merchantId);
+  getConfig(@Param('merchantId') merchantId: string, @Query() query: MerchantContractModeDto) {
+    return this.merchants.getConfig(merchantId, { mode: query.mode });
   }
 
   @Patch(':merchantId/config')
-  updateConfig(@Param('merchantId') merchantId: string, @Body() body: UpdateMerchantConfigDto) {
+  updateConfig(
+    @Param('merchantId') merchantId: string,
+    @Body() body: UpdateMerchantConfigDto,
+    @Query() query: MerchantContractModeDto,
+  ) {
     return this.merchants.updateConfig(merchantId, {
       name: body.name,
       webhookUrl: body.webhookUrl,
       regenerateWebhookSecret: body.regenerateWebhookSecret,
-    });
+    }, { mode: query.mode });
   }
 }

@@ -3,9 +3,90 @@ import { ApiKeyStatus } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
+type ApiKeyContractRow = {
+  id: string;
+  merchantId: string;
+  name: string;
+  status: ApiKeyStatus;
+  version: number;
+  prefix: string;
+  last4: string;
+  createdAt: string;
+  revokedAt: string | null;
+};
+
 @Injectable()
 export class ApiKeysService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async listKeys(
+    merchantId: string,
+    options?: { mode?: 'live' | 'fixture' },
+  ): Promise<{ mode: 'live' | 'fixture'; merchantId: string; total: number; data: ApiKeyContractRow[] }> {
+    if (options?.mode === 'fixture') {
+      return {
+        mode: 'fixture',
+        merchantId,
+        total: 2,
+        data: [
+          {
+            id: `${merchantId}-fixture-key-2`,
+            merchantId,
+            name: 'fixture-primary-v2',
+            status: ApiKeyStatus.ACTIVE,
+            version: 2,
+            prefix: 'pk_fix02',
+            last4: '0002',
+            createdAt: '2026-03-19T00:05:00.000Z',
+            revokedAt: null,
+          },
+          {
+            id: `${merchantId}-fixture-key-1`,
+            merchantId,
+            name: 'fixture-primary-v1',
+            status: ApiKeyStatus.REVOKED,
+            version: 1,
+            prefix: 'pk_fix01',
+            last4: '0001',
+            createdAt: '2026-03-18T23:55:00.000Z',
+            revokedAt: '2026-03-19T00:05:00.000Z',
+          },
+        ],
+      };
+    }
+
+    const merchant = await this.prisma.merchant.findUnique({ where: { id: merchantId } });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+
+    const rows = await this.prisma.apiKey.findMany({
+      where: { merchantId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        merchantId: true,
+        name: true,
+        status: true,
+        version: true,
+        prefix: true,
+        last4: true,
+        createdAt: true,
+        revokedAt: true,
+      },
+    });
+
+    return {
+      mode: 'live',
+      merchantId,
+      total: rows.length,
+      data: rows.map((row) => ({
+        ...row,
+        createdAt: row.createdAt.toISOString(),
+        revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
+      })),
+    };
+  }
 
   async createKey(merchantId: string, name: string, version = 1): Promise<{ id: string; apiKey: string }> {
     const merchant = await this.prisma.merchant.findUnique({ where: { id: merchantId } });

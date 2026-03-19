@@ -67,7 +67,10 @@ Required fields:
 - Branch name
 - Full 40-character commit SHA
 - PR URL, or explicit reason PR is unavailable
+- Touched file list (repo-relative paths)
+- Test/build command output summary for QA handoff
 - At least one artifact path (log, screenshot, checklist, or markdown report)
+- Traceability links to [ONE-68](/ONE/issues/ONE-68) and [ONE-71](/ONE/issues/ONE-71)
 
 Use this template in frontend completion comments:
 
@@ -76,9 +79,14 @@ Use this template in frontend completion comments:
 
 - Issue: [ONE-XXX](/ONE/issues/ONE-XXX)
 - Parent compliance issue: [ONE-68](/ONE/issues/ONE-68)
+- QA handoff issue: [ONE-71](/ONE/issues/ONE-71)
 - Branch: `feature/one-xxx-short-name`
 - Commit: `0123456789abcdef0123456789abcdef01234567`
 - PR: `https://github.com/1siamBot/payment-gateway/pull/123` (or `Unavailable: <reason>`)
+- Touched files:
+  - `frontend/path/to/file.vue`
+- Verification summary:
+  - `npm run frontend:build` (pass)
 - Artifacts:
   - `artifacts/one-xxx/<artifact-file>.md`
   - `artifacts/one-xxx/<screenshot-or-log>.txt`

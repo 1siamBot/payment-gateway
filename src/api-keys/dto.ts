@@ -1,4 +1,4 @@
-import { IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
 
 export class CreateApiKeyDto {
   @IsString()
@@ -16,4 +16,13 @@ export class RotateApiKeyDto {
 export class RevokeApiKeyDto {
   @IsString()
   keyId!: string;
+}
+
+export class ListApiKeysDto {
+  @IsString()
+  merchantId!: string;
+
+  @IsOptional()
+  @IsIn(['live', 'fixture'])
+  mode?: 'live' | 'fixture';
 }
