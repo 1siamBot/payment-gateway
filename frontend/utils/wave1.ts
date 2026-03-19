@@ -292,6 +292,72 @@ export type ChecklistAutofixHint = {
   action: string;
 };
 
+export type EvidencePacketLintSeverity = 'error' | 'warning';
+export type EvidencePacketLintFilterKey = 'all' | EvidencePacketLintSeverity;
+export type EvidencePacketLintShortcut =
+  | 'focus_lint_list'
+  | 'next_finding'
+  | 'prev_finding'
+  | 'validate_packet';
+export type EvidencePacketLintPrMode = 'pr_link' | 'no_pr_yet';
+
+export type EvidencePacketLintConsoleFinding = {
+  id: string;
+  code: string;
+  severity: EvidencePacketLintSeverity;
+  severityPriority: number;
+  field: string;
+  fieldPriority: number;
+  issueIdentifier: string;
+  path: string;
+  message: string;
+  input: string;
+  normalized: string;
+};
+
+export type EvidencePacketLintConsole = {
+  contract: 'settlement-evidence-packet-lint-console.v1';
+  rows: EvidencePacketLintConsoleFinding[];
+  counts: {
+    error: number;
+    warning: number;
+    total: number;
+  };
+  activeFilter: EvidencePacketLintFilterKey;
+  activeFindingId: string;
+};
+
+export type CanonicalLinkAutofixRow = {
+  id: string;
+  original: string;
+  normalized: string;
+  changed: boolean;
+};
+
+export type CanonicalLinkAutofixPreview = {
+  rows: CanonicalLinkAutofixRow[];
+  correctedOutput: string;
+  changedCount: number;
+};
+
+export type EvidencePacketLintChecklistDraft = {
+  branch: string;
+  fullSha: string;
+  prMode: EvidencePacketLintPrMode;
+  testCommand: string;
+  artifactPath: string;
+  dependencyIssueLinksText: string;
+  blockerOwner: string;
+  blockerEta: string;
+};
+
+export type EvidencePacketLintChecklistValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type ReviewQueueHandoffMode = 'pr' | 'no_pr';
 
 export type ReviewQueueHandoffPacketDraft = {
@@ -677,6 +743,21 @@ const EVIDENCE_TIMELINE_AUTOFIX_HINTS: Record<EvidenceTimelineGapCode, string> =
   MISSING_BLOCKER_OWNER: 'Assign explicit blocker owner (team or person) for no-PR mode.',
   MISSING_BLOCKER_ETA: 'Provide ISO ETA for unblock timing and retry publication window.',
 };
+const EVIDENCE_PACKET_LINT_SEVERITY_PRIORITY: Record<EvidencePacketLintSeverity, number> = {
+  error: 1,
+  warning: 2,
+};
+const EVIDENCE_PACKET_LINT_FIELD_PRIORITY: Record<string, number> = {
+  branch: 10,
+  fullSha: 20,
+  prMode: 30,
+  testCommand: 40,
+  artifactPath: 50,
+  dependencyIssueLinks: 60,
+  blockerOwner: 70,
+  blockerEta: 80,
+};
+const EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER = '0000000000000000000000000000000000000000';
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
 const REPLAY_DIFF_CHANGE_TYPE_PRIORITY: Record<'added' | 'removed' | 'modified', number> = {
@@ -1972,6 +2053,357 @@ export function resolveEvidenceTimelineHeatmapShortcut(input: {
     return 'validate_checklist';
   }
   return null;
+}
+
+function parseEvidencePacketLintFinding(raw: unknown): EvidencePacketLintConsoleFinding | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const finding = raw as Record<string, unknown>;
+  const severityRaw = normalizeOptional(
+    typeof finding.severity === 'string'
+      ? finding.severity
+      : String(finding.severity ?? ''),
+  );
+  const severity: EvidencePacketLintSeverity = severityRaw === 'warning' ? 'warning' : 'error';
+  const severityPriorityRaw = parseFiniteNumber(finding.severityPriority);
+  const severityPriority = severityPriorityRaw !== null
+    ? Math.max(1, Math.trunc(severityPriorityRaw))
+    : EVIDENCE_PACKET_LINT_SEVERITY_PRIORITY[severity];
+  const field = normalizeOptional(
+    typeof finding.field === 'string'
+      ? finding.field
+      : String(finding.field ?? ''),
+  ) ?? 'unknown';
+  const fieldPriorityRaw = parseFiniteNumber(finding.fieldPriority);
+  const fieldPriority = fieldPriorityRaw !== null
+    ? Math.max(1, Math.trunc(fieldPriorityRaw))
+    : (EVIDENCE_PACKET_LINT_FIELD_PRIORITY[field] ?? 999);
+  const issueIdentifier = normalizeOptional(
+    typeof finding.issueIdentifier === 'string'
+      ? finding.issueIdentifier
+      : String(finding.issueIdentifier ?? ''),
+  );
+  const path = normalizeOptional(
+    typeof finding.path === 'string'
+      ? finding.path
+      : String(finding.path ?? ''),
+  );
+  if (!issueIdentifier || !path) {
+    return null;
+  }
+  const code = normalizeOptional(typeof finding.code === 'string' ? finding.code : String(finding.code ?? ''))
+    ?? 'UNKNOWN_FINDING';
+  const message = normalizeOptional(
+    typeof finding.message === 'string'
+      ? finding.message
+      : String(finding.message ?? ''),
+  ) ?? 'Missing lint finding message.';
+  const inputValue = normalizeOptional(
+    typeof finding.input === 'string'
+      ? finding.input
+      : String(finding.input ?? ''),
+  ) ?? '';
+  const normalizedValue = normalizeOptional(
+    typeof finding.normalized === 'string'
+      ? finding.normalized
+      : String(finding.normalized ?? ''),
+  ) ?? '';
+  const id = normalizeOptional(
+    typeof finding.id === 'string'
+      ? finding.id
+      : String(finding.id ?? `${severityPriority}|${fieldPriority}|${issueIdentifier}|${path}|${code}`),
+  ) ?? `${severityPriority}|${fieldPriority}|${issueIdentifier}|${path}|${code}`;
+  return {
+    id,
+    code,
+    severity,
+    severityPriority,
+    field,
+    fieldPriority,
+    issueIdentifier,
+    path,
+    message,
+    input: inputValue,
+    normalized: normalizedValue,
+  };
+}
+
+export function filterEvidencePacketLintFindings(
+  rows: EvidencePacketLintConsoleFinding[],
+  filter: EvidencePacketLintFilterKey,
+): EvidencePacketLintConsoleFinding[] {
+  if (filter === 'all') {
+    return [...rows];
+  }
+  return rows.filter((row) => row.severity === filter);
+}
+
+export function buildEvidencePacketLintConsole(input: {
+  findings: unknown[];
+  activeFilter?: EvidencePacketLintFilterKey;
+  activeFindingId: string;
+}): EvidencePacketLintConsole {
+  const activeFilter = input.activeFilter ?? 'all';
+  const counts = {
+    error: 0,
+    warning: 0,
+    total: 0,
+  };
+  const allRows = input.findings
+    .map((finding) => parseEvidencePacketLintFinding(finding))
+    .filter((finding): finding is EvidencePacketLintConsoleFinding => Boolean(finding))
+    .sort((left, right) => (
+      left.severityPriority - right.severityPriority
+      || left.fieldPriority - right.fieldPriority
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.path.localeCompare(right.path)
+      || left.id.localeCompare(right.id)
+    ));
+  for (const row of allRows) {
+    counts[row.severity] += 1;
+    counts.total += 1;
+  }
+  const rows = filterEvidencePacketLintFindings(allRows, activeFilter);
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeFindingId = idSet.has(input.activeFindingId)
+    ? input.activeFindingId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-evidence-packet-lint-console.v1',
+    rows,
+    counts,
+    activeFilter,
+    activeFindingId,
+  };
+}
+
+export function moveEvidencePacketLintSelection(input: {
+  rows: EvidencePacketLintConsoleFinding[];
+  activeFindingId: string;
+  direction: 'next' | 'prev';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeFindingId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveEvidencePacketLintShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): EvidencePacketLintShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'e') {
+    return 'focus_lint_list';
+  }
+  if (input.altKey && normalizedKey === 'j') {
+    return 'next_finding';
+  }
+  if (input.altKey && normalizedKey === 'k') {
+    return 'prev_finding';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_packet';
+  }
+  return null;
+}
+
+function canonicalizePaperclipIssueLink(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let pathname = trimmed;
+  let hash = '';
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      pathname = parsed.pathname;
+      hash = parsed.hash;
+    } catch {
+      return null;
+    }
+  } else {
+    const hashIndex = trimmed.indexOf('#');
+    if (hashIndex >= 0) {
+      pathname = trimmed.slice(0, hashIndex);
+      hash = trimmed.slice(hashIndex);
+    }
+  }
+  const canonicalMatch = pathname.match(/^\/([A-Za-z0-9_-]+)\/issues\/([A-Za-z0-9]+-\d+)$/);
+  if (canonicalMatch) {
+    const identifier = canonicalMatch[2].toUpperCase();
+    const prefix = identifier.split('-')[0];
+    if (!hash) {
+      return `/${prefix}/issues/${identifier}`;
+    }
+    const normalizedHash = hash.match(/^#(comment-\d+|document-[a-z0-9_-]+)$/i);
+    return normalizedHash ? `/${prefix}/issues/${identifier}#${normalizedHash[1]}` : null;
+  }
+  const unprefixedMatch = pathname.match(/^\/issues\/([A-Za-z0-9]+-\d+)$/);
+  if (unprefixedMatch) {
+    const identifier = unprefixedMatch[1].toUpperCase();
+    const prefix = identifier.split('-')[0];
+    if (!hash) {
+      return `/${prefix}/issues/${identifier}`;
+    }
+    const normalizedHash = hash.match(/^#(comment-\d+|document-[a-z0-9_-]+)$/i);
+    return normalizedHash ? `/${prefix}/issues/${identifier}#${normalizedHash[1]}` : null;
+  }
+  return null;
+}
+
+export function buildCanonicalLinkAutofixPreview(input: {
+  linksText: string;
+}): CanonicalLinkAutofixPreview {
+  const rows = normalizeMultilineEntries(input.linksText)
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `autofix-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  return {
+    rows,
+    correctedOutput: rows.map((row) => row.normalized).join('\n'),
+    changedCount: rows.filter((row) => row.changed).length,
+  };
+}
+
+export function getDefaultEvidencePacketLintChecklistDraft(): EvidencePacketLintChecklistDraft {
+  return {
+    branch: '',
+    fullSha: EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER,
+    prMode: 'no_pr_yet',
+    testCommand: '',
+    artifactPath: '',
+    dependencyIssueLinksText: '',
+    blockerOwner: '',
+    blockerEta: '',
+  };
+}
+
+export function applyEvidencePacketLintChecklistPrMode(input: {
+  draft: EvidencePacketLintChecklistDraft;
+  prMode: EvidencePacketLintPrMode;
+}): EvidencePacketLintChecklistDraft {
+  if (input.prMode === 'no_pr_yet') {
+    return {
+      ...input.draft,
+      prMode: input.prMode,
+    };
+  }
+  return {
+    ...input.draft,
+    prMode: input.prMode,
+    blockerOwner: '',
+    blockerEta: '',
+  };
+}
+
+export function validateEvidencePacketLintChecklistDraft(
+  draft: EvidencePacketLintChecklistDraft,
+): EvidencePacketLintChecklistValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const testCommand = draft.testCommand.trim();
+  const artifactPath = draft.artifactPath.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const blockerEta = draft.blockerEta.trim();
+  const dependencyIssueLinks = normalizeMultilineEntries(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before completion.');
+  }
+  if (!draft.prMode) {
+    missingFields.push('prMode');
+  }
+  if (!testCommand) {
+    missingFields.push('testCommand');
+  }
+  if (!artifactPath) {
+    missingFields.push('artifactPath');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!canonicalizePaperclipIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+  if (draft.prMode === 'no_pr_yet') {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!blockerEta) {
+      missingFields.push('blockerEta');
+    } else if (!Number.isFinite(new Date(blockerEta).getTime())) {
+      errors.push('Blocker ETA must be a valid date-time string.');
+    }
+  }
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks: dependencyIssueLinks
+      .map((link) => canonicalizePaperclipIssueLink(link))
+      .filter((link): link is string => Boolean(link))
+      .sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+export function resetEvidencePacketLintChecklistDraftSafe(input: {
+  activeFilter: EvidencePacketLintFilterKey;
+  activeFindingId: string;
+  confirmFullReset: boolean;
+}): {
+  draft: EvidencePacketLintChecklistDraft;
+  activeFilter: EvidencePacketLintFilterKey;
+  activeFindingId: string;
+  didFullReset: boolean;
+  message: string;
+} {
+  if (input.confirmFullReset) {
+    return {
+      draft: getDefaultEvidencePacketLintChecklistDraft(),
+      activeFilter: 'all',
+      activeFindingId: '',
+      didFullReset: true,
+      message: 'Evidence packet checklist cleared. Lint filter and active finding reset to default.',
+    };
+  }
+  return {
+    draft: getDefaultEvidencePacketLintChecklistDraft(),
+    activeFilter: input.activeFilter,
+    activeFindingId: input.activeFindingId,
+    didFullReset: false,
+    message: 'Evidence packet checklist cleared. Lint filter and active finding preserved.',
+  };
 }
 
 export function filterReviewQueueLedgerRows(

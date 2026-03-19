@@ -62,17 +62,25 @@ import {
   resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
   resolveReviewQueueLedgerShortcut,
+  resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveEvidenceTimelineHeatmapShortcut,
   resetOperatorDecisionQueueDraftSafe,
   resetReviewQueueHandoffPacketDraftSafe,
+  resetEvidencePacketLintChecklistDraftSafe,
   resetEvidenceGapChecklistDraftSafe,
   swapReplayBookmarkCompareSlots,
+  applyEvidencePacketLintChecklistPrMode,
   validateExceptionActionInput,
+  validateEvidencePacketLintChecklistDraft,
   validateEvidenceGapChecklistDraft,
+  buildEvidencePacketLintConsole,
+  buildCanonicalLinkAutofixPreview,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
+  moveEvidencePacketLintSelection,
   moveEvidenceTimelineHeatmapSelection,
+  getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
   filterReviewQueueLedgerRows,
@@ -91,6 +99,7 @@ import type { IncidentBookmarkFilterKey } from '../utils/wave1';
 import type { OperatorTimelinePresetKey } from '../utils/wave1';
 import type { ReviewQueueLedgerFilterKey } from '../utils/wave1';
 import type { ReplayDiffInspectorFilterKey } from '../utils/wave1';
+import type { EvidencePacketLintFilterKey } from '../utils/wave1';
 
 type InternalRole = 'admin' | 'ops' | 'support';
 
@@ -534,6 +543,8 @@ const reviewQueueLedgerState = reactive({
 });
 const activeReviewQueueFilter = ref<ReviewQueueLedgerFilterKey>('all');
 const activeReviewQueueRowId = ref('');
+const activeEvidencePacketLintFilter = ref<EvidencePacketLintFilterKey>('all');
+const activeEvidencePacketLintFindingId = ref('');
 const activeEvidenceTimelineLane = ref<ReviewQueueLedgerFilterKey>('all');
 const activeEvidenceTimelineRowId = ref('');
 const reviewQueueHandoffDraft = ref(buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null }));
@@ -542,8 +553,16 @@ const reviewQueueHandoffValidation = reactive({
   error: '',
 });
 const reviewQueueHandoffMissingFields = ref<Set<string>>(new Set());
+const evidencePacketLintState = reactive({
+  message: '',
+  error: '',
+});
+const evidencePacketLintChecklistDraft = ref(getDefaultEvidencePacketLintChecklistDraft());
+const evidencePacketLintChecklistMissingFields = ref<Set<string>>(new Set());
 const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
+const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
+const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidenceTimelineHeatmapPanelRef = ref<HTMLElement | null>(null);
 const queueDraftRowIds = ref<string[]>([]);
 const activeDecisionQueueItemId = ref('');
@@ -584,6 +603,73 @@ const filteredReviewQueueLedgerRows = computed(() => filterReviewQueueLedgerRows
 ));
 const activeReviewQueueRow = computed(() => reviewQueueLedger.value.rows
   .find((row) => row.id === activeReviewQueueRowId.value) ?? null);
+const evidencePacketLintFindingSourceRows = computed(() => {
+  const baseRows = reviewQueueLedger.value.rows;
+  if (!baseRows.length) {
+    return [];
+  }
+  return baseRows.slice(0, 6).map((row, index) => {
+    const issueIdentifier = row.id.toUpperCase();
+    if (index % 3 === 0) {
+      return {
+        id: `lint-${row.id}-branch`,
+        code: 'MISSING_BRANCH',
+        severity: 'error',
+        severityPriority: 1,
+        field: 'branch',
+        fieldPriority: 10,
+        issueIdentifier,
+        path: `artifacts/${row.id.toLowerCase()}/evidence.md`,
+        message: 'branch is required',
+        input: '',
+        normalized: '',
+      };
+    }
+    if (index % 3 === 1) {
+      const original = `https://paperclip.dev/issues/${issueIdentifier}`;
+      const normalized = `/${issueIdentifier.split('-')[0]}/issues/${issueIdentifier}`;
+      return {
+        id: `lint-${row.id}-canonical`,
+        code: 'NON_CANONICAL_DEPENDENCY_ISSUE_LINK',
+        severity: 'warning',
+        severityPriority: 2,
+        field: 'dependencyIssueLinks',
+        fieldPriority: 60,
+        issueIdentifier,
+        path: `artifacts/${row.id.toLowerCase()}/checklist.md`,
+        message: `dependency issue link normalized to canonical format: ${normalized}`,
+        input: original,
+        normalized,
+      };
+    }
+    return {
+      id: `lint-${row.id}-blocker`,
+      code: 'MISSING_BLOCKER_OWNER',
+      severity: 'error',
+      severityPriority: 1,
+      field: 'blockerOwner',
+      fieldPriority: 70,
+      issueIdentifier,
+      path: `artifacts/${row.id.toLowerCase()}/handoff.md`,
+      message: 'blockerOwner is required when prMode=no_pr_yet',
+      input: '',
+      normalized: '',
+    };
+  });
+});
+const evidencePacketLintConsole = computed(() => buildEvidencePacketLintConsole({
+  findings: evidencePacketLintFindingSourceRows.value,
+  activeFilter: activeEvidencePacketLintFilter.value,
+  activeFindingId: activeEvidencePacketLintFindingId.value,
+}));
+const evidencePacketLintFilterOptions = computed(() => ([
+  { key: 'all' as EvidencePacketLintFilterKey, label: 'all', count: evidencePacketLintConsole.value.counts.total },
+  { key: 'error' as EvidencePacketLintFilterKey, label: 'error', count: evidencePacketLintConsole.value.counts.error },
+  { key: 'warning' as EvidencePacketLintFilterKey, label: 'warning', count: evidencePacketLintConsole.value.counts.warning },
+]));
+const canonicalLinkAutofixPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: evidencePacketLintChecklistDraft.value.dependencyIssueLinksText,
+}));
 const evidenceTimelineHeatmapSourceRows = computed(() => {
   const gapCodes = [
     'MISSING_BRANCH',
@@ -1395,6 +1481,12 @@ function resetReviewQueueHandoffValidation() {
   reviewQueueHandoffMissingFields.value = new Set();
 }
 
+function resetEvidencePacketLintState() {
+  evidencePacketLintState.message = '';
+  evidencePacketLintState.error = '';
+  evidencePacketLintChecklistMissingFields.value = new Set();
+}
+
 watch(filteredBulkDiffRows, (rows) => {
   if (!rows.length) {
     activeBulkDiffRowId.value = '';
@@ -1457,6 +1549,7 @@ watch(replayDiffInspector, (inspector) => {
 watch(reviewQueueLedger, (ledger) => {
   if (!ledger.rows.length) {
     activeReviewQueueRowId.value = '';
+    activeEvidencePacketLintFindingId.value = '';
     activeEvidenceTimelineRowId.value = '';
     reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
     return;
@@ -1465,6 +1558,16 @@ watch(reviewQueueLedger, (ledger) => {
     activeReviewQueueRowId.value = ledger.activeRowId;
     const activeRow = ledger.rows.find((row) => row.id === ledger.activeRowId) ?? null;
     reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow });
+  }
+}, { deep: true, immediate: true });
+
+watch(evidencePacketLintConsole, (consoleData) => {
+  if (!consoleData.rows.length) {
+    activeEvidencePacketLintFindingId.value = '';
+    return;
+  }
+  if (!consoleData.rows.some((row) => row.id === activeEvidencePacketLintFindingId.value)) {
+    activeEvidencePacketLintFindingId.value = consoleData.activeFindingId;
   }
 }, { deep: true, immediate: true });
 
@@ -1560,6 +1663,74 @@ function setActiveReviewQueueFilter(filter: ReviewQueueLedgerFilterKey) {
   if (!nextRows.some((row) => row.id === activeReviewQueueRowId.value)) {
     activeReviewQueueRowId.value = nextRows[0]?.id ?? '';
   }
+}
+
+function setActiveEvidencePacketLintFilter(filter: EvidencePacketLintFilterKey) {
+  resetEvidencePacketLintState();
+  activeEvidencePacketLintFilter.value = filter;
+  const nextRows = evidencePacketLintConsole.value.rows;
+  if (!nextRows.some((row) => row.id === activeEvidencePacketLintFindingId.value)) {
+    activeEvidencePacketLintFindingId.value = nextRows[0]?.id ?? '';
+  }
+}
+
+function setActiveEvidencePacketLintFinding(findingId: string) {
+  resetEvidencePacketLintState();
+  activeEvidencePacketLintFindingId.value = findingId;
+}
+
+function updateEvidencePacketLintPrMode(mode: 'pr_link' | 'no_pr_yet') {
+  evidencePacketLintChecklistDraft.value = applyEvidencePacketLintChecklistPrMode({
+    draft: evidencePacketLintChecklistDraft.value,
+    prMode: mode,
+  });
+}
+
+function validateEvidencePacketLintChecklist() {
+  resetEvidencePacketLintState();
+  const validation = validateEvidencePacketLintChecklistDraft(evidencePacketLintChecklistDraft.value);
+  evidencePacketLintChecklistMissingFields.value = new Set(validation.missingFields);
+  if (validation.isComplete) {
+    evidencePacketLintState.message = `Evidence packet checklist validated. Dependency links: ${validation.dependencyIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  evidencePacketLintState.error = errorParts.join(' | ') || 'Evidence packet checklist is incomplete.';
+}
+
+function clearEvidencePacketLintChecklistDraft(confirmFullReset: boolean) {
+  resetEvidencePacketLintState();
+  const next = resetEvidencePacketLintChecklistDraftSafe({
+    activeFilter: activeEvidencePacketLintFilter.value,
+    activeFindingId: activeEvidencePacketLintFindingId.value,
+    confirmFullReset,
+  });
+  evidencePacketLintChecklistDraft.value = next.draft;
+  activeEvidencePacketLintFilter.value = next.activeFilter;
+  activeEvidencePacketLintFindingId.value = next.activeFindingId;
+  evidencePacketLintState.message = next.message;
+}
+
+function clearEvidencePacketLintChecklistDraftWithConfirm() {
+  if (import.meta.client && !window.confirm('Full reset clears checklist draft, filter, and active lint finding. Continue?')) {
+    return;
+  }
+  clearEvidencePacketLintChecklistDraft(true);
+}
+
+function focusEvidencePacketLintList() {
+  evidencePacketLintPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  evidencePacketLintBranchInputRef.value?.focus();
+}
+
+function isEvidencePacketLintFieldMissing(fieldKey: string): boolean {
+  return evidencePacketLintChecklistMissingFields.value.has(fieldKey);
 }
 
 function setActiveEvidenceTimelineLane(lane: ReviewQueueLedgerFilterKey) {
@@ -1934,6 +2105,38 @@ function onReplayDiffInspectorKeydown(event: KeyboardEvent) {
   validateEvidenceGapChecklist();
 }
 
+function onEvidencePacketLintKeydown(event: KeyboardEvent) {
+  const shortcut = resolveEvidencePacketLintShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'validate_packet') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_lint_list') {
+    focusEvidencePacketLintList();
+    return;
+  }
+  if (shortcut === 'next_finding' || shortcut === 'prev_finding') {
+    activeEvidencePacketLintFindingId.value = moveEvidencePacketLintSelection({
+      rows: evidencePacketLintConsole.value.rows,
+      activeFindingId: activeEvidencePacketLintFindingId.value,
+      direction: shortcut === 'next_finding' ? 'next' : 'prev',
+    });
+    return;
+  }
+  validateEvidencePacketLintChecklist();
+}
+
 function onEvidenceTimelineHeatmapKeydown(event: KeyboardEvent) {
   const shortcut = resolveEvidenceTimelineHeatmapShortcut({
     key: event.key,
@@ -2240,6 +2443,7 @@ function resetBulkSelectionSafe() {
   staleExceptionSelectionCount.value = 0;
   resetReplayCompareState();
   resetTimelineScrubberState();
+  resetEvidencePacketLintState();
   resetBulkInspectorViewState();
   const safeQueueReset = resetOperatorDecisionQueueDraftSafe({
     activeMatrixFilter: activeScenarioMatrixFilter.value,
@@ -2255,6 +2459,9 @@ function resetBulkSelectionSafe() {
   reviewQueueHandoffDraft.value = safeReviewQueueReset.draft;
   activeReviewQueueFilter.value = safeReviewQueueReset.activeFilter;
   activeReviewQueueRowId.value = safeReviewQueueReset.activeRowId;
+  evidencePacketLintChecklistDraft.value = getDefaultEvidencePacketLintChecklistDraft();
+  activeEvidencePacketLintFilter.value = 'all';
+  activeEvidencePacketLintFindingId.value = '';
   bulkPreviewDrawer.error = '';
   bulkPreviewConfirmState.error = '';
   decisionQueueState.error = '';
@@ -2301,14 +2508,18 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   resetDecisionQueueState();
   resetReviewQueueLedgerState();
   resetReviewQueueHandoffValidation();
+  resetEvidencePacketLintState();
   resetTimelineScrubberState();
   queueDraftRowIds.value = [];
   activeScenarioMatrixFilter.value = 'all';
   activeReviewQueueFilter.value = 'all';
   activeReviewQueueRowId.value = '';
+  activeEvidencePacketLintFilter.value = 'all';
+  activeEvidencePacketLintFindingId.value = '';
   activeEvidenceTimelineLane.value = 'all';
   activeEvidenceTimelineRowId.value = '';
   reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
+  evidencePacketLintChecklistDraft.value = getDefaultEvidencePacketLintChecklistDraft();
 
   if (mode === 'loading') {
     exceptionState.loading = true;
@@ -3804,6 +4015,145 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="evidencePacketLintPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onEvidencePacketLintKeydown"
+            >
+              <h4>Evidence Packet Lint Console</h4>
+              <p class="state" :class="{ error: evidencePacketLintState.error }">
+                {{ evidencePacketLintState.error
+                  || evidencePacketLintState.message
+                  || 'Deterministic order: severityPriority, fieldPriority, issueIdentifier, path. Keyboard: Alt+E focus, Alt+J next finding, Alt+K previous finding, Ctrl+Shift+Enter validate packet.' }}
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in evidencePacketLintFilterOptions"
+                  :key="`evidence-lint-filter-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeEvidencePacketLintFilter === option.key }"
+                  @click="setActiveEvidencePacketLintFilter(option.key)"
+                >
+                  {{ option.label }} ({{ option.count }})
+                </button>
+              </div>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Field</th>
+                      <th>Issue</th>
+                      <th>Path</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!evidencePacketLintConsole.rows.length">
+                      <td colspan="5">No lint findings for this filter.</td>
+                    </tr>
+                    <tr
+                      v-for="row in evidencePacketLintConsole.rows"
+                      :key="`evidence-lint-${row.id}`"
+                      :class="{ 'queue-row-active': activeEvidencePacketLintFindingId === row.id }"
+                      @click="setActiveEvidencePacketLintFinding(row.id)"
+                    >
+                      <td>{{ row.severity }}</td>
+                      <td>{{ row.field }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.path }}</td>
+                      <td>{{ row.message }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h5>Canonical Link Autofix Preview</h5>
+              <p class="state">Original vs normalized company-prefixed issue/comment/document links with copy-ready corrected output.</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Original</th>
+                      <th>Normalized</th>
+                      <th>Changed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!canonicalLinkAutofixPreview.rows.length">
+                      <td colspan="3">Add dependency issue links below to preview canonical autofix output.</td>
+                    </tr>
+                    <tr
+                      v-for="row in canonicalLinkAutofixPreview.rows"
+                      :key="row.id"
+                    >
+                      <td><code>{{ row.original }}</code></td>
+                      <td><code>{{ row.normalized }}</code></td>
+                      <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <label>
+                Corrected Link Output (copy-ready)
+                <textarea :value="canonicalLinkAutofixPreview.correctedOutput" rows="3" readonly />
+              </label>
+
+              <h5>Required Field Checklist</h5>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="validateEvidencePacketLintChecklist">Validate Packet</button>
+                <button type="button" class="link" @click="clearEvidencePacketLintChecklistDraft(false)">Clear Draft Only</button>
+                <button type="button" class="link" @click="clearEvidencePacketLintChecklistDraftWithConfirm">Full Reset</button>
+              </div>
+              <div class="triage-grid">
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('branch') }">
+                  Branch
+                  <input
+                    ref="evidencePacketLintBranchInputRef"
+                    v-model="evidencePacketLintChecklistDraft.branch"
+                    placeholder="feature/one-259-evidence-lint-console"
+                  />
+                </label>
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('fullSha') }">
+                  Full SHA
+                  <input v-model="evidencePacketLintChecklistDraft.fullSha" placeholder="40-char commit SHA" />
+                </label>
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('prMode') }">
+                  PR Mode
+                  <select
+                    :value="evidencePacketLintChecklistDraft.prMode"
+                    @change="updateEvidencePacketLintPrMode(($event.target as HTMLSelectElement).value as 'pr_link' | 'no_pr_yet')"
+                  >
+                    <option value="pr_link">pr_link</option>
+                    <option value="no_pr_yet">no_pr_yet</option>
+                  </select>
+                </label>
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('testCommand') }">
+                  Test Command
+                  <input v-model="evidencePacketLintChecklistDraft.testCommand" placeholder="npm run test -- test/frontend.wave1.spec.ts" />
+                </label>
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('artifactPath') }">
+                  Artifact Path
+                  <input v-model="evidencePacketLintChecklistDraft.artifactPath" placeholder="artifacts/one-259/evidence-lint-console.txt" />
+                </label>
+              </div>
+              <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('dependencyIssueLinks') }">
+                Dependency Issue Links (one per line)
+                <textarea v-model="evidencePacketLintChecklistDraft.dependencyIssueLinksText" rows="4" placeholder="/ONE/issues/ONE-258"></textarea>
+              </label>
+              <div class="triage-grid" v-if="evidencePacketLintChecklistDraft.prMode === 'no_pr_yet'">
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('blockerOwner') }">
+                  Blocker Owner
+                  <input v-model="evidencePacketLintChecklistDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                </label>
+                <label :class="{ 'field-missing': isEvidencePacketLintFieldMissing('blockerEta') }">
+                  Blocker ETA
+                  <input v-model="evidencePacketLintChecklistDraft.blockerEta" placeholder="2026-03-20T18:00:00.000Z" />
+                </label>
+              </div>
+            </div>
             <div
               ref="evidenceTimelineHeatmapPanelRef"
               class="simulation-outcome-panel"

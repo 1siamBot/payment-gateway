@@ -82,12 +82,21 @@ import {
   buildReplayDiffInspector,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
+  buildEvidencePacketLintConsole,
+  buildCanonicalLinkAutofixPreview,
   filterReplayDiffInspectorRows,
+  filterEvidencePacketLintFindings,
   moveEvidenceTimelineHeatmapSelection,
+  moveEvidencePacketLintSelection,
   moveReplayDiffInspectorSelection,
   resolveEvidenceTimelineHeatmapShortcut,
+  resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
+  getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
+  applyEvidencePacketLintChecklistPrMode,
+  validateEvidencePacketLintChecklistDraft,
+  resetEvidencePacketLintChecklistDraftSafe,
   validateEvidenceGapChecklistDraft,
   resetEvidenceGapChecklistDraftSafe,
   buildEvidenceDiffRail,
@@ -1067,6 +1076,151 @@ describe('frontend wave1 helpers', () => {
       'MISSING_BLOCKER_OWNER',
       'MISSING_BLOCKER_ETA',
     ]);
+  });
+
+  it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {
+    const consoleData = buildEvidencePacketLintConsole({
+      findings: [
+        {
+          id: 'finding-c',
+          code: 'MISSING_BLOCKER_OWNER',
+          severity: 'error',
+          severityPriority: 1,
+          field: 'blockerOwner',
+          fieldPriority: 70,
+          issueIdentifier: 'ONE-259',
+          path: 'artifacts/one-259/handoff.md',
+          message: 'blockerOwner is required when prMode=no_pr_yet',
+        },
+        {
+          id: 'finding-a',
+          code: 'MISSING_BRANCH',
+          severity: 'error',
+          severityPriority: 1,
+          field: 'branch',
+          fieldPriority: 10,
+          issueIdentifier: 'ONE-257',
+          path: 'artifacts/one-257/evidence.md',
+          message: 'branch is required',
+        },
+        {
+          id: 'finding-b',
+          code: 'NON_CANONICAL_DEPENDENCY_ISSUE_LINK',
+          severity: 'warning',
+          severityPriority: 2,
+          field: 'dependencyIssueLinks',
+          fieldPriority: 60,
+          issueIdentifier: 'ONE-258',
+          path: 'artifacts/one-258/checklist.md',
+          message: 'dependency issue link normalized to canonical format: /ONE/issues/ONE-258',
+        },
+      ],
+      activeFilter: 'all',
+      activeFindingId: '',
+    });
+    expect(consoleData.rows.map((row) => row.id)).toEqual(['finding-a', 'finding-c', 'finding-b']);
+
+    const errorOnly = filterEvidencePacketLintFindings(consoleData.rows, 'error');
+    expect(errorOnly.map((row) => row.id)).toEqual(['finding-a', 'finding-c']);
+
+    expect(resolveEvidencePacketLintShortcut({ key: 'e', altKey: true })).toBe('focus_lint_list');
+    expect(resolveEvidencePacketLintShortcut({ key: 'j', altKey: true })).toBe('next_finding');
+    expect(resolveEvidencePacketLintShortcut({ key: 'k', altKey: true })).toBe('prev_finding');
+    expect(resolveEvidencePacketLintShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_packet');
+
+    expect(moveEvidencePacketLintSelection({
+      rows: consoleData.rows,
+      activeFindingId: 'finding-a',
+      direction: 'next',
+    })).toBe('finding-c');
+    expect(moveEvidencePacketLintSelection({
+      rows: consoleData.rows,
+      activeFindingId: 'finding-c',
+      direction: 'prev',
+    })).toBe('finding-a');
+  });
+
+  it('builds canonical link autofix preview with copy-ready normalized output', () => {
+    const preview = buildCanonicalLinkAutofixPreview({
+      linksText: [
+        '/issues/ONE-258#comment-91',
+        'https://paperclip.dev/issues/ONE-257#document-plan',
+        '/ONE/issues/ONE-241',
+      ].join('\n'),
+    });
+
+    expect(preview.changedCount).toBe(2);
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-258#comment-91',
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-257#document-plan',
+    ]);
+    expect(preview.correctedOutput).toBe([
+      '/ONE/issues/ONE-258#comment-91',
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-257#document-plan',
+    ].join('\n'));
+  });
+
+  it('validates evidence packet checklist required fields and resets blocker fields when prMode changes', () => {
+    const incomplete = validateEvidencePacketLintChecklistDraft(getDefaultEvidencePacketLintChecklistDraft());
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'testCommand',
+      'artifactPath',
+      'dependencyIssueLinks',
+      'blockerOwner',
+      'blockerEta',
+    ]);
+
+    const complete = validateEvidencePacketLintChecklistDraft({
+      branch: 'feature/one-259-evidence-lint',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet',
+      testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-259/evidence-lint-console.txt',
+      dependencyIssueLinksText: '/issues/ONE-258#comment-91\n/ONE/issues/ONE-257#document-plan\n/ONE/issues/ONE-241',
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-20T18:00:00.000Z',
+    });
+    expect(complete.isComplete).toBe(true);
+    expect(complete.dependencyIssueLinks).toEqual([
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-257#document-plan',
+      '/ONE/issues/ONE-258#comment-91',
+    ]);
+
+    const switchedMode = applyEvidencePacketLintChecklistPrMode({
+      draft: {
+        branch: 'feature/one-259-evidence-lint',
+        fullSha: '1234567890abcdef1234567890abcdef12345678',
+        prMode: 'no_pr_yet',
+        testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-259/evidence-lint-console.txt',
+        dependencyIssueLinksText: '/ONE/issues/ONE-258',
+        blockerOwner: 'GitHub Admin / DevOps',
+        blockerEta: '2026-03-20T18:00:00.000Z',
+      },
+      prMode: 'pr_link',
+    });
+    expect(switchedMode.blockerOwner).toBe('');
+    expect(switchedMode.blockerEta).toBe('');
+
+    const safeReset = resetEvidencePacketLintChecklistDraftSafe({
+      activeFilter: 'warning',
+      activeFindingId: 'finding-b',
+      confirmFullReset: false,
+    });
+    expect(safeReset.didFullReset).toBe(false);
+    expect(safeReset.activeFilter).toBe('warning');
+    expect(safeReset.activeFindingId).toBe('finding-b');
+    expect(safeReset.message).toContain('preserved');
   });
 
   it('validates evidence-gap checklist fields and preserves diff filter + selected pair on safe reset', () => {
