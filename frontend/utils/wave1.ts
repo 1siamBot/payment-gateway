@@ -455,6 +455,54 @@ export type PublicationReadinessCanonicalAutofixPreview = {
   invalidCount: number;
 };
 
+export type OfflinePublicationEvidenceShortcut =
+  | 'focus_evidence_list'
+  | 'next_lane'
+  | 'prev_lane'
+  | 'open_handoff_packet_preview'
+  | 'run_deterministic_normalization_pass';
+
+export type OfflinePublicationEvidenceMachineFields = {
+  hasBranch: boolean;
+  hasCommit: boolean;
+  hasPr: boolean;
+  hasTestCommand: boolean;
+  hasArtifactPath: boolean;
+  credentialBlocked: boolean;
+  nextOwner: string;
+  dispatchReady: boolean;
+};
+
+export type OfflinePublicationEvidenceLane = {
+  id: string;
+  issueIdentifier: string;
+  lanePriorityWeight: number;
+  readinessWeight: number;
+  evidenceTypeWeight: number;
+  evidenceType: string;
+  evidencePath: string;
+  orderingKey: [number, number, string, number, string];
+  machineFields: OfflinePublicationEvidenceMachineFields;
+};
+
+export type OfflinePublicationEvidenceNormalizer = {
+  contract: 'settlement-offline-publication-evidence-normalizer.v1';
+  rows: OfflinePublicationEvidenceLane[];
+  activeLaneId: string;
+  dispatchReadyCount: number;
+  blockedCount: number;
+  handoffPacketMarkdown: string;
+};
+
+export type OfflinePublicationEvidenceCanonicalPatchPreview = {
+  contract: 'settlement-offline-publication-evidence-canonical-patch-preview.v1';
+  rows: CanonicalLinkAutofixRow[];
+  patchedMarkdown: string;
+  changedCount: number;
+  invalidCount: number;
+  copyText: string;
+};
+
 export type DiagnosticsTrendDigestGate = 'pass' | 'warn' | 'block';
 export type DiagnosticsTrendDigestReasonCode =
   | 'spike_in_breaking_changes'
@@ -3719,6 +3767,277 @@ export function buildPublicationReadinessCanonicalAutofixPreview(input: {
     patchedMarkdown,
     changedCount,
     invalidCount,
+  };
+}
+
+function normalizeOfflinePublicationIssueIdentifier(input: unknown): string | null {
+  const normalized = normalizeOptional(
+    typeof input === 'string' ? input : String(input ?? ''),
+  )?.toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+  return /^[A-Z0-9]+-\d+$/.test(normalized) ? normalized : null;
+}
+
+function normalizeOfflinePublicationWeight(input: unknown, fallback = 999): number {
+  const parsed = parseFiniteNumber(input);
+  if (parsed === null) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function parseOfflinePublicationEvidenceLane(input: unknown, index: number): OfflinePublicationEvidenceLane | null {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const row = input as Record<string, unknown>;
+  const issueIdentifier = normalizeOfflinePublicationIssueIdentifier(
+    row.issueIdentifier ?? row.issueId,
+  );
+  if (!issueIdentifier) {
+    return null;
+  }
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}:offline-evidence:${index + 1}`,
+  ) ?? `${issueIdentifier}:offline-evidence:${index + 1}`;
+  const lanePriorityWeight = normalizeOfflinePublicationWeight(
+    row.lanePriorityWeight ?? row.priorityWeight ?? row.lanePriority,
+  );
+  const readinessWeight = normalizeOfflinePublicationWeight(
+    row.readinessWeight ?? row.readinessRank ?? row.readinessPriority,
+  );
+  const evidenceTypeWeight = normalizeOfflinePublicationWeight(
+    row.evidenceTypeWeight ?? row.typeWeight,
+  );
+  const evidenceType = normalizeOptional(
+    typeof row.evidenceType === 'string'
+      ? row.evidenceType
+      : typeof row.type === 'string'
+        ? row.type
+        : '',
+  ) ?? 'evidence';
+  const evidencePath = normalizeOptional(
+    typeof row.evidencePath === 'string'
+      ? row.evidencePath
+      : typeof row.path === 'string'
+        ? row.path
+        : typeof row.artifactPath === 'string'
+          ? row.artifactPath
+          : '',
+  ) ?? '';
+  const branch = normalizeOptional(typeof row.branch === 'string' ? row.branch : '');
+  const commit = normalizeOptional(
+    typeof row.fullSha === 'string'
+      ? row.fullSha
+      : typeof row.commitSha === 'string'
+        ? row.commitSha
+        : typeof row.commit === 'string'
+          ? row.commit
+          : '',
+  );
+  const pr = normalizeOptional(
+    typeof row.prUrl === 'string'
+      ? row.prUrl
+      : typeof row.prLink === 'string'
+        ? row.prLink
+        : typeof row.pullRequestUrl === 'string'
+          ? row.pullRequestUrl
+          : '',
+  );
+  const testCommand = normalizeOptional(
+    typeof row.testCommand === 'string'
+      ? row.testCommand
+      : typeof row.testSummary === 'string'
+        ? row.testSummary
+        : '',
+  );
+  const artifactPath = normalizeOptional(
+    typeof row.artifactPath === 'string'
+      ? row.artifactPath
+      : evidencePath,
+  );
+  const credentialBlocked = Boolean(
+    row.credentialBlocked
+    ?? row.blockedByCredential
+    ?? row.credentialsBlocked,
+  );
+  const nextOwner = normalizeOptional(typeof row.nextOwner === 'string' ? row.nextOwner : '') ?? 'unassigned';
+  const hasBranch = Boolean(branch);
+  const hasCommit = Boolean(commit && /^[a-f0-9]{40}$/i.test(commit));
+  const hasPr = Boolean(pr);
+  const hasTestCommand = Boolean(testCommand);
+  const hasArtifactPath = Boolean(artifactPath);
+  const dispatchReady = hasBranch
+    && hasCommit
+    && hasPr
+    && hasTestCommand
+    && hasArtifactPath
+    && !credentialBlocked;
+
+  return {
+    id,
+    issueIdentifier,
+    lanePriorityWeight,
+    readinessWeight,
+    evidenceTypeWeight,
+    evidenceType,
+    evidencePath,
+    orderingKey: [
+      lanePriorityWeight,
+      readinessWeight,
+      issueIdentifier,
+      evidenceTypeWeight,
+      evidencePath,
+    ],
+    machineFields: {
+      hasBranch,
+      hasCommit,
+      hasPr,
+      hasTestCommand,
+      hasArtifactPath,
+      credentialBlocked,
+      nextOwner,
+      dispatchReady,
+    },
+  };
+}
+
+function buildOfflinePublicationEvidenceHandoffPacketMarkdown(rows: OfflinePublicationEvidenceLane[]): string {
+  const lines: string[] = [
+    '# Offline Publication Handoff Packet',
+    '',
+    '| Issue | Evidence | Dispatch Ready | Missing | Next Owner |',
+    '| --- | --- | --- | --- | --- |',
+  ];
+  for (const row of rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    const missing: string[] = [];
+    if (!row.machineFields.hasBranch) missing.push('branch');
+    if (!row.machineFields.hasCommit) missing.push('commit');
+    if (!row.machineFields.hasPr) missing.push('pr');
+    if (!row.machineFields.hasTestCommand) missing.push('testCommand');
+    if (!row.machineFields.hasArtifactPath) missing.push('artifactPath');
+    if (row.machineFields.credentialBlocked) missing.push('credentialBlocked');
+    lines.push(
+      `| ${issueLink} | ${row.evidenceType} (${row.evidencePath || 'n/a'}) | ${row.machineFields.dispatchReady ? 'yes' : 'no'} | ${missing.join(', ') || 'none'} | ${row.machineFields.nextOwner} |`,
+    );
+  }
+  return lines.join('\n');
+}
+
+export function buildOfflinePublicationEvidenceNormalizer(input: {
+  rows: unknown[];
+  activeLaneId: string;
+}): OfflinePublicationEvidenceNormalizer {
+  const rows = input.rows
+    .map((row, index) => parseOfflinePublicationEvidenceLane(row, index))
+    .filter((row): row is OfflinePublicationEvidenceLane => Boolean(row))
+    .sort((left, right) => (
+      left.lanePriorityWeight - right.lanePriorityWeight
+      || left.readinessWeight - right.readinessWeight
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.evidenceTypeWeight - right.evidenceTypeWeight
+      || left.evidencePath.localeCompare(right.evidencePath)
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeLaneId = rowIds.has(input.activeLaneId)
+    ? input.activeLaneId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-offline-publication-evidence-normalizer.v1',
+    rows,
+    activeLaneId,
+    dispatchReadyCount: rows.filter((row) => row.machineFields.dispatchReady).length,
+    blockedCount: rows.filter((row) => row.machineFields.credentialBlocked).length,
+    handoffPacketMarkdown: buildOfflinePublicationEvidenceHandoffPacketMarkdown(rows),
+  };
+}
+
+export function moveOfflinePublicationEvidenceLaneSelection(input: {
+  rows: OfflinePublicationEvidenceLane[];
+  activeLaneId: string;
+  direction: 'next_lane' | 'prev_lane';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeLaneId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_lane') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveOfflinePublicationEvidenceShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): OfflinePublicationEvidenceShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'e') {
+    return 'focus_evidence_list';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_lane';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_lane';
+  }
+  if (normalizedKey === 'h' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_handoff_packet_preview';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_normalization_pass';
+  }
+  return null;
+}
+
+export function buildOfflinePublicationEvidenceCanonicalPatchPreview(input: {
+  markdown: string;
+}): OfflinePublicationEvidenceCanonicalPatchPreview {
+  const candidates: string[] = [];
+  const hrefPattern = /(?:https?:\/\/[^\s)]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/[A-Za-z0-9_-]+\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?|\/issues\/[A-Za-z0-9-]+(?:#[^\s)]+)?)/g;
+  const patchedMarkdown = input.markdown.replace(hrefPattern, (match) => {
+    const trailingPunctuation = match.match(/[.,;:!?]+$/)?.[0] ?? '';
+    const candidate = trailingPunctuation
+      ? match.slice(0, -trailingPunctuation.length)
+      : match;
+    const canonical = canonicalizePaperclipIssueLink(candidate);
+    candidates.push(candidate);
+    return `${canonical ?? candidate}${trailingPunctuation}`;
+  });
+
+  const rows = [...new Set(candidates)]
+    .map((original, index) => {
+      const normalized = canonicalizePaperclipIssueLink(original) ?? original;
+      return {
+        id: `offline-patch-${index}-${original}`,
+        original,
+        normalized,
+        changed: normalized !== original,
+      };
+    })
+    .sort((left, right) => left.original.localeCompare(right.original));
+  const changedCount = rows.filter((row) => row.changed).length;
+  const invalidCount = rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length;
+
+  return {
+    contract: 'settlement-offline-publication-evidence-canonical-patch-preview.v1',
+    rows,
+    patchedMarkdown,
+    changedCount,
+    invalidCount,
+    copyText: patchedMarkdown,
   };
 }
 

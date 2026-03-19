@@ -98,6 +98,8 @@ import {
   buildPublicationReadinessBoard,
   buildPublicationReadinessGapResolverPanel,
   buildPublicationReadinessCanonicalAutofixPreview,
+  buildOfflinePublicationEvidenceNormalizer,
+  buildOfflinePublicationEvidenceCanonicalPatchPreview,
   buildDiagnosticsTrendDigestExplorer,
   buildDiagnosticsBaselineCompareWorkspace,
   buildDeltaBundleContractSafetyConsole,
@@ -119,6 +121,7 @@ import {
   moveReleaseReadinessLaneSelection,
   movePublicationWindowLaneSelection,
   movePublicationReadinessLaneSelection,
+  moveOfflinePublicationEvidenceLaneSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
   moveRemediationRunbookTimelineSelection,
@@ -131,6 +134,7 @@ import {
   resolveDispatchCockpitShortcut,
   resolveReleaseReadinessShortcut,
   resolvePublicationReadinessShortcut,
+  resolveOfflinePublicationEvidenceShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
   resolveDeltaBundleContractSafetyShortcut,
@@ -3871,5 +3875,190 @@ describe('frontend wave1 helpers', () => {
     expect(secondPacket).toBe(firstPacket);
     expect(firstPacket).toContain('/ONE/issues/ONE-281');
     expect(firstPacket).toContain('/ONE/issues/ONE-269#document-plan');
+  });
+
+  it('normalizes offline publication evidence rows in deterministic tuple order and remains byte-stable', () => {
+    const rows = [
+      {
+        id: 'lane-c',
+        issueIdentifier: 'ONE-294',
+        lanePriorityWeight: 2,
+        readinessWeight: 3,
+        evidenceTypeWeight: 2,
+        evidenceType: 'backend',
+        evidencePath: 'artifacts/one-294/test-settlement-release-candidate-scorecard-endpoint.log',
+        branch: 'feature/one-294',
+        fullSha: '1234567890abcdef1234567890abcdef12345678',
+        prUrl: 'https://github.com/1siamBot/payment-gateway/pull/294',
+        testCommand: 'npm test -- test/settlement-release-candidate-scorecard-endpoint.spec.ts',
+        artifactPath: 'artifacts/one-294/test-settlement-release-candidate-scorecard-endpoint.log',
+        credentialBlocked: false,
+        nextOwner: 'qa',
+      },
+      {
+        id: 'lane-a',
+        issueIdentifier: 'ONE-293',
+        lanePriorityWeight: 1,
+        readinessWeight: 2,
+        evidenceTypeWeight: 1,
+        evidenceType: 'frontend',
+        evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+        branch: 'feature/one-293',
+        fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        prUrl: 'https://github.com/1siamBot/payment-gateway/pull/293',
+        testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-293/publication-readiness-evidence.md',
+        credentialBlocked: false,
+        nextOwner: 'pm',
+      },
+      {
+        id: 'lane-b',
+        issueIdentifier: 'ONE-285',
+        lanePriorityWeight: 1,
+        readinessWeight: 2,
+        evidenceTypeWeight: 3,
+        evidenceType: 'frontend',
+        evidencePath: 'artifacts/one-285/frontend-handoff.md',
+        branch: 'feature/one-285',
+        fullSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        prUrl: '',
+        testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+        artifactPath: 'artifacts/one-285/frontend-handoff.md',
+        credentialBlocked: true,
+        nextOwner: 'ops',
+      },
+    ];
+
+    const first = buildOfflinePublicationEvidenceNormalizer({
+      rows,
+      activeLaneId: '',
+    });
+    const second = buildOfflinePublicationEvidenceNormalizer({
+      rows: [...rows].reverse(),
+      activeLaneId: '',
+    });
+
+    expect(first.rows.map((row) => row.issueIdentifier)).toEqual(['ONE-285', 'ONE-293', 'ONE-294']);
+    expect(first.rows[1]?.orderingKey).toEqual([1, 2, 'ONE-293', 1, 'artifacts/one-293/publication-readiness-evidence.md']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits stable machine fields and dispatch-ready packet markdown for offline publication evidence', () => {
+    const normalized = buildOfflinePublicationEvidenceNormalizer({
+      rows: [
+        {
+          id: 'lane-ready',
+          issueIdentifier: 'ONE-293',
+          lanePriorityWeight: 1,
+          readinessWeight: 1,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend',
+          evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+          branch: 'feature/one-293',
+          fullSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          prLink: 'https://github.com/1siamBot/payment-gateway/pull/293',
+          testCommand: 'npm test -- test/frontend.wave1.spec.ts',
+          artifactPath: 'artifacts/one-293/publication-readiness-evidence.md',
+          blockedByCredential: false,
+          nextOwner: 'qa',
+        },
+        {
+          id: 'lane-blocked',
+          issueIdentifier: 'ONE-284',
+          lanePriorityWeight: 2,
+          readinessWeight: 2,
+          evidenceTypeWeight: 1,
+          evidenceType: 'frontend',
+          evidencePath: 'artifacts/one-284/frontend-anomaly-timeline-workspace.md',
+          branch: '',
+          fullSha: '',
+          prLink: '',
+          testCommand: '',
+          artifactPath: '',
+          blockedByCredential: true,
+          nextOwner: '',
+        },
+      ],
+      activeLaneId: 'lane-ready',
+    });
+
+    expect(normalized.dispatchReadyCount).toBe(1);
+    expect(normalized.blockedCount).toBe(1);
+    expect(normalized.rows.find((row) => row.id === 'lane-ready')?.machineFields).toEqual({
+      hasBranch: true,
+      hasCommit: true,
+      hasPr: true,
+      hasTestCommand: true,
+      hasArtifactPath: true,
+      credentialBlocked: false,
+      nextOwner: 'qa',
+      dispatchReady: true,
+    });
+    expect(normalized.rows.find((row) => row.id === 'lane-blocked')?.machineFields).toEqual({
+      hasBranch: false,
+      hasCommit: false,
+      hasPr: false,
+      hasTestCommand: false,
+      hasArtifactPath: false,
+      credentialBlocked: true,
+      nextOwner: 'unassigned',
+      dispatchReady: false,
+    });
+    expect(normalized.handoffPacketMarkdown).toContain('/ONE/issues/ONE-293');
+    expect(normalized.handoffPacketMarkdown).toContain('credentialBlocked');
+  });
+
+  it('builds canonical patch preview and keyboard workflow for offline publication evidence normalizer', () => {
+    const preview = buildOfflinePublicationEvidenceCanonicalPatchPreview({
+      markdown: [
+        '- source issue: /issues/ONE-293',
+        '- plan doc: https://paperclip.dev/issues/ONE-291#document-plan',
+        '- review comment: /ONE/issues/ONE-295#comment-12',
+      ].join('\n'),
+    });
+
+    expect(preview.contract).toBe('settlement-offline-publication-evidence-canonical-patch-preview.v1');
+    expect(preview.rows.map((row) => row.normalized)).toEqual([
+      '/ONE/issues/ONE-293',
+      '/ONE/issues/ONE-295#comment-12',
+      '/ONE/issues/ONE-291#document-plan',
+    ]);
+    expect(preview.changedCount).toBe(2);
+    expect(preview.invalidCount).toBe(0);
+    expect(preview.copyText).toContain('/ONE/issues/ONE-291#document-plan');
+
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'e', altKey: true })).toBe('focus_evidence_list');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_lane');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_lane');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'h', ctrlKey: true, shiftKey: true }))
+      .toBe('open_handoff_packet_preview');
+    expect(resolveOfflinePublicationEvidenceShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_normalization_pass');
+
+    expect(moveOfflinePublicationEvidenceLaneSelection({
+      rows: buildOfflinePublicationEvidenceNormalizer({
+        rows: [
+          {
+            id: 'lane-1',
+            issueIdentifier: 'ONE-293',
+            lanePriorityWeight: 1,
+            readinessWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-293/publication-readiness-evidence.md',
+          },
+          {
+            id: 'lane-2',
+            issueIdentifier: 'ONE-294',
+            lanePriorityWeight: 2,
+            readinessWeight: 1,
+            evidenceTypeWeight: 1,
+            evidencePath: 'artifacts/one-294/test.log',
+          },
+        ],
+        activeLaneId: '',
+      }).rows,
+      activeLaneId: 'lane-1',
+      direction: 'next_lane',
+    })).toBe('lane-2');
   });
 });
