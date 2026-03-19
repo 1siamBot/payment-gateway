@@ -12,11 +12,12 @@ import {
   TransactionType,
   WebhookDeliveryStatus,
 } from '@prisma/client';
-import { createHmac, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProviderRouterService } from '../providers/provider-router.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { CallbackDto } from './dto/callback.dto';
+import { PaymentCallbackGuardService } from './payment-callback-guard.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListPaymentsDto } from './dto/list-payments.dto';
 import {
@@ -146,10 +147,13 @@ type PaymentStatusSnapshotResponse = {
 
 @Injectable()
 export class PaymentsService {
+  private readonly defaultCallbackGuard = new PaymentCallbackGuardService();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly router: ProviderRouterService,
     @Optional() private readonly webhooks?: WebhooksService,
+    @Optional() private readonly callbackGuard?: PaymentCallbackGuardService,
   ) {}
 
   async initiatePayment(input: CreatePaymentDto): Promise<PaymentResponse> {
@@ -861,10 +865,18 @@ export class PaymentsService {
   }
 
   async handleCallback(input: CallbackDto): Promise<{ applied: boolean; status: string }> {
-    this.verifySignature(input);
+    const callbackGuard = this.callbackGuard ?? this.defaultCallbackGuard;
+    const normalized = callbackGuard.normalizePayload(input);
+    callbackGuard.verifySignature(normalized);
 
     const tx = await this.prisma.transaction.findUnique({
-      where: { reference: input.transactionReference },
+      where: { reference: normalized.transactionReference },
+      include: {
+        callbackEvents: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
     });
 
     if (!tx) {
@@ -874,25 +886,50 @@ export class PaymentsService {
     const duplicate = await this.prisma.callbackEvent.findUnique({
       where: {
         providerName_eventId: {
-          providerName: input.provider,
-          eventId: input.eventId,
+          providerName: normalized.provider,
+          eventId: normalized.replayKey,
         },
       },
     });
 
     if (duplicate) {
-      return { applied: false, status: tx.status };
+      callbackGuard.throwReplayDuplicate(normalized.replayKey);
     }
 
-    const targetStatus = input.status === 'succeeded' ? TransactionStatus.PAID : TransactionStatus.FAILED;
+    const latestCallback = tx.callbackEvents[0];
+    const latestEventTimestamp = latestCallback
+      ? callbackGuard.resolveLatestEventTimestamp(latestCallback.payload, latestCallback.createdAt)
+      : null;
+    const incomingEventTimestamp = normalized.eventTimestamp;
+
+    if (callbackGuard.shouldRejectAsStale({
+      transactionStatus: tx.status,
+      incomingStatus: normalized.status,
+      latestEventTimestamp,
+      incomingEventTimestamp,
+    })) {
+      callbackGuard.throwStaleEvent({
+        transactionStatus: tx.status,
+        latestEventTimestamp,
+        incomingEventTimestamp,
+        incomingStatus: normalized.status,
+      });
+    }
+
+    const targetStatus = normalized.status === 'succeeded' ? TransactionStatus.PAID : TransactionStatus.FAILED;
 
     await this.prisma.callbackEvent.create({
       data: {
         transactionId: tx.id,
-        providerName: input.provider,
-        eventId: input.eventId,
-        status: input.status,
-        payload: JSON.stringify(input),
+        providerName: normalized.provider,
+        eventId: normalized.replayKey,
+        status: normalized.status,
+        payload: JSON.stringify({
+          ...input,
+          replayKey: normalized.replayKey,
+          eventTimestamp: normalized.eventTimestamp?.toISOString() ?? null,
+          sourceEventId: normalized.eventId,
+        }),
       },
     });
 
@@ -912,21 +949,12 @@ export class PaymentsService {
       },
     });
 
-    await this.logTransition(tx.id, tx.status, targetStatus, `callback:${input.eventId}`);
+    await this.logTransition(tx.id, tx.status, targetStatus, `callback:${normalized.eventId}`);
 
     const eventType = targetStatus === TransactionStatus.PAID ? 'payment.paid' : 'payment.failed';
     await this.webhooks?.queueTransactionWebhook(tx.id, eventType);
 
     return { applied: true, status: updated.status };
-  }
-
-  private verifySignature(input: CallbackDto): void {
-    const callbackSecret = process.env.CALLBACK_SIGNING_SECRET ?? 'dev-callback-secret';
-    const signedPayload = `${input.provider}:${input.eventId}:${input.transactionReference}:${input.status}`;
-    const expected = createHmac('sha256', callbackSecret).update(signedPayload).digest('hex');
-    if (expected !== input.signature) {
-      throw new BadRequestException('Invalid callback signature');
-    }
   }
 
   private async assertMerchantExists(merchantId: string): Promise<void> {

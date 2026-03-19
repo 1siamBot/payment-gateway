@@ -352,18 +352,123 @@ describe('PaymentsService', () => {
       signature: sign('evt-1'),
     });
 
-    const second = await service.handleCallback({
+    expect(first.applied).toBe(true);
+    expect(first.status).toBe(TransactionStatus.PAID);
+    await expect(service.handleCallback({
       provider: 'mock-a',
       eventId: 'evt-1',
       transactionReference: created.reference,
       status: 'succeeded',
       signature: sign('evt-1'),
+    })).rejects.toMatchObject({
+      response: {
+        code: 'PAYMENT_CALLBACK_REPLAY_DUPLICATE',
+        reason: 'replay_key_seen',
+        replayKey: 'evt-1',
+      },
+      status: 409,
+    });
+    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.paid');
+  });
+
+  it('returns machine-readable validation error for malformed callback payload', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    await expect(service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-bad-payload',
+      replayKey: '',
+      transactionReference: '',
+      status: 'succeeded',
+      signature: 'deadbeef',
+    } as any)).rejects.toMatchObject({
+      response: {
+        code: 'PAYMENT_CALLBACK_VALIDATION_FAILED',
+        reason: 'missing_required_fields',
+      },
+      status: 400,
+    });
+  });
+
+  it('returns machine-readable signature error for invalid callback signature', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const created = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 40,
+      currency: 'USD',
+      type: 'withdraw',
+      idempotencyKey: 'idem-signature-1',
     });
 
+    await expect(service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-bad-signature',
+      transactionReference: created.reference,
+      status: 'succeeded',
+      signature: '0'.repeat(64),
+    })).rejects.toMatchObject({
+      response: {
+        code: 'PAYMENT_CALLBACK_INVALID_SIGNATURE',
+        reason: 'signature_mismatch',
+      },
+      status: 401,
+    });
+  });
+
+  it('returns stale-event conflict code for out-of-order terminal callback events', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const created = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 40,
+      currency: 'USD',
+      type: 'withdraw',
+      idempotencyKey: 'idem-stale-1',
+    });
+
+    const signSucceeded = (eventId: string) =>
+      createHmac('sha256', 'test-secret').update(`mock-a:${eventId}:${created.reference}:succeeded`).digest('hex');
+    const signFailed = (eventId: string) =>
+      createHmac('sha256', 'test-secret').update(`mock-a:${eventId}:${created.reference}:failed`).digest('hex');
+
+    const first = await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-ordered-success',
+      transactionReference: created.reference,
+      status: 'succeeded',
+      eventTimestamp: '2026-03-19T15:00:00.000Z',
+      signature: signSucceeded('evt-ordered-success'),
+    });
     expect(first.applied).toBe(true);
     expect(first.status).toBe(TransactionStatus.PAID);
-    expect(second.applied).toBe(false);
-    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.paid');
+
+    await expect(service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-late-failure',
+      transactionReference: created.reference,
+      status: 'failed',
+      eventTimestamp: '2026-03-19T14:59:59.000Z',
+      signature: signFailed('evt-late-failure'),
+    })).rejects.toMatchObject({
+      response: {
+        code: 'PAYMENT_CALLBACK_STALE_EVENT',
+        reason: 'out_of_order_event',
+      },
+      status: 409,
+    });
   });
 
   it('returns payment status snapshot with callback and webhook counters', async () => {
