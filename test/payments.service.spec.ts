@@ -191,9 +191,15 @@ function createPrismaMock() {
         }),
         create: jest.fn(async ({ data }) => {
           const id = `refund-${refundStore.size + 1}`;
-          const row = { id, createdAt: new Date(), updatedAt: new Date(), status: 'SUCCEEDED', ...data };
+          const row = { id, createdAt: new Date(), updatedAt: new Date(), status: 'REQUESTED', ...data };
           refundStore.set(id, row);
           return row;
+        }),
+        update: jest.fn(async ({ where, data }) => {
+          const current = refundStore.get(where.id);
+          const next = { ...current, ...data, updatedAt: new Date() };
+          refundStore.set(where.id, next);
+          return next;
         }),
         findMany: jest.fn(async ({ where, include, orderBy, take }) => {
           let rows = [...refundStore.values()].filter((row) => {
@@ -557,7 +563,7 @@ describe('PaymentsService', () => {
     expect(rows[0].type).toBe(TransactionType.DEPOSIT);
   });
 
-  it('supports idempotent refund creation for a paid transaction', async () => {
+  it('creates refund in requested state with deterministic lifecycle metadata', async () => {
     const prismaMock = createPrismaMock();
     const router = {
       initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
@@ -585,13 +591,179 @@ describe('PaymentsService', () => {
       signature,
     });
 
-    const refunded = await service.createRefund(created.reference, 'refund-idem-1', 'support_request');
-    const duplicate = await service.createRefund(created.reference, 'refund-idem-1', 'support_request');
-    expect(refunded.paymentReference).toBe(created.reference);
-    expect(refunded.status).toBe('SUCCEEDED');
-    expect(duplicate.id).toBe(refunded.id);
+    const refund = await service.createRefund(created.reference, 'refund-idem-1', 'support_request');
+
+    expect(refund.paymentReference).toBe(created.reference);
+    expect(refund.status).toBe('REQUESTED');
+    expect(refund.transition).toEqual(expect.objectContaining({
+      fromStatus: null,
+      toStatus: 'REQUESTED',
+      reasonCode: 'refund_requested',
+    }));
+    expect(refund.lifecycle.contract).toBe('refund-lifecycle.v1');
+    expect(refund.lifecycle.allowedNextStatuses).toEqual(['PROCESSING']);
+    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.refund_requested');
+  });
+
+  it('advances refund from requested to processing', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-refund-processing',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-refund-processing:${payment.reference}:succeeded`)
+      .digest('hex');
+
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-refund-processing',
+      transactionReference: payment.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    const refund = await service.createRefund(payment.reference, 'refund-idem-processing');
+    const processing = await service.transitionRefund(refund.id, 'PROCESSING', 'REQUESTED');
+
+    expect(processing.status).toBe('PROCESSING');
+    expect(processing.transition).toEqual(expect.objectContaining({
+      fromStatus: 'REQUESTED',
+      toStatus: 'PROCESSING',
+      reasonCode: 'refund_processing',
+    }));
+    expect(processing.lifecycle.allowedNextStatuses).toEqual(['SUCCEEDED', 'FAILED']);
+  });
+
+  it('advances refund from processing to succeeded and marks payment refunded', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const webhooks = { queueTransactionWebhook: jest.fn(async () => undefined) };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any, webhooks as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-refund-succeed',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-refund-succeed:${payment.reference}:succeeded`)
+      .digest('hex');
+
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-refund-succeed',
+      transactionReference: payment.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    const requested = await service.createRefund(payment.reference, 'refund-idem-succeed');
+    await service.transitionRefund(requested.id, 'PROCESSING', 'REQUESTED');
+    const succeeded = await service.transitionRefund(requested.id, 'SUCCEEDED', 'PROCESSING');
+
+    expect(succeeded.status).toBe('SUCCEEDED');
+    expect(succeeded.lifecycle.terminal).toBe(true);
+    expect(prismaMock.store.txByRef.get(payment.reference).status).toBe(TransactionStatus.REFUNDED);
     expect(webhooks.queueTransactionWebhook).toHaveBeenCalledWith(expect.any(String), 'payment.refunded');
-    expect(webhooks.queueTransactionWebhook).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects duplicate refund requests with stable reason code and HTTP mapping', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-refund-dup',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-refund-dup:${payment.reference}:succeeded`)
+      .digest('hex');
+
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-refund-dup',
+      transactionReference: payment.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    await service.createRefund(payment.reference, 'refund-idem-dup');
+    await expect(service.createRefund(payment.reference, 'refund-idem-dup')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'REFUND_LIFECYCLE_CONFLICT',
+        reason: 'duplicate_request',
+        httpStatus: 409,
+      }),
+    });
+  });
+
+  it('rejects invalid prior-state transition and stale updates with stable reason codes', async () => {
+    const prismaMock = createPrismaMock();
+    const router = {
+      initiateWithFailover: jest.fn(async ({ reference }) => ({ providerName: 'mock-a', externalRef: `A-${reference}` })),
+    };
+    const service = new PaymentsService(prismaMock.prisma as any, router as any);
+
+    const payment = await service.initiatePayment({
+      merchantId: 'merchant-1',
+      amount: 50,
+      currency: 'THB',
+      type: 'deposit',
+      idempotencyKey: 'idem-refund-invalid',
+    });
+
+    const signature = createHmac('sha256', 'test-secret')
+      .update(`mock-a:evt-refund-invalid:${payment.reference}:succeeded`)
+      .digest('hex');
+
+    await service.handleCallback({
+      provider: 'mock-a',
+      eventId: 'evt-refund-invalid',
+      transactionReference: payment.reference,
+      status: 'succeeded',
+      signature,
+    });
+
+    const refund = await service.createRefund(payment.reference, 'refund-idem-invalid');
+
+    await expect(service.transitionRefund(refund.id, 'SUCCEEDED', 'REQUESTED')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'REFUND_LIFECYCLE_CONFLICT',
+        reason: 'invalid_prior_state',
+      }),
+    });
+
+    await expect(service.transitionRefund(refund.id, 'PROCESSING', 'FAILED')).rejects.toMatchObject({
+      status: 409,
+      response: expect.objectContaining({
+        code: 'REFUND_LIFECYCLE_CONFLICT',
+        reason: 'stale_update',
+      }),
+    });
   });
 
   it('records routing decision telemetry in audit log when router supplies decision details', async () => {

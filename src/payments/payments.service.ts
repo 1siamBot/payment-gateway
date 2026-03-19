@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -92,6 +93,47 @@ type RefundResponse = {
   reason: string | null;
   status: RefundStatus;
   createdAt: string;
+  updatedAt: string;
+  transition: {
+    fromStatus: RefundStatus | null;
+    toStatus: RefundStatus;
+    reasonCode: RefundLifecycleEventReasonCode;
+    occurredAt: string;
+  };
+  lifecycle: {
+    contract: 'refund-lifecycle.v1';
+    currentStatus: RefundStatus;
+    terminal: boolean;
+    allowedNextStatuses: RefundStatus[];
+    reasonCodes: {
+      duplicateRequest: 'duplicate_request';
+      invalidPriorState: 'invalid_prior_state';
+      staleUpdate: 'stale_update';
+    };
+    httpStatusByReason: {
+      duplicate_request: 409;
+      invalid_prior_state: 409;
+      stale_update: 409;
+    };
+  };
+};
+
+type RefundLifecycleConflictReason = 'duplicate_request' | 'invalid_prior_state' | 'stale_update';
+type RefundLifecycleEventReasonCode = 'refund_requested' | 'refund_processing' | 'refund_succeeded' | 'refund_failed';
+type RefundTransitionTargetStatus = Exclude<RefundStatus, 'REQUESTED'>;
+
+const REFUND_LIFECYCLE_TRANSITIONS: Record<RefundStatus, RefundStatus[]> = {
+  REQUESTED: [RefundStatus.PROCESSING],
+  PROCESSING: [RefundStatus.SUCCEEDED, RefundStatus.FAILED],
+  SUCCEEDED: [],
+  FAILED: [],
+};
+
+const REFUND_LIFECYCLE_EVENT_REASON_CODES: Record<RefundStatus, RefundLifecycleEventReasonCode> = {
+  REQUESTED: 'refund_requested',
+  PROCESSING: 'refund_processing',
+  SUCCEEDED: 'refund_succeeded',
+  FAILED: 'refund_failed',
 };
 
 type PaymentAttemptTimelineResponse = {
@@ -779,14 +821,35 @@ export class PaymentsService {
     });
 
     if (existingByKey) {
-      if (existingByKey.transaction.reference !== reference) {
-        throw new BadRequestException('idempotencyKey already used for another payment');
-      }
-      return this.toRefundResponse(existingByKey, reference);
+      this.throwRefundLifecycleConflict('duplicate_request', {
+        idempotencyKey: normalizedIdempotencyKey,
+        existingPaymentReference: existingByKey.transaction.reference,
+        requestedPaymentReference: reference,
+      });
+    }
+
+    const existingByPayment = await this.prisma.refund.findUnique({
+      where: { transactionId: tx.id },
+      include: {
+        transaction: {
+          select: { reference: true },
+        },
+      },
+    });
+
+    if (existingByPayment) {
+      this.throwRefundLifecycleConflict('duplicate_request', {
+        paymentReference: reference,
+        refundId: existingByPayment.id,
+      });
     }
 
     if (tx.status !== TransactionStatus.PAID) {
-      throw new BadRequestException('Only paid transactions can be refunded');
+      this.throwRefundLifecycleConflict('invalid_prior_state', {
+        paymentReference: reference,
+        transactionStatus: tx.status,
+        expectedTransactionStatus: TransactionStatus.PAID,
+      });
     }
 
     const created = await this.prisma.refund.create({
@@ -797,21 +860,128 @@ export class PaymentsService {
         amount: tx.amount,
         currency: tx.currency,
         reason: reason ?? null,
+        status: RefundStatus.REQUESTED,
       },
     });
 
-    await this.prisma.transaction.update({
-      where: { id: tx.id },
+    await this.prisma.auditLog.create({
       data: {
-        status: TransactionStatus.REFUNDED,
-        failureReason: reason ?? null,
+        eventType: 'refund.transition',
+        actor: 'system',
+        entityType: 'refund',
+        entityId: created.id,
+        metadata: JSON.stringify({
+          fromStatus: null,
+          toStatus: created.status,
+          reasonCode: REFUND_LIFECYCLE_EVENT_REASON_CODES[created.status],
+          paymentReference: reference,
+        }),
       },
     });
 
-    await this.logTransition(tx.id, tx.status, TransactionStatus.REFUNDED, reason ?? 'manual refund');
-    await this.webhooks?.queueTransactionWebhook(tx.id, 'payment.refunded');
+    await this.webhooks?.queueTransactionWebhook(tx.id, 'payment.refund_requested');
 
-    return this.toRefundResponse(created, reference);
+    return this.toRefundResponse(created, reference, {
+      fromStatus: null,
+      toStatus: created.status,
+      occurredAt: created.updatedAt,
+    });
+  }
+
+  async transitionRefund(
+    refundId: string,
+    toStatus: RefundTransitionTargetStatus,
+    expectedCurrentStatus?: RefundStatus,
+    reason?: string,
+    actorMerchantId?: string,
+  ): Promise<RefundResponse> {
+    const refund = await this.prisma.refund.findUnique({
+      where: { id: refundId },
+      include: {
+        transaction: {
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+            merchantId: true,
+          },
+        },
+      },
+    });
+
+    if (!refund) {
+      throw new NotFoundException('Refund not found');
+    }
+
+    this.assertMerchantScope(refund.merchantId, actorMerchantId);
+
+    if (expectedCurrentStatus && expectedCurrentStatus !== refund.status) {
+      this.throwRefundLifecycleConflict('stale_update', {
+        refundId,
+        expectedCurrentStatus,
+        currentStatus: refund.status,
+      });
+    }
+
+    const allowedTransitions = REFUND_LIFECYCLE_TRANSITIONS[refund.status];
+    if (!allowedTransitions.includes(toStatus)) {
+      this.throwRefundLifecycleConflict('invalid_prior_state', {
+        refundId,
+        currentStatus: refund.status,
+        requestedStatus: toStatus,
+        allowedNextStatuses: allowedTransitions,
+      });
+    }
+
+    const updated = await this.prisma.refund.update({
+      where: { id: refund.id },
+      data: {
+        status: toStatus,
+        reason: reason ?? refund.reason,
+      },
+    });
+
+    if (toStatus === RefundStatus.SUCCEEDED) {
+      await this.prisma.transaction.update({
+        where: { id: refund.transactionId },
+        data: {
+          status: TransactionStatus.REFUNDED,
+          failureReason: null,
+        },
+      });
+      await this.logTransition(
+        refund.transactionId,
+        refund.transaction.status,
+        TransactionStatus.REFUNDED,
+        `refund:${refund.id}:succeeded`,
+      );
+      await this.webhooks?.queueTransactionWebhook(refund.transactionId, 'payment.refunded');
+    }
+
+    if (toStatus === RefundStatus.FAILED) {
+      await this.webhooks?.queueTransactionWebhook(refund.transactionId, 'payment.refund_failed');
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        eventType: 'refund.transition',
+        actor: 'system',
+        entityType: 'refund',
+        entityId: updated.id,
+        metadata: JSON.stringify({
+          fromStatus: refund.status,
+          toStatus,
+          reasonCode: REFUND_LIFECYCLE_EVENT_REASON_CODES[toStatus],
+          paymentReference: refund.transaction.reference,
+        }),
+      },
+    });
+
+    return this.toRefundResponse(updated, refund.transaction.reference, {
+      fromStatus: refund.status,
+      toStatus: updated.status,
+      occurredAt: updated.updatedAt,
+    });
   }
 
   async listRefunds(filters: {
@@ -1204,9 +1374,21 @@ export class PaymentsService {
       reason: string | null;
       status: RefundStatus;
       createdAt: Date;
+      updatedAt: Date;
     },
     paymentReference: string,
+    transition?: {
+      fromStatus: RefundStatus | null;
+      toStatus: RefundStatus;
+      occurredAt: Date;
+    },
   ): RefundResponse {
+    const normalizedTransition = transition ?? {
+      fromStatus: null,
+      toStatus: refund.status,
+      occurredAt: refund.updatedAt,
+    };
+
     return {
       id: refund.id,
       paymentReference,
@@ -1216,6 +1398,41 @@ export class PaymentsService {
       reason: refund.reason,
       status: refund.status,
       createdAt: refund.createdAt.toISOString(),
+      updatedAt: refund.updatedAt.toISOString(),
+      transition: {
+        fromStatus: normalizedTransition.fromStatus,
+        toStatus: normalizedTransition.toStatus,
+        reasonCode: REFUND_LIFECYCLE_EVENT_REASON_CODES[normalizedTransition.toStatus],
+        occurredAt: normalizedTransition.occurredAt.toISOString(),
+      },
+      lifecycle: {
+        contract: 'refund-lifecycle.v1',
+        currentStatus: refund.status,
+        terminal: REFUND_LIFECYCLE_TRANSITIONS[refund.status].length === 0,
+        allowedNextStatuses: REFUND_LIFECYCLE_TRANSITIONS[refund.status],
+        reasonCodes: {
+          duplicateRequest: 'duplicate_request',
+          invalidPriorState: 'invalid_prior_state',
+          staleUpdate: 'stale_update',
+        },
+        httpStatusByReason: {
+          duplicate_request: 409,
+          invalid_prior_state: 409,
+          stale_update: 409,
+        },
+      },
     };
+  }
+
+  private throwRefundLifecycleConflict(
+    reason: RefundLifecycleConflictReason,
+    metadata: Record<string, unknown>,
+  ): never {
+    throw new ConflictException({
+      code: 'REFUND_LIFECYCLE_CONFLICT',
+      reason,
+      httpStatus: 409,
+      metadata,
+    });
   }
 }

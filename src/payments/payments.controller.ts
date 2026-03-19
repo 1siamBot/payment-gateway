@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
-import { TransactionStatus, TransactionType } from '@prisma/client';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { RefundStatus, TransactionStatus, TransactionType } from '@prisma/client';
 import { Authorize } from '../common/authz.decorator';
 import type { AuthenticatedRequest } from '../common/authz.guard';
 import { CallbackDto } from './dto/callback.dto';
@@ -8,6 +8,7 @@ import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ListRefundsDto } from './dto/list-refunds.dto';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { SearchCustomersDto } from './dto/search-customers.dto';
+import { UpdateRefundLifecycleDto } from './dto/update-refund-lifecycle.dto';
 import { PaymentsService } from './payments.service';
 
 @Controller()
@@ -119,6 +120,22 @@ export class PaymentsController {
   @Authorize('merchant', 'support', 'ops', 'admin')
   getRefund(@Req() request: AuthenticatedRequest, @Param('refundId') refundId: string) {
     return this.payments.getRefund(refundId, request.auth?.merchantId);
+  }
+
+  @Patch('refunds/:refundId/lifecycle')
+  @Authorize('support', 'ops', 'admin')
+  updateRefundLifecycle(
+    @Req() request: AuthenticatedRequest,
+    @Param('refundId') refundId: string,
+    @Body() body: UpdateRefundLifecycleDto,
+  ) {
+    return this.payments.transitionRefund(
+      refundId,
+      body.toStatus as Exclude<RefundStatus, 'REQUESTED'>,
+      body.expectedCurrentStatus,
+      body.reason,
+      request.auth?.merchantId,
+    );
   }
 
   @Post('payments/callbacks/provider')

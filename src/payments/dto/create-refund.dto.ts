@@ -1,6 +1,10 @@
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
-export class RefundPaymentDto {
+export class CreateRefundDto {
+  @IsString()
+  @IsNotEmpty()
+  paymentReference!: string;
+
   @IsString()
   @IsNotEmpty()
   idempotencyKey!: string;
