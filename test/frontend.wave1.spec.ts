@@ -8,10 +8,15 @@ import {
   buildExceptionBulkPreview,
   applyExceptionQueryPreset,
   applyExceptionActionOptimistic,
+  buildExceptionCompareDrawerModel,
   buildExceptionBulkDiffInspector,
   buildExceptionBulkConfirmation,
+  buildExceptionReasonQuickActions,
+  buildExceptionReasonTimeline,
+  buildDeterministicExceptionPresetChips,
   buildExceptionActionIdempotencyKey,
   classifyExceptionActionFailure,
+  createDefaultExceptionPresetComposerSlots,
   createExceptionSavedView,
   createDefaultExplainabilityPresetSlots,
   DEFAULT_EXCEPTION_SAVED_VIEW_STATE,
@@ -29,6 +34,12 @@ import {
   filterExceptionSimulationOutcomeRows,
   filterScenarioCompareMatrixRows,
   parseExceptionQueryState,
+  applyExceptionPresetComposerSlot,
+  overwriteExceptionPresetComposerSlot,
+  resetExceptionPresetComposerDraft,
+  resetExceptionCompareState,
+  resolveExceptionDecisionNoteShortcut,
+  resolveExceptionDecisionNoteTemplate,
   normalizeExceptionStatus,
   normalizeOptional,
   moveExceptionDiffInspectorFocus,
@@ -3593,6 +3604,217 @@ describe('frontend wave1 helpers', () => {
     expect(inspector.reasonCounts.malformed).toBe(1);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'high_delta').map((row) => row.id)).toEqual(['exc-a']);
     expect(filterExceptionDiffInspectorRows(inspector.rows, 'malformed').map((row) => row.id)).toEqual(['malformed-3']);
+  });
+
+  it('builds deterministic compare drawer ordering across selection order', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'open',
+        version: 2,
+        currentAmount: 300,
+        incomingAmount: 210,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 2,
+      },
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 450,
+        incomingStatus: 'open',
+        incomingVersion: 3,
+        mismatchCount: 1,
+      },
+    ]);
+
+    const compareA = buildExceptionCompareDrawerModel({
+      rows: inspector.rows,
+      selectedRowIds: ['exc-b', 'exc-a'],
+    });
+    const compareB = buildExceptionCompareDrawerModel({
+      rows: inspector.rows,
+      selectedRowIds: ['exc-a', 'exc-b'],
+    });
+
+    expect(compareA.rowIds).toEqual(['exc-a', 'exc-b']);
+    expect(compareB.rowIds).toEqual(['exc-a', 'exc-b']);
+    expect(compareA.fieldOrder).toEqual(['amount', 'status', 'updatedAt', 'version']);
+  });
+
+  it('maps reason quick actions with stable reason order and compare candidates', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        mismatchCount: 4,
+      },
+      {
+        id: 'exc-b',
+        merchantId: 'm-b',
+        provider: 'mock-b',
+        status: 'investigating',
+        version: 1,
+        currentAmount: 100,
+        incomingAmount: 105,
+        incomingStatus: 'investigating',
+        incomingVersion: 1,
+        mismatchCount: 1,
+      },
+      {
+        id: '',
+        merchantId: 'broken',
+        provider: 'mock-z',
+        status: 'open',
+        mismatchCount: 2,
+      },
+    ]);
+    const actions = buildExceptionReasonQuickActions(inspector.rows);
+
+    expect(actions.map((item) => item.reason)).toEqual(['stale_version', 'malformed', 'high_delta', 'mixed_status']);
+    expect(actions.find((item) => item.reason === 'stale_version')?.compareRowIds).toEqual(['exc-a']);
+    expect(actions.find((item) => item.reason === 'malformed')?.compareRowIds).toEqual(['malformed-3']);
+    expect(actions.find((item) => item.reason === 'stale_version')?.shortcut).toBe('1');
+  });
+
+  it('builds deterministic preset chips with stable reason ordering', () => {
+    const slots = createDefaultExceptionPresetComposerSlots('2026-03-19T02:30:00.000Z');
+    const updated = overwriteExceptionPresetComposerSlot({
+      slots,
+      slotId: 2,
+      draft: {
+        name: 'Critical Triage',
+        enabledReasons: ['mixed_status', 'stale_version', 'high_delta'],
+        severityWindow: 'critical_and_warning',
+      },
+      nowIso: '2026-03-19T02:31:00.000Z',
+    });
+    const slot = updated.find((item) => item.slotId === 2)!;
+    const chips = buildDeterministicExceptionPresetChips({
+      slot,
+      reasonCounts: {
+        stale_version: 3,
+        malformed: 4,
+        high_delta: 1,
+        mixed_status: 2,
+      },
+    });
+    expect(chips.map((chip) => chip.reason)).toEqual(['stale_version', 'high_delta', 'mixed_status']);
+    expect(chips.map((chip) => chip.label)).toEqual([
+      'Critical Triage: stale version',
+      'Critical Triage: high delta',
+      'Critical Triage: mixed status',
+    ]);
+  });
+
+  it('applies and overwrites preset slots deterministically', () => {
+    const defaults = createDefaultExceptionPresetComposerSlots('2026-03-19T03:00:00.000Z');
+    const overwritten = overwriteExceptionPresetComposerSlot({
+      slots: defaults,
+      slotId: 1,
+      draft: {
+        name: 'Critical Only',
+        enabledReasons: ['stale_version', 'malformed', 'high_delta'],
+        severityWindow: 'critical_only',
+      },
+      nowIso: '2026-03-19T03:01:00.000Z',
+    });
+    const applied = applyExceptionPresetComposerSlot({
+      slots: overwritten,
+      slotId: 1,
+      reasonCounts: {
+        stale_version: 2,
+        malformed: 1,
+        high_delta: 9,
+        mixed_status: 8,
+      },
+    });
+    expect(applied.activeSlotId).toBe(1);
+    expect(applied.chips.map((chip) => chip.reason)).toEqual(['stale_version', 'malformed']);
+    expect(overwritten[0].savedAt).toBe('2026-03-19T03:01:00.000Z');
+  });
+
+  it('resets preset composer draft without mutating previous applied chips', () => {
+    const cleared = resetExceptionPresetComposerDraft();
+    expect(cleared).toEqual({
+      name: '',
+      enabledReasons: [],
+      severityWindow: 'critical_and_warning',
+    });
+  });
+
+  it('resets compare state without mutating selected exception ids', () => {
+    const selectedExceptionIds = ['exc-1', 'exc-2', 'exc-3'];
+    const resetState = resetExceptionCompareState({
+      selectedExceptionIds,
+      activeTimelineRowId: 'exc-2',
+    });
+
+    expect(resetState.selectedExceptionIds).toEqual(selectedExceptionIds);
+    expect(resetState.compareRowIds).toEqual([]);
+    expect(resetState.decisionNoteDraft).toBe('');
+    expect(resetState.decisionNoteReason).toBe('');
+    expect(resetState.activeTimelineRowId).toBe('exc-2');
+    expect(resetState.selectedExceptionIds).not.toBe(selectedExceptionIds);
+  });
+
+  it('builds deterministic reason timeline ordering for selected anomaly row', () => {
+    const inspector = buildExceptionBulkDiffInspector([
+      {
+        id: 'exc-a',
+        merchantId: 'm-a',
+        provider: 'mock-a',
+        status: 'open',
+        version: 3,
+        updatedAt: '2026-03-18T08:00:00.000Z',
+        currentAmount: 500,
+        incomingAmount: 350,
+        incomingStatus: 'investigating',
+        incomingVersion: 2,
+        incomingUpdatedAt: '2026-03-18T08:01:00.000Z',
+        mismatchCount: 4,
+      },
+    ]);
+
+    const first = buildExceptionReasonTimeline({
+      rows: inspector.rows,
+      activeRowId: 'exc-a',
+    });
+    const second = buildExceptionReasonTimeline({
+      rows: inspector.rows,
+      activeRowId: 'exc-a',
+    });
+
+    expect(first).toEqual(second);
+    expect(first.map((entry) => entry.reason)).toEqual(['mixed_status', 'stale_version', 'high_delta']);
+    expect(first.map((entry) => entry.severity)).toEqual(['warning', 'critical', 'warning']);
+    expect(first[0].timestampLabel).toBe(first[0].occurredAt);
+  });
+
+  it('maps note templates and shortcuts to deterministic reason buckets', () => {
+    const staleTemplate = resolveExceptionDecisionNoteTemplate('stale_version');
+    const malformedTemplate = resolveExceptionDecisionNoteTemplate('malformed');
+
+    expect(staleTemplate.shortcut).toBe('1');
+    expect(staleTemplate.body).toContain('stale_version');
+    expect(malformedTemplate.shortcut).toBe('2');
+    expect(malformedTemplate.body).toContain('malformed');
+    expect(resolveExceptionDecisionNoteShortcut('1')).toBe('stale_version');
+    expect(resolveExceptionDecisionNoteShortcut('4')).toBe('mixed_status');
+    expect(resolveExceptionDecisionNoteShortcut('0')).toBeNull();
   });
 
   it('moves keyboard focus deterministically across filtered diff rows', () => {
