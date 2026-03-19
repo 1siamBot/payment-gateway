@@ -11,11 +11,20 @@ export type MismatchSort = {
   direction: SortDirection;
 };
 
+export type MismatchCategory =
+  | 'amount'
+  | 'currency'
+  | 'missing-event'
+  | 'duplicate-event'
+  | 'stale-status';
+
 export type MismatchRow = {
+  mismatchDetailId?: string;
   transactionReference: string;
   merchantId: string;
   amount: number;
   currency: string;
+  category: MismatchCategory;
   reason: string;
   status: string;
 };
@@ -51,6 +60,12 @@ const MISMATCH_REASON_LABELS: Record<string, string> = {
   paid_without_success_callback: 'Paid without success callback',
   failed_with_success_callback: 'Failed with success callback',
   stuck_non_terminal: 'Stuck non-terminal',
+};
+
+const MISMATCH_REASON_TO_CATEGORY: Record<string, MismatchCategory> = {
+  paid_without_success_callback: 'missing-event',
+  failed_with_success_callback: 'duplicate-event',
+  stuck_non_terminal: 'stale-status',
 };
 
 export function resolveReconciliationDataSource(input: {
@@ -150,6 +165,32 @@ export function nextRetryAttempt(current: number): number {
 
 export function describeMismatchReason(reason: string): string {
   return MISMATCH_REASON_LABELS[reason] ?? reason.replaceAll('_', ' ');
+}
+
+export function normalizeMismatchCategory(value?: string | null): MismatchCategory {
+  if (!value) {
+    return 'stale-status';
+  }
+
+  const normalized = value.trim().toLowerCase().replaceAll('_', '-');
+  if (normalized === 'amount') return 'amount';
+  if (normalized === 'currency') return 'currency';
+  if (normalized === 'missing-event') return 'missing-event';
+  if (normalized === 'duplicate-event') return 'duplicate-event';
+  if (normalized === 'stale-status') return 'stale-status';
+  return 'stale-status';
+}
+
+export function mapReasonToMismatchCategory(reason: string): MismatchCategory {
+  return MISMATCH_REASON_TO_CATEGORY[reason] ?? 'stale-status';
+}
+
+export function labelForMismatchCategory(category: MismatchCategory): string {
+  if (category === 'amount') return 'amount';
+  if (category === 'currency') return 'currency';
+  if (category === 'missing-event') return 'missing-event';
+  if (category === 'duplicate-event') return 'duplicate-event';
+  return 'stale-status';
 }
 
 function compareBySortKey(left: MismatchRow, right: MismatchRow, key: MismatchSortKey): number {
