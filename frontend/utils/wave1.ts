@@ -683,6 +683,61 @@ export type RemediationPlanCanonicalAutofixPreview = {
   copyText: string;
 };
 
+export type RemediationReadinessDispatchPriority = 'critical' | 'high' | 'medium' | 'low';
+
+export type RemediationReadinessShortcut =
+  | 'focus_scoreboard'
+  | 'next_row'
+  | 'prev_row'
+  | 'open_dispatch_brief_generator'
+  | 'run_deterministic_validation_pass';
+
+export type RemediationReadinessScoreboardMachineFields = {
+  planFingerprint: string;
+  readinessScore: number;
+  blockingCount: number;
+  evidenceCoverage: number;
+  nextOwner: string;
+  dispatchPriority: RemediationReadinessDispatchPriority;
+  readyForQA: boolean;
+};
+
+export type RemediationReadinessScoreboardRow = {
+  id: string;
+  issueIdentifier: string;
+  planSet: string;
+  title: string;
+  orderingKey: [number, number, number, string, string];
+  machineFields: RemediationReadinessScoreboardMachineFields;
+  canonicalLinkViolations: string[];
+};
+
+export type RemediationReadinessScoreboard = {
+  contract: 'settlement-remediation-readiness-scoreboard.v1';
+  rows: RemediationReadinessScoreboardRow[];
+  activeRowId: string;
+  readyForQaCount: number;
+  blockedCount: number;
+};
+
+export type RemediationDispatchBriefGenerator = {
+  contract: 'settlement-remediation-dispatch-brief-generator.v1';
+  markdown: string;
+  rows: Array<{
+    id: string;
+    issueIdentifier: string;
+    planSet: string;
+    machineFields: RemediationReadinessScoreboardMachineFields;
+  }>;
+  canonicalLinks: string[];
+  canonicalAutofixPreview: {
+    rows: CanonicalLinkAutofixRow[];
+    changedCount: number;
+    invalidCount: number;
+    copyText: string;
+  };
+};
+
 export type RemediationPlanDiffShortcut =
   | 'focus_diff_inspector'
   | 'next_diff_row'
@@ -5078,6 +5133,255 @@ export function buildRemediationPlanCanonicalAutofixPreview(input: {
     changedCount,
     invalidCount,
     copyText: patchedMarkdown,
+  };
+}
+
+function normalizeRemediationReadinessDispatchPriority(input: unknown): RemediationReadinessDispatchPriority {
+  if (typeof input !== 'string') {
+    return 'medium';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high' || normalized === 'medium' || normalized === 'low') {
+    return normalized;
+  }
+  return 'medium';
+}
+
+function remediationReadinessDispatchPriorityWeight(priority: RemediationReadinessDispatchPriority): number {
+  if (priority === 'critical') {
+    return 1;
+  }
+  if (priority === 'high') {
+    return 2;
+  }
+  if (priority === 'medium') {
+    return 3;
+  }
+  return 4;
+}
+
+function parseRemediationReadinessScoreboardRow(
+  row: unknown,
+  index: number,
+): RemediationReadinessScoreboardRow | null {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  const payload = row as Record<string, unknown>;
+  const issueIdentifier = normalizeRemediationPlanIdentifier(payload.issueIdentifier, index);
+  const id = normalizeOptional(typeof payload.id === 'string' ? payload.id : '') ?? `readiness-row-${index + 1}`;
+  const planSet = normalizeOptional(typeof payload.planSet === 'string' ? payload.planSet : '') ?? 'default';
+  const title = normalizeOptional(typeof payload.title === 'string' ? payload.title : '')
+    ?? `${issueIdentifier} remediation readiness item`;
+  const planFingerprint = normalizeOptional(typeof payload.planFingerprint === 'string' ? payload.planFingerprint : '')
+    ?? `${issueIdentifier.toLowerCase()}-${planSet}`;
+  const readinessScoreRaw = parseFiniteNumber(payload.readinessScore);
+  const readinessScore = Math.max(0, Math.min(100, Math.round((readinessScoreRaw ?? 0) * 100) / 100));
+  const blockingCount = Math.max(
+    0,
+    Math.trunc(parseFiniteNumber(payload.blockingCount ?? payload.blockerCount) ?? 0),
+  );
+  const evidenceCoverageRaw = parseFiniteNumber(payload.evidenceCoverage ?? payload.coverage);
+  const evidenceCoverage = Math.max(0, Math.min(100, Math.round((evidenceCoverageRaw ?? 0) * 100) / 100));
+  const nextOwner = normalizeOptional(typeof payload.nextOwner === 'string' ? payload.nextOwner : '') ?? 'unassigned';
+  const dispatchPriority = normalizeRemediationReadinessDispatchPriority(payload.dispatchPriority);
+  const readyForQA = typeof payload.readyForQA === 'boolean'
+    ? payload.readyForQA
+    : (readinessScore >= 80
+      && blockingCount === 0
+      && evidenceCoverage >= 80
+      && nextOwner !== 'unassigned');
+  const canonicalLinks = Array.from(
+    new Set(
+      (Array.isArray(payload.canonicalLinks) ? payload.canonicalLinks : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const canonicalLinkViolations = canonicalLinks.filter((link) => {
+    const canonical = canonicalizePaperclipIssueLink(link);
+    return !canonical || canonical !== link;
+  });
+
+  return {
+    id,
+    issueIdentifier,
+    planSet,
+    title,
+    orderingKey: [
+      remediationReadinessDispatchPriorityWeight(dispatchPriority),
+      blockingCount,
+      -readinessScore,
+      issueIdentifier,
+      planFingerprint,
+    ],
+    machineFields: {
+      planFingerprint,
+      readinessScore,
+      blockingCount,
+      evidenceCoverage,
+      nextOwner,
+      dispatchPriority,
+      readyForQA,
+    },
+    canonicalLinkViolations,
+  };
+}
+
+export function buildRemediationReadinessScoreboard(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): RemediationReadinessScoreboard {
+  const rows = input.rows
+    .map((row, index) => parseRemediationReadinessScoreboardRow(row, index))
+    .filter((row): row is RemediationReadinessScoreboardRow => Boolean(row))
+    .sort((left, right) => (
+      left.orderingKey[0] - right.orderingKey[0]
+      || left.orderingKey[1] - right.orderingKey[1]
+      || left.orderingKey[2] - right.orderingKey[2]
+      || left.orderingKey[3].localeCompare(right.orderingKey[3])
+      || left.orderingKey[4].localeCompare(right.orderingKey[4])
+      || left.id.localeCompare(right.id)
+    ));
+  const rowIds = new Set(rows.map((row) => row.id));
+  const activeRowId = rowIds.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-remediation-readiness-scoreboard.v1',
+    rows,
+    activeRowId,
+    readyForQaCount: rows.filter((row) => row.machineFields.readyForQA).length,
+    blockedCount: rows.filter((row) => !row.machineFields.readyForQA).length,
+  };
+}
+
+export function moveRemediationReadinessScoreboardSelection(input: {
+  rows: RemediationReadinessScoreboardRow[];
+  activeRowId: string;
+  direction: 'next_row' | 'prev_row';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_row') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveRemediationReadinessShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): RemediationReadinessShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 's') {
+    return 'focus_scoreboard';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_row';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_row';
+  }
+  if (normalizedKey === 'b' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'open_dispatch_brief_generator';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'run_deterministic_validation_pass';
+  }
+  return null;
+}
+
+export function buildRemediationDispatchBriefGenerator(input: {
+  rows: RemediationReadinessScoreboardRow[];
+  relatedLinksText: string;
+}): RemediationDispatchBriefGenerator {
+  const inputLinks = normalizeMultilineEntries(input.relatedLinksText);
+  const canonicalLinks = Array.from(
+    new Set(
+      inputLinks
+        .map((link) => canonicalizePaperclipIssueLink(link) ?? link)
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  const lines = [
+    '# Remediation Dispatch Brief',
+    '',
+    '## Scoreboard Summary',
+    `- readyForQA: ${input.rows.filter((row) => row.machineFields.readyForQA).length}`,
+    `- blocked: ${input.rows.filter((row) => !row.machineFields.readyForQA).length}`,
+    '',
+    '| Issue | planSet | planFingerprint | readinessScore | blockingCount | evidenceCoverage | nextOwner | dispatchPriority | readyForQA |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const row of input.rows) {
+    const issueLink = `/${row.issueIdentifier.split('-')[0]}/issues/${row.issueIdentifier}`;
+    lines.push([
+      '|',
+      issueLink,
+      '|',
+      row.planSet,
+      '|',
+      row.machineFields.planFingerprint,
+      '|',
+      String(row.machineFields.readinessScore),
+      '|',
+      String(row.machineFields.blockingCount),
+      '|',
+      String(row.machineFields.evidenceCoverage),
+      '|',
+      row.machineFields.nextOwner,
+      '|',
+      row.machineFields.dispatchPriority,
+      '|',
+      row.machineFields.readyForQA ? 'yes' : 'no',
+      '|',
+    ].join(' '));
+  }
+  lines.push('');
+  lines.push('## Canonical Related Links');
+  if (canonicalLinks.length) {
+    for (const link of canonicalLinks) {
+      lines.push(`- ${link}`);
+    }
+  } else {
+    lines.push('- (none)');
+  }
+  const markdown = lines.join('\n');
+  const baseAutofixPreview = buildCanonicalLinkAutofixPreview({ linksText: input.relatedLinksText });
+  const canonicalAutofixPreview = {
+    rows: baseAutofixPreview.rows,
+    changedCount: baseAutofixPreview.changedCount,
+    invalidCount: baseAutofixPreview.rows.filter((row) => !canonicalizePaperclipIssueLink(row.original)).length,
+    copyText: baseAutofixPreview.correctedOutput,
+  };
+  return {
+    contract: 'settlement-remediation-dispatch-brief-generator.v1',
+    markdown,
+    rows: input.rows.map((row) => ({
+      id: row.id,
+      issueIdentifier: row.issueIdentifier,
+      planSet: row.planSet,
+      machineFields: {
+        planFingerprint: row.machineFields.planFingerprint,
+        readinessScore: row.machineFields.readinessScore,
+        blockingCount: row.machineFields.blockingCount,
+        evidenceCoverage: row.machineFields.evidenceCoverage,
+        nextOwner: row.machineFields.nextOwner,
+        dispatchPriority: row.machineFields.dispatchPriority,
+        readyForQA: row.machineFields.readyForQA,
+      },
+    })),
+    canonicalLinks,
+    canonicalAutofixPreview,
   };
 }
 

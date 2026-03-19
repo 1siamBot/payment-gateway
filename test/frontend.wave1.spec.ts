@@ -109,6 +109,8 @@ import {
   buildRemediationPlanExplorer,
   buildRemediationExecutionChecklistComposer,
   buildRemediationPlanCanonicalAutofixPreview,
+  buildRemediationReadinessScoreboard,
+  buildRemediationDispatchBriefGenerator,
   buildRemediationPlanDiffInspector,
   buildRemediationPlanEvidenceExportComposer,
   buildRemediationPlanDiffCanonicalAutofixPreview,
@@ -137,6 +139,7 @@ import {
   moveRemediationQueueSelection,
   moveReleaseGateVerdictSelection,
   moveRemediationPlanSelection,
+  moveRemediationReadinessScoreboardSelection,
   moveRemediationPlanDiffSelection,
   moveDiagnosticsBaselineDeltaSelection,
   moveDeltaBundleValidationIssueSelection,
@@ -154,6 +157,7 @@ import {
   resolveRemediationQueueShortcut,
   resolveReleaseGateVerdictShortcut,
   resolveRemediationPlanShortcut,
+  resolveRemediationReadinessShortcut,
   resolveRemediationPlanDiffShortcut,
   resolvePublicationWindowPlanShortcut,
   resolveDiagnosticsBaselineCompareShortcut,
@@ -4644,6 +4648,200 @@ describe('frontend wave1 helpers', () => {
       activePlanItemId: 'plan-1',
       direction: 'next_plan_item',
     })).toBe('plan-2');
+  });
+
+  it('builds remediation readiness scoreboard rows in deterministic tuple order', () => {
+    const first = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-c',
+          issueIdentifier: 'ONE-339',
+          planSet: 'canonical-link-hardening',
+          planFingerprint: 'fp-c',
+          readinessScore: 75,
+          blockingCount: 2,
+          evidenceCoverage: 70,
+          nextOwner: 'pm',
+          dispatchPriority: 'medium',
+        },
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-a',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-b',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+    const second = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-a',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-a',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-c',
+          issueIdentifier: 'ONE-339',
+          planSet: 'canonical-link-hardening',
+          planFingerprint: 'fp-c',
+          readinessScore: 75,
+          blockingCount: 2,
+          evidenceCoverage: 70,
+          nextOwner: 'pm',
+          dispatchPriority: 'medium',
+        },
+        {
+          id: 'row-b',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-b',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(first.contract).toBe('settlement-remediation-readiness-scoreboard.v1');
+    expect(first.rows.map((row) => row.id)).toEqual(['row-b', 'row-a', 'row-c']);
+    expect(first.rows[0].orderingKey).toEqual([1, 1, -81, 'ONE-341', 'fp-b']);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it('emits remediation readiness machine fields with stable readyForQA behavior', () => {
+    const scoreboard = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'ready',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-ready',
+          readinessScore: 92,
+          blockingCount: 0,
+          evidenceCoverage: 95,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+          canonicalLinks: ['/ONE/issues/ONE-343'],
+        },
+        {
+          id: 'blocked',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-blocked',
+          readinessScore: 68,
+          blockingCount: 2,
+          evidenceCoverage: 55,
+          nextOwner: '',
+          dispatchPriority: 'critical',
+          canonicalLinks: ['/issues/ONE-341'],
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(scoreboard.rows.find((row) => row.id === 'ready')?.machineFields).toEqual({
+      planFingerprint: 'fp-ready',
+      readinessScore: 92,
+      blockingCount: 0,
+      evidenceCoverage: 95,
+      nextOwner: 'qa',
+      dispatchPriority: 'high',
+      readyForQA: true,
+    });
+    expect(scoreboard.rows.find((row) => row.id === 'blocked')?.machineFields).toEqual({
+      planFingerprint: 'fp-blocked',
+      readinessScore: 68,
+      blockingCount: 2,
+      evidenceCoverage: 55,
+      nextOwner: 'unassigned',
+      dispatchPriority: 'critical',
+      readyForQA: false,
+    });
+    expect(scoreboard.rows.find((row) => row.id === 'blocked')?.canonicalLinkViolations).toEqual(['/issues/ONE-341']);
+  });
+
+  it('builds remediation dispatch brief markdown with canonical autofix preview and keyboard workflow', () => {
+    const scoreboard = buildRemediationReadinessScoreboard({
+      rows: [
+        {
+          id: 'row-1',
+          issueIdentifier: 'ONE-343',
+          planSet: 'release-gate-parity',
+          planFingerprint: 'fp-1',
+          readinessScore: 93,
+          blockingCount: 0,
+          evidenceCoverage: 96,
+          nextOwner: 'qa',
+          dispatchPriority: 'high',
+        },
+        {
+          id: 'row-2',
+          issueIdentifier: 'ONE-341',
+          planSet: 'plan-explorer',
+          planFingerprint: 'fp-2',
+          readinessScore: 81,
+          blockingCount: 1,
+          evidenceCoverage: 84,
+          nextOwner: 'frontend engineer',
+          dispatchPriority: 'critical',
+        },
+      ],
+      activeRowId: '',
+    });
+    const brief = buildRemediationDispatchBriefGenerator({
+      rows: scoreboard.rows,
+      relatedLinksText: [
+        '/issues/ONE-343',
+        '/issues/ONE-341#document-plan',
+        'https://paperclip.dev/issues/ONE-340#comment-7',
+      ].join('\n'),
+    });
+
+    expect(brief.contract).toBe('settlement-remediation-dispatch-brief-generator.v1');
+    expect(brief.markdown).toContain('# Remediation Dispatch Brief');
+    expect(brief.markdown).toContain('/ONE/issues/ONE-343');
+    expect(brief.markdown).toContain('/ONE/issues/ONE-341');
+    expect(brief.canonicalAutofixPreview.changedCount).toBe(3);
+    expect(brief.canonicalAutofixPreview.invalidCount).toBe(0);
+    expect(brief.canonicalAutofixPreview.copyText).toContain('/ONE/issues/ONE-340#comment-7');
+    expect(resolveRemediationReadinessShortcut({ key: 's', altKey: true })).toBe('focus_scoreboard');
+    expect(resolveRemediationReadinessShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_row');
+    expect(resolveRemediationReadinessShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_row');
+    expect(resolveRemediationReadinessShortcut({ key: 'b', ctrlKey: true, shiftKey: true }))
+      .toBe('open_dispatch_brief_generator');
+    expect(resolveRemediationReadinessShortcut({ key: 'Enter', ctrlKey: true, shiftKey: true }))
+      .toBe('run_deterministic_validation_pass');
+    expect(moveRemediationReadinessScoreboardSelection({
+      rows: scoreboard.rows,
+      activeRowId: scoreboard.rows[0]?.id ?? '',
+      direction: 'next_row',
+    })).toBe(scoreboard.rows[1]?.id);
   });
 
   it('builds remediation-plan diff inspector rows in deterministic section/order tuple order', () => {
