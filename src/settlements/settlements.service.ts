@@ -31,11 +31,13 @@ import {
   BuildSettlementBulkActionPreviewDto,
 } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
+import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
 import {
   ExceptionQaScenario,
   SETTLEMENT_EXCEPTION_QA_FIXTURES,
   SETTLEMENT_EXCEPTION_QA_WINDOW_DATE,
 } from './exception-qa-fixtures';
+import { buildSettlementPacketAuditSummary, SettlementPacketAuditSummary } from './packet-audit-summary';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -202,6 +204,7 @@ type SettlementBulkActionPreviewContractResponse = {
 
 type SettlementBulkActionSimulationContractResponse = BulkSettlementActionSimulation;
 type SettlementExplainabilityPresetProfileContractResponse = SettlementExplainabilityPresetProfile;
+type SettlementPacketAuditSummaryContractResponse = SettlementPacketAuditSummary;
 
 @Injectable()
 export class SettlementsService {
@@ -483,6 +486,25 @@ export class SettlementsService {
     input: BuildSettlementExplainabilityPresetProfileDto,
   ): SettlementExplainabilityPresetProfileContractResponse {
     return buildSettlementExplainabilityPresetProfile(input);
+  }
+
+  buildSettlementExceptionPacketAuditSummary(
+    input: BuildSettlementPacketAuditSummaryDto,
+  ): SettlementPacketAuditSummaryContractResponse {
+    try {
+      return buildSettlementPacketAuditSummary(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
   }
 
   async getSettlementException(exceptionId: string): Promise<ExceptionDetail> {
