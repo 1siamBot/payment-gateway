@@ -41,6 +41,7 @@ import {
 } from './dto/build-settlement-bulk-action-preview.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
+import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import {
   ExceptionQaScenario,
@@ -54,6 +55,10 @@ import {
   lintSettlementEvidencePackets,
   SettlementEvidencePacketLintContract,
 } from './evidence-packet-lint';
+import {
+  buildSettlementPublicationWindowPlan,
+  SettlementPublicationWindowPlan,
+} from './publication-window-plan';
 import {
   buildSettlementPublicationReadinessTrend,
   SettlementPublicationReadinessTrend,
@@ -245,6 +250,7 @@ type SettlementEvidenceLineageContractResponse = SettlementEvidenceLineageContra
 type SettlementEvidenceGapSummaryContractResponse = SettlementEvidenceGapSummary;
 type SettlementEvidencePacketLintContractResponse = SettlementEvidencePacketLintContract;
 type SettlementPublicationReadinessTrendContractResponse = SettlementPublicationReadinessTrend;
+type SettlementPublicationWindowPlanContractResponse = SettlementPublicationWindowPlan;
 type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadinessDigest;
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
 type SettlementExceptionRemediationManifestContractResponse = SettlementExceptionRemediationManifest;
@@ -599,6 +605,25 @@ export class SettlementsService {
     input: BuildSettlementPublicationReadinessTrendDto,
   ): SettlementPublicationReadinessTrendContractResponse {
     return buildSettlementPublicationReadinessTrend(input);
+  }
+
+  buildSettlementExceptionPublicationWindowPlan(
+    input: BuildSettlementPublicationWindowPlanDto,
+  ): SettlementPublicationWindowPlanContractResponse {
+    try {
+      return buildSettlementPublicationWindowPlan(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
   }
 
   buildSettlementExceptionDeliveryReadinessDigest(

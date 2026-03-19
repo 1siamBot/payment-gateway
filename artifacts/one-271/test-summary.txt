@@ -1,0 +1,12 @@
+
+> payment-gateway@0.1.0 test
+> jest test/settlement-publication-window-plan.spec.ts test/settlement-publication-window-plan-endpoint.spec.ts
+
+PASS test/settlement-publication-window-plan.spec.ts
+PASS test/settlement-publication-window-plan-endpoint.spec.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       4 passed, 4 total
+Snapshots:   0 total
+Time:        1.357 s
+Ran all test suites matching /test\/settlement-publication-window-plan.spec.ts|test\/settlement-publication-window-plan-endpoint.spec.ts/i.

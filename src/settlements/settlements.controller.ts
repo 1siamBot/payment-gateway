@@ -11,6 +11,7 @@ import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-rem
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
 import { BuildSettlementPacketAuditSummaryDto } from './dto/build-settlement-packet-audit-summary.dto';
+import { BuildSettlementPublicationWindowPlanDto } from './dto/build-settlement-publication-window-plan.dto';
 import { BuildSettlementPublicationReadinessTrendDto } from './dto/build-settlement-publication-readiness-trend.dto';
 import { DetectSettlementExceptionsDto } from './dto/detect-settlement-exceptions.dto';
 import { ListSettlementExceptionQaFixturesDto } from './dto/list-settlement-exception-qa-fixtures.dto';
@@ -99,6 +100,11 @@ export class SettlementsController {
   @Post('exceptions/publication-readiness-trend')
   publicationReadinessTrend(@Body() body: BuildSettlementPublicationReadinessTrendDto) {
     return this.settlements.buildSettlementExceptionPublicationReadinessTrend(body);
+  }
+
+  @Post('exceptions/publication-window-plan')
+  publicationWindowPlan(@Body() body: BuildSettlementPublicationWindowPlanDto) {
+    return this.settlements.buildSettlementExceptionPublicationWindowPlan(body);
   }
 
   @Post('exceptions/delivery-readiness-digest')
