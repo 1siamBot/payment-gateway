@@ -3,9 +3,13 @@ import {
   buildReconciliationKpis,
   buildSectionViewState,
   describeMismatchReason,
+  labelForMismatchCategory,
+  mapReasonToMismatchCategory,
   nextRetryAttempt,
+  normalizeMismatchCategory,
   resolveReconciliationDataSource,
   sortMismatchRowsDeterministic,
+  type MismatchCategory,
   type MismatchRow,
   type MismatchSort,
   type MismatchSortKey,
@@ -29,13 +33,67 @@ type DailySummaryResponse = {
 
 type MismatchApiResponse = {
   mismatches?: Array<{
+    mismatchDetailId?: string;
     transactionReference?: string;
     merchantId?: string;
     amount?: number;
     currency?: string;
+    category?: string;
     reason?: string;
     status?: string;
   }>;
+};
+
+type MismatchDetailResponse = {
+  mismatch?: {
+    id?: string;
+    category?: string;
+    transactionReference?: string;
+    merchantId?: string;
+    reasonCode?: string;
+    summary?: {
+      mismatchCount?: number;
+      normalizedFieldPaths?: string[];
+      fallbackApplied?: boolean;
+    };
+    expected?: {
+      source?: string;
+      payload?: Record<string, unknown>;
+    };
+    actual?: {
+      source?: string;
+      payload?: Record<string, unknown>;
+    };
+    diffs?: Array<{
+      path?: string;
+      reasonCode?: string;
+      expected?: string | number | boolean | null;
+      actual?: string | number | boolean | null;
+    }>;
+  };
+};
+
+type NormalizedDiff = {
+  path: string;
+  reasonCode: string;
+  expected: string | number | boolean | null;
+  actual: string | number | boolean | null;
+};
+
+type NormalizedMismatchDetail = {
+  id: string;
+  category: MismatchCategory;
+  transactionReference: string;
+  merchantId: string;
+  reasonCode: string;
+  mismatchCount: number;
+  normalizedFieldPaths: string[];
+  fallbackApplied: boolean;
+  expectedSource: string;
+  actualSource: string;
+  expectedPayload: Record<string, unknown>;
+  actualPayload: Record<string, unknown>;
+  diffs: NormalizedDiff[];
 };
 
 const auth = reactive({
@@ -49,13 +107,18 @@ const latestApiStatusCode = ref<number | undefined>(undefined);
 
 const summaryState = reactive({ loading: false, error: '' });
 const mismatchState = reactive({ loading: false, error: '' });
+const detailState = reactive({ loading: false, error: '' });
 
 const summaryRetryCount = ref(0);
 const mismatchRetryCount = ref(0);
+const detailRetryCount = ref(0);
 
 const paymentRows = ref<PaymentRow[]>([]);
 const totalVolumeCount = ref(0);
 const mismatchRows = ref<MismatchRow[]>([]);
+const selectedMismatch = ref<MismatchRow | null>(null);
+const selectedDetail = ref<NormalizedMismatchDetail | null>(null);
+const drawerOpen = ref(false);
 
 const sort = reactive<MismatchSort>({
   key: 'transactionReference',
@@ -75,30 +138,179 @@ const fixtureSummaryTransactionCount = 6;
 
 const fixtureMismatches: MismatchRow[] = [
   {
-    transactionReference: 'pay_rec_2003',
-    merchantId: 'mrc_fixture_beta',
-    amount: 380,
+    mismatchDetailId: 'recon_mismatch_amount_001',
+    transactionReference: 'pay_recon_1002',
+    merchantId: 'merchant_beta',
+    amount: 2000,
     currency: 'THB',
-    reason: 'stuck_non_terminal',
+    category: 'amount',
+    reason: 'amount_mismatch',
+    status: 'INVESTIGATING',
+  },
+  {
+    mismatchDetailId: 'recon_mismatch_currency_001',
+    transactionReference: 'pay_recon_1005',
+    merchantId: 'merchant_epsilon',
+    amount: 1200,
+    currency: 'THB',
+    category: 'currency',
+    reason: 'currency_mismatch',
     status: 'PENDING',
   },
   {
-    transactionReference: 'pay_rec_1001',
-    merchantId: 'mrc_fixture_alpha',
-    amount: 1250,
+    mismatchDetailId: 'recon_mismatch_missing_event_001',
+    transactionReference: 'pay_recon_1003',
+    merchantId: 'merchant_gamma',
+    amount: 880,
     currency: 'THB',
-    reason: 'paid_without_success_callback',
-    status: 'PAID',
+    category: 'missing-event',
+    reason: 'missing_event',
+    status: 'PENDING',
   },
   {
-    transactionReference: 'pay_rec_1019',
-    merchantId: 'mrc_fixture_alpha',
-    amount: 1250,
+    mismatchDetailId: 'recon_mismatch_duplicate_event_001',
+    transactionReference: 'pay_recon_1004',
+    merchantId: 'merchant_delta',
+    amount: 990,
     currency: 'THB',
-    reason: 'failed_with_success_callback',
-    status: 'FAILED',
+    category: 'duplicate-event',
+    reason: 'duplicate_event',
+    status: 'INVESTIGATING',
+  },
+  {
+    mismatchDetailId: 'recon_mismatch_stale_status_001',
+    transactionReference: 'pay_recon_1006',
+    merchantId: 'merchant_zeta',
+    amount: 450,
+    currency: 'THB',
+    category: 'stale-status',
+    reason: 'stale_status',
+    status: 'CREATED',
   },
 ];
+
+const fixtureDetailById: Record<string, NormalizedMismatchDetail> = {
+  recon_mismatch_amount_001: {
+    id: 'recon_mismatch_amount_001',
+    category: 'amount',
+    transactionReference: 'pay_recon_1002',
+    merchantId: 'merchant_beta',
+    reasonCode: 'RECON_AMOUNT_MISMATCH',
+    mismatchCount: 1,
+    normalizedFieldPaths: ['amount.value'],
+    fallbackApplied: false,
+    expectedSource: 'ledger',
+    actualSource: 'provider',
+    expectedPayload: {
+      ledgerEventId: 'evt_ledger_1002',
+      amount: { value: '2000.00', currency: 'THB' },
+    },
+    actualPayload: {
+      providerEventId: 'evt_provider_1002',
+      amount: { value: '1980.00', currency: 'THB' },
+    },
+    diffs: [{ path: 'amount.value', reasonCode: 'RECON_AMOUNT_MISMATCH', expected: '2000.00', actual: '1980.00' }],
+  },
+  recon_mismatch_currency_001: {
+    id: 'recon_mismatch_currency_001',
+    category: 'currency',
+    transactionReference: 'pay_recon_1005',
+    merchantId: 'merchant_epsilon',
+    reasonCode: 'RECON_CURRENCY_MISMATCH',
+    mismatchCount: 1,
+    normalizedFieldPaths: ['amount.currency'],
+    fallbackApplied: false,
+    expectedSource: 'ledger',
+    actualSource: 'provider',
+    expectedPayload: {
+      ledgerEventId: 'evt_ledger_1005',
+      amount: { value: '1200.00', currency: 'THB' },
+    },
+    actualPayload: {
+      providerEventId: 'evt_provider_1005',
+      amount: { value: '1200.00', currency: 'USD' },
+    },
+    diffs: [{ path: 'amount.currency', reasonCode: 'RECON_CURRENCY_MISMATCH', expected: 'THB', actual: 'USD' }],
+  },
+  recon_mismatch_missing_event_001: {
+    id: 'recon_mismatch_missing_event_001',
+    category: 'missing-event',
+    transactionReference: 'pay_recon_1003',
+    merchantId: 'merchant_gamma',
+    reasonCode: 'RECON_MISSING_EVENT',
+    mismatchCount: 1,
+    normalizedFieldPaths: ['events.capture.succeeded'],
+    fallbackApplied: false,
+    expectedSource: 'ledger',
+    actualSource: 'provider',
+    expectedPayload: {
+      expectedEventType: 'capture.succeeded',
+      expectedEventId: 'evt_capture_1003',
+    },
+    actualPayload: {
+      observedEvents: ['authorization.succeeded'],
+    },
+    diffs: [{ path: 'events.capture.succeeded', reasonCode: 'RECON_MISSING_EVENT', expected: 'present', actual: null }],
+  },
+  recon_mismatch_duplicate_event_001: {
+    id: 'recon_mismatch_duplicate_event_001',
+    category: 'duplicate-event',
+    transactionReference: 'pay_recon_1004',
+    merchantId: 'merchant_delta',
+    reasonCode: 'RECON_DUPLICATE_EVENT',
+    mismatchCount: 1,
+    normalizedFieldPaths: ['events.capture.succeeded.count'],
+    fallbackApplied: false,
+    expectedSource: 'ledger',
+    actualSource: 'provider',
+    expectedPayload: {
+      expectedOccurrences: 1,
+      eventType: 'capture.succeeded',
+    },
+    actualPayload: {
+      observedOccurrences: 3,
+      eventIds: ['evt_cap_1', 'evt_cap_2', 'evt_cap_3'],
+    },
+    diffs: [{ path: 'events.capture.succeeded.count', reasonCode: 'RECON_DUPLICATE_EVENT', expected: 1, actual: 3 }],
+  },
+  recon_mismatch_stale_status_001: {
+    id: 'recon_mismatch_stale_status_001',
+    category: 'stale-status',
+    transactionReference: 'pay_recon_1006',
+    merchantId: 'merchant_zeta',
+    reasonCode: 'RECON_STALE_STATUS',
+    mismatchCount: 2,
+    normalizedFieldPaths: ['status.current', 'status.updatedAt'],
+    fallbackApplied: false,
+    expectedSource: 'ledger',
+    actualSource: 'provider',
+    expectedPayload: {
+      ledgerStatus: 'paid',
+      expectedUpdatedAt: '2026-03-19T12:35:00.000Z',
+    },
+    actualPayload: {
+      providerStatus: 'authorized',
+      providerUpdatedAt: '2026-03-19T11:30:00.000Z',
+    },
+    diffs: [
+      { path: 'status.current', reasonCode: 'RECON_STALE_STATUS', expected: 'paid', actual: 'authorized' },
+      {
+        path: 'status.updatedAt',
+        reasonCode: 'RECON_STALE_STATUS',
+        expected: '2026-03-19T12:35:00.000Z',
+        actual: '2026-03-19T11:30:00.000Z',
+      },
+    ],
+  },
+};
+
+const detailFixtureIdByCategory: Record<MismatchCategory, string> = {
+  amount: 'recon_mismatch_amount_001',
+  currency: 'recon_mismatch_currency_001',
+  'missing-event': 'recon_mismatch_missing_event_001',
+  'duplicate-event': 'recon_mismatch_duplicate_event_001',
+  'stale-status': 'recon_mismatch_stale_status_001',
+};
 
 const sortedMismatchRows = computed(() => sortMismatchRowsDeterministic(mismatchRows.value, sort));
 
@@ -127,6 +339,21 @@ const mismatchViewState = computed(() => buildSectionViewState({
   readyMessage: `${mismatchRows.value.length} mismatch row(s) loaded. Retry count: ${mismatchRetryCount.value}.`,
 }));
 
+const detailViewState = computed(() => buildSectionViewState({
+  loading: detailState.loading,
+  error: detailState.error,
+  itemCount: selectedDetail.value ? 1 : 0,
+  loadingMessage: selectedMismatch.value
+    ? `Loading mismatch detail for ${selectedMismatch.value.transactionReference}...`
+    : 'Loading mismatch detail...',
+  emptyMessage: selectedMismatch.value
+    ? `No mismatch detail available for ${selectedMismatch.value.transactionReference}.`
+    : 'Select a mismatch row to open detail.',
+  readyMessage: selectedDetail.value
+    ? `Mismatch detail loaded for ${selectedDetail.value.transactionReference}. Retry count: ${detailRetryCount.value}.`
+    : 'Select a mismatch row to open detail.',
+}));
+
 function authHeaders() {
   return {
     'x-internal-token': auth.internalToken.trim(),
@@ -146,11 +373,27 @@ function formatAmount(amount: number, currency: string) {
   return `${formatNumber(amount)} ${currency}`;
 }
 
+function formatDiffValue(value: string | number | boolean | null) {
+  return value === null ? 'null' : String(value);
+}
+
+function prettyPayload(payload: Record<string, unknown>) {
+  return JSON.stringify(payload, null, 2);
+}
+
 function statusBadgeClass(status: string) {
   if (status === 'PAID' || status === 'RESOLVED') return 'status-pill ok';
   if (status === 'FAILED') return 'status-pill danger';
   if (status === 'PENDING' || status === 'CREATED' || status === 'INVESTIGATING') return 'status-pill warn';
   return 'status-pill';
+}
+
+function categoryBadgeClass(category: MismatchCategory) {
+  if (category === 'amount') return 'category-pill danger';
+  if (category === 'currency') return 'category-pill warn';
+  if (category === 'missing-event') return 'category-pill danger';
+  if (category === 'duplicate-event') return 'category-pill warn';
+  return 'category-pill neutral';
 }
 
 function kpiToneClass(tone: 'neutral' | 'ok' | 'danger' | 'warn') {
@@ -192,6 +435,42 @@ function applyFixtureSummary(mode: ReconciliationDataMode) {
 
 function applyFixtureMismatches(mode: ReconciliationDataMode) {
   mismatchRows.value = mode === 'fixture_empty' ? [] : fixtureMismatches;
+}
+
+function resolveMismatchDetailId(row: MismatchRow): string {
+  return row.mismatchDetailId || detailFixtureIdByCategory[row.category];
+}
+
+function normalizeDetailResponse(input: MismatchDetailResponse, fallbackId: string): NormalizedMismatchDetail {
+  const mismatch = input.mismatch || {};
+  const diffs = Array.isArray(mismatch.diffs) ? mismatch.diffs : [];
+
+  return {
+    id: String(mismatch.id || fallbackId),
+    category: normalizeMismatchCategory(mismatch.category),
+    transactionReference: String(mismatch.transactionReference || selectedMismatch.value?.transactionReference || '-'),
+    merchantId: String(mismatch.merchantId || selectedMismatch.value?.merchantId || '-'),
+    reasonCode: String(mismatch.reasonCode || 'RECON_MISMATCH_UNSPECIFIED'),
+    mismatchCount: Number(mismatch.summary?.mismatchCount ?? diffs.length),
+    normalizedFieldPaths: Array.isArray(mismatch.summary?.normalizedFieldPaths)
+      ? mismatch.summary?.normalizedFieldPaths.map((path) => String(path))
+      : diffs.map((diff) => String(diff.path || 'payload')),
+    fallbackApplied: Boolean(mismatch.summary?.fallbackApplied),
+    expectedSource: String(mismatch.expected?.source || 'ledger'),
+    actualSource: String(mismatch.actual?.source || 'provider'),
+    expectedPayload: typeof mismatch.expected?.payload === 'object' && mismatch.expected?.payload
+      ? mismatch.expected.payload
+      : {},
+    actualPayload: typeof mismatch.actual?.payload === 'object' && mismatch.actual?.payload
+      ? mismatch.actual.payload
+      : {},
+    diffs: diffs.map((diff) => ({
+      path: String(diff.path || 'payload'),
+      reasonCode: String(diff.reasonCode || 'RECON_MISMATCH_UNSPECIFIED'),
+      expected: diff.expected ?? null,
+      actual: diff.actual ?? null,
+    })),
+  };
 }
 
 async function wait(ms: number) {
@@ -283,10 +562,12 @@ async function loadMismatchSection() {
 
     mismatchRows.value = Array.isArray(response?.mismatches)
       ? response.mismatches.map((row) => ({
+        mismatchDetailId: row.mismatchDetailId ? String(row.mismatchDetailId) : undefined,
         transactionReference: String(row.transactionReference || ''),
         merchantId: String(row.merchantId || ''),
         amount: Number(row.amount || 0),
         currency: String(row.currency || 'THB'),
+        category: normalizeMismatchCategory(row.category || mapReasonToMismatchCategory(String(row.reason || ''))),
         reason: String(row.reason || ''),
         status: String(row.status || 'UNKNOWN'),
       }))
@@ -308,8 +589,66 @@ async function loadMismatchSection() {
   }
 }
 
+async function loadMismatchDetail(row: MismatchRow) {
+  detailState.loading = true;
+  detailState.error = '';
+  selectedDetail.value = null;
+
+  const mismatchDetailId = resolveMismatchDetailId(row);
+
+  try {
+    if (selectedMode.value === 'fixture_loading') {
+      await wait(550);
+      return;
+    }
+    if (selectedMode.value === 'fixture_error') {
+      throw new Error('Fixture mode: simulated mismatch detail fetch failure.');
+    }
+    if (selectedMode.value === 'fixture_empty') {
+      return;
+    }
+
+    const source = resolveReconciliationDataSource({
+      mode: selectedMode.value,
+      latestApiStatusCode: latestApiStatusCode.value,
+    });
+
+    if (source === 'fixture') {
+      selectedDetail.value = fixtureDetailById[mismatchDetailId] || null;
+      return;
+    }
+
+    if (!hasAuth()) {
+      throw new Error('Internal auth token is required in API mode.');
+    }
+
+    const response = await request<MismatchDetailResponse>(
+      `/settlements/reconciliation/mismatch-details/${encodeURIComponent(mismatchDetailId)}`,
+      { headers: authHeaders() },
+    );
+
+    selectedDetail.value = normalizeDetailResponse(response, mismatchDetailId);
+    latestApiStatusCode.value = undefined;
+  } catch (error: any) {
+    const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : undefined;
+    latestApiStatusCode.value = statusCode;
+    if (resolveReconciliationDataSource({ mode: selectedMode.value, latestApiStatusCode: statusCode }) === 'fixture') {
+      selectedDetail.value = fixtureDetailById[mismatchDetailId] || null;
+      detailState.error = '';
+    } else {
+      selectedDetail.value = null;
+      detailState.error = error?.message || 'Unable to load mismatch detail.';
+    }
+  } finally {
+    detailState.loading = false;
+  }
+}
+
 async function loadWorkspace() {
   await Promise.all([loadSummarySection(), loadMismatchSection()]);
+  if (drawerOpen.value && selectedMismatch.value) {
+    await loadMismatchDetail(selectedMismatch.value);
+  }
 }
 
 async function retrySummary() {
@@ -320,6 +659,24 @@ async function retrySummary() {
 async function retryMismatches() {
   mismatchRetryCount.value = nextRetryAttempt(mismatchRetryCount.value);
   await loadMismatchSection();
+}
+
+async function retryMismatchDetail() {
+  if (!selectedMismatch.value) {
+    return;
+  }
+  detailRetryCount.value = nextRetryAttempt(detailRetryCount.value);
+  await loadMismatchDetail(selectedMismatch.value);
+}
+
+async function openMismatchDetail(row: MismatchRow) {
+  selectedMismatch.value = row;
+  drawerOpen.value = true;
+  await loadMismatchDetail(row);
+}
+
+function closeMismatchDetail() {
+  drawerOpen.value = false;
 }
 
 onMounted(() => {
@@ -371,15 +728,15 @@ onMounted(() => {
             <option value="fixture_error">fixture_error</option>
           </select>
         </label>
-        <button type="submit" :disabled="summaryState.loading || mismatchState.loading">
-          {{ summaryState.loading || mismatchState.loading ? 'Refreshing...' : 'Refresh Workspace' }}
+        <button type="submit" :disabled="summaryState.loading || mismatchState.loading || detailState.loading">
+          {{ summaryState.loading || mismatchState.loading || detailState.loading ? 'Refreshing...' : 'Refresh Workspace' }}
         </button>
       </form>
     </section>
 
     <section class="card">
       <h2>Summary KPIs</h2>
-      <p class="state" :class="{ error: summaryViewState.key === 'error' }">{{ summaryViewState.message }}</p>
+      <p class="state" :class="{ error: summaryViewState.key === 'error' }" data-testid="recon-summary-state">{{ summaryViewState.message }}</p>
       <div v-if="summaryViewState.showRetry" class="inline-actions compact">
         <button type="button" @click="retrySummary">Retry Summary Fetch</button>
       </div>
@@ -393,7 +750,7 @@ onMounted(() => {
 
     <section class="card">
       <h2>Mismatch Drilldown</h2>
-      <p class="state" :class="{ error: mismatchViewState.key === 'error' }">{{ mismatchViewState.message }}</p>
+      <p class="state" :class="{ error: mismatchViewState.key === 'error' }" data-testid="recon-mismatch-state">{{ mismatchViewState.message }}</p>
       <div v-if="mismatchViewState.showRetry" class="inline-actions compact">
         <button type="button" @click="retryMismatches">Retry Drilldown Fetch</button>
       </div>
@@ -427,22 +784,239 @@ onMounted(() => {
                   {{ sortButtonLabel('status', 'Status') }}
                 </button>
               </th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="mismatchViewState.key !== 'ready'">
-              <td colspan="5">{{ mismatchViewState.message }}</td>
+              <td colspan="6">{{ mismatchViewState.message }}</td>
             </tr>
-            <tr v-for="row in sortedMismatchRows" :key="row.transactionReference">
+            <tr
+              v-for="row in sortedMismatchRows"
+              :key="row.transactionReference"
+              :class="{ 'active-mismatch-row': selectedMismatch?.transactionReference === row.transactionReference }"
+            >
               <td><code>{{ row.transactionReference }}</code></td>
               <td>{{ row.merchantId }}</td>
               <td>{{ formatAmount(row.amount, row.currency) }}</td>
-              <td>{{ describeMismatchReason(row.reason) }}</td>
+              <td>
+                <div class="mismatch-type-cell">
+                  <span :class="categoryBadgeClass(row.category)">{{ labelForMismatchCategory(row.category) }}</span>
+                  <span>{{ describeMismatchReason(row.reason) }}</span>
+                </div>
+              </td>
               <td><span :class="statusBadgeClass(row.status)">{{ row.status }}</span></td>
+              <td>
+                <button
+                  type="button"
+                  class="link"
+                  :disabled="detailState.loading"
+                  @click="openMismatchDetail(row)"
+                >
+                  {{ detailState.loading && selectedMismatch?.transactionReference === row.transactionReference ? 'Opening...' : 'Open Detail' }}
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
     </section>
+
+    <section v-if="drawerOpen" class="drawer-shell" data-testid="mismatch-detail-drawer" @click.self="closeMismatchDetail">
+      <aside class="mismatch-drawer">
+        <header class="drawer-header">
+          <div>
+            <h2>Mismatch Detail Drawer</h2>
+            <p v-if="selectedMismatch" class="state">Reference: {{ selectedMismatch.transactionReference }}</p>
+          </div>
+          <button type="button" class="link" @click="closeMismatchDetail">Close</button>
+        </header>
+
+        <p class="state" :class="{ error: detailViewState.key === 'error' }">{{ detailViewState.message }}</p>
+
+        <div v-if="detailViewState.key === 'error'" class="inline-actions compact">
+          <button type="button" @click="retryMismatchDetail">Retry Detail Fetch</button>
+        </div>
+
+        <p v-if="detailViewState.key === 'loading'" data-testid="mismatch-detail-loading-state">Loading deterministic event diff...</p>
+        <p v-else-if="detailViewState.key === 'empty'" data-testid="mismatch-detail-empty-state">No event diff available for this mismatch selection.</p>
+
+        <div v-if="selectedDetail && detailViewState.key === 'ready'" class="drawer-content" data-testid="mismatch-detail-ready-state">
+          <div class="drawer-summary-grid">
+            <article>
+              <strong>Mismatch Category</strong>
+              <p><span :class="categoryBadgeClass(selectedDetail.category)">{{ labelForMismatchCategory(selectedDetail.category) }}</span></p>
+            </article>
+            <article>
+              <strong>Reason Code</strong>
+              <p><code>{{ selectedDetail.reasonCode }}</code></p>
+            </article>
+            <article>
+              <strong>Normalized Paths</strong>
+              <p><code>{{ selectedDetail.normalizedFieldPaths.join(', ') }}</code></p>
+            </article>
+            <article>
+              <strong>Fallback Applied</strong>
+              <p>{{ selectedDetail.fallbackApplied ? 'true' : 'false' }}</p>
+            </article>
+          </div>
+
+          <div class="payload-grid">
+            <article class="card payload-card" data-testid="mismatch-expected-payload">
+              <h3>Expected Event Payload ({{ selectedDetail.expectedSource }})</h3>
+              <pre>{{ prettyPayload(selectedDetail.expectedPayload) }}</pre>
+            </article>
+            <article class="card payload-card" data-testid="mismatch-actual-payload">
+              <h3>Actual Event Payload ({{ selectedDetail.actualSource }})</h3>
+              <pre>{{ prettyPayload(selectedDetail.actualPayload) }}</pre>
+            </article>
+          </div>
+
+          <section class="card">
+            <h3>Deterministic Event Diff</h3>
+            <div class="table-wrap">
+              <table data-testid="mismatch-diff-table">
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Reason Code</th>
+                    <th>Expected</th>
+                    <th>Actual</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="diff in selectedDetail.diffs" :key="`${selectedDetail.id}:${diff.path}:${diff.reasonCode}`">
+                    <td><code>{{ diff.path }}</code></td>
+                    <td><code>{{ diff.reasonCode }}</code></td>
+                    <td><code>{{ formatDiffValue(diff.expected) }}</code></td>
+                    <td><code>{{ formatDiffValue(diff.actual) }}</code></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </section>
   </main>
 </template>
+
+<style scoped>
+.mismatch-type-cell {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.active-mismatch-row {
+  background: #f8fbfe;
+}
+
+.drawer-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(15, 23, 42, 0.3);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mismatch-drawer {
+  width: min(860px, 100%);
+  height: 100%;
+  overflow: auto;
+  background: #ffffff;
+  border-left: 1px solid #d0d8e2;
+  padding: 1rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.drawer-summary-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.drawer-summary-grid article {
+  border: 1px solid #d0d8e2;
+  border-radius: 10px;
+  padding: 0.7rem;
+  background: #f8fafc;
+}
+
+.drawer-summary-grid p {
+  margin: 0.3rem 0 0;
+}
+
+.payload-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.payload-card {
+  margin: 0;
+  padding: 0.75rem;
+}
+
+.payload-card h3 {
+  margin-bottom: 0.5rem;
+}
+
+.payload-card pre {
+  margin: 0;
+  border: 1px solid #d0d8e2;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  padding: 0.7rem;
+  overflow: auto;
+  min-height: 180px;
+}
+
+.category-pill {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+}
+
+.category-pill.neutral {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.category-pill.warn {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.category-pill.danger {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+@media (max-width: 760px) {
+  .mismatch-drawer {
+    width: 100%;
+  }
+
+  .payload-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

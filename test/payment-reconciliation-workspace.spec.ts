@@ -1,7 +1,10 @@
 import {
   buildReconciliationKpis,
   buildSectionViewState,
+  labelForMismatchCategory,
+  mapReasonToMismatchCategory,
   nextRetryAttempt,
+  normalizeMismatchCategory,
   resolveReconciliationDataSource,
   sortMismatchRowsDeterministic,
   type MismatchRow,
@@ -32,6 +35,7 @@ describe('payment reconciliation workspace utilities', () => {
         merchantId: 'mrc_b',
         amount: 500,
         currency: 'THB',
+        category: 'stale-status',
         reason: 'stuck_non_terminal',
         status: 'PENDING',
       },
@@ -40,6 +44,7 @@ describe('payment reconciliation workspace utilities', () => {
         merchantId: 'mrc_a',
         amount: 500,
         currency: 'THB',
+        category: 'missing-event',
         reason: 'paid_without_success_callback',
         status: 'PAID',
       },
@@ -48,6 +53,7 @@ describe('payment reconciliation workspace utilities', () => {
         merchantId: 'mrc_c',
         amount: 900,
         currency: 'THB',
+        category: 'duplicate-event',
         reason: 'failed_with_success_callback',
         status: 'FAILED',
       },
@@ -99,5 +105,18 @@ describe('payment reconciliation workspace utilities', () => {
     expect(resolveReconciliationDataSource({ mode: 'api', latestApiStatusCode: 501 })).toBe('fixture');
     expect(resolveReconciliationDataSource({ mode: 'fixture_success' })).toBe('fixture');
     expect(resolveReconciliationDataSource({ mode: 'api', latestApiStatusCode: 500 })).toBe('api');
+  });
+
+  it('normalizes mismatch categories and maps legacy reasons to deterministic badge categories', () => {
+    expect(normalizeMismatchCategory('missing_event')).toBe('missing-event');
+    expect(normalizeMismatchCategory('duplicate-event')).toBe('duplicate-event');
+    expect(normalizeMismatchCategory('unexpected')).toBe('stale-status');
+
+    expect(mapReasonToMismatchCategory('paid_without_success_callback')).toBe('missing-event');
+    expect(mapReasonToMismatchCategory('failed_with_success_callback')).toBe('duplicate-event');
+    expect(mapReasonToMismatchCategory('stuck_non_terminal')).toBe('stale-status');
+
+    expect(labelForMismatchCategory('amount')).toBe('amount');
+    expect(labelForMismatchCategory('currency')).toBe('currency');
   });
 });
