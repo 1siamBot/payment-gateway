@@ -62,6 +62,7 @@ import {
   resolveReplayBookmarkCompareShortcut,
   resolveOperatorDecisionQueueShortcut,
   resolveReviewQueueLedgerShortcut,
+  resolveDispatchCockpitShortcut,
   resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveEvidenceTimelineHeatmapShortcut,
@@ -90,6 +91,12 @@ import {
   buildReplayDiffInspector,
   buildReviewQueueHandoffPacketDraftFromLedgerRow,
   validateReviewQueueHandoffPacketDraft,
+  buildBlockerAwareDispatchCockpit,
+  moveDispatchCockpitSelection,
+  getDefaultDispatchEvidenceDraft,
+  applyDispatchEvidenceDraftPrMode,
+  upsertDispatchEvidenceDraft,
+  validateDispatchEvidenceDraft,
 } from '../utils/wave1';
 import type { ExceptionConflictDrilldownKey } from '../utils/wave1';
 import type { ExceptionSimulationReasonDrilldownKey } from '../utils/wave1';
@@ -541,6 +548,18 @@ const reviewQueueLedgerState = reactive({
   message: '',
   error: '',
 });
+const dispatchCockpitState = reactive({
+  message: '',
+  error: '',
+});
+const activeDispatchCockpitRowId = ref('');
+const dispatchDraftBank = ref<Array<ReturnType<typeof getDefaultDispatchEvidenceDraft>>>([]);
+const dispatchDraft = ref(getDefaultDispatchEvidenceDraft({
+  laneId: '',
+  issueIdentifier: '',
+  laneType: 'dispatch_queue',
+}));
+const dispatchDraftMissingFields = ref<Set<string>>(new Set());
 const activeReviewQueueFilter = ref<ReviewQueueLedgerFilterKey>('all');
 const activeReviewQueueRowId = ref('');
 const activeEvidencePacketLintFilter = ref<EvidencePacketLintFilterKey>('all');
@@ -561,6 +580,8 @@ const evidencePacketLintChecklistDraft = ref(getDefaultEvidencePacketLintCheckli
 const evidencePacketLintChecklistMissingFields = ref<Set<string>>(new Set());
 const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
+const dispatchCockpitPanelRef = ref<HTMLElement | null>(null);
+const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidenceTimelineHeatmapPanelRef = ref<HTMLElement | null>(null);
@@ -589,6 +610,34 @@ const reviewQueueLedger = computed(() => buildReviewQueueLedger({
     };
   }),
   activeRowId: activeReviewQueueRowId.value,
+}));
+const dispatchCockpitSourceRows = computed(() => reviewQueueLedger.value.rows.map((row, index) => {
+  const laneType = index % 3 === 0
+    ? 'release_readiness'
+    : index % 3 === 1
+      ? 'evidence_lint'
+      : 'qa_verification';
+  return {
+    id: `dispatch-${row.id}-${laneType}`,
+    issueIdentifier: row.id.toUpperCase(),
+    laneType,
+    blockerSeverity: row.priority,
+    updatedAt: row.eventTime,
+    blocked: row.priority !== 'low',
+    title: `${row.title} (${laneType})`,
+    blockerReason: row.priority === 'low'
+      ? 'Lane is actionable.'
+      : 'GitHub publish credentials unresolved for this lane.',
+  };
+}));
+const dispatchCockpit = computed(() => buildBlockerAwareDispatchCockpit({
+  rows: dispatchCockpitSourceRows.value,
+  activeRowId: activeDispatchCockpitRowId.value,
+}));
+const activeDispatchCockpitRow = computed(() => dispatchCockpit.value.rows
+  .find((row) => row.id === activeDispatchCockpitRowId.value) ?? null);
+const dispatchDraftCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
+  linksText: dispatchDraft.value.dependencyIssueLinksText,
 }));
 const reviewQueueFilterOptions = computed(() => ([
   { key: 'all' as ReviewQueueLedgerFilterKey, label: 'all', count: reviewQueueLedger.value.rows.length },
@@ -1122,10 +1171,12 @@ onBeforeUnmount(clearAutoRefresh);
 onMounted(() => {
   if (!import.meta.client) return;
   window.addEventListener('keydown', onExplainabilityComposerKeydown);
+  window.addEventListener('keydown', onDispatchCockpitKeydown);
 });
 onBeforeUnmount(() => {
   if (!import.meta.client) return;
   window.removeEventListener('keydown', onExplainabilityComposerKeydown);
+  window.removeEventListener('keydown', onDispatchCockpitKeydown);
 });
 
 const healthLevel = computed(() => {
@@ -1475,6 +1526,12 @@ function resetReviewQueueLedgerState() {
   reviewQueueLedgerState.error = '';
 }
 
+function resetDispatchCockpitState() {
+  dispatchCockpitState.message = '';
+  dispatchCockpitState.error = '';
+  dispatchDraftMissingFields.value = new Set();
+}
+
 function resetReviewQueueHandoffValidation() {
   reviewQueueHandoffValidation.message = '';
   reviewQueueHandoffValidation.error = '';
@@ -1561,6 +1618,33 @@ watch(reviewQueueLedger, (ledger) => {
   }
 }, { deep: true, immediate: true });
 
+watch(dispatchCockpit, (cockpit) => {
+  if (!cockpit.rows.length) {
+    activeDispatchCockpitRowId.value = '';
+    dispatchDraft.value = getDefaultDispatchEvidenceDraft({
+      laneId: '',
+      issueIdentifier: '',
+      laneType: 'dispatch_queue',
+    });
+    return;
+  }
+  if (!cockpit.rows.some((row) => row.id === activeDispatchCockpitRowId.value)) {
+    activeDispatchCockpitRowId.value = cockpit.activeRowId;
+  }
+  const activeLane = cockpit.rows.find((row) => row.id === activeDispatchCockpitRowId.value) ?? null;
+  if (!activeLane) {
+    return;
+  }
+  const existing = dispatchDraftBank.value.find((draftRow) => draftRow.laneId === activeLane.id);
+  dispatchDraft.value = existing
+    ? { ...existing }
+    : getDefaultDispatchEvidenceDraft({
+      laneId: activeLane.id,
+      issueIdentifier: activeLane.issueIdentifier,
+      laneType: activeLane.laneType,
+    });
+}, { deep: true, immediate: true });
+
 watch(evidencePacketLintConsole, (consoleData) => {
   if (!consoleData.rows.length) {
     activeEvidencePacketLintFindingId.value = '';
@@ -1589,6 +1673,84 @@ watch(() => bulkDiffInspector.value.reasonCounts, () => {
   });
   explainabilityAppliedChips.value = applied.chips;
 }, { deep: true, immediate: true });
+
+function isDispatchDraftFieldMissing(fieldKey: string): boolean {
+  return dispatchDraftMissingFields.value.has(fieldKey);
+}
+
+function setActiveDispatchCockpitRow(rowId: string) {
+  resetDispatchCockpitState();
+  activeDispatchCockpitRowId.value = rowId;
+  const activeLane = dispatchCockpit.value.rows.find((row) => row.id === rowId) ?? null;
+  if (!activeLane) {
+    dispatchDraft.value = getDefaultDispatchEvidenceDraft({
+      laneId: '',
+      issueIdentifier: '',
+      laneType: 'dispatch_queue',
+    });
+    return;
+  }
+  const existing = dispatchDraftBank.value.find((draftRow) => draftRow.laneId === activeLane.id);
+  dispatchDraft.value = existing
+    ? { ...existing }
+    : getDefaultDispatchEvidenceDraft({
+      laneId: activeLane.id,
+      issueIdentifier: activeLane.issueIdentifier,
+      laneType: activeLane.laneType,
+    });
+}
+
+function updateDispatchDraftPrMode(mode: 'pr_link' | 'no_pr_yet') {
+  dispatchDraft.value = applyDispatchEvidenceDraftPrMode({
+    draft: dispatchDraft.value,
+    prMode: mode,
+  });
+}
+
+function saveDispatchDraft() {
+  resetDispatchCockpitState();
+  const activeLane = activeDispatchCockpitRow.value;
+  if (!activeLane) {
+    dispatchCockpitState.error = 'Select a blocked lane before saving.';
+    return;
+  }
+  const draftToSave = {
+    ...dispatchDraft.value,
+    laneId: activeLane.id,
+    issueIdentifier: activeLane.issueIdentifier,
+    laneType: activeLane.laneType,
+    updatedAt: new Date().toISOString(),
+  };
+  dispatchDraftBank.value = upsertDispatchEvidenceDraft({
+    drafts: dispatchDraftBank.value,
+    draft: draftToSave,
+  });
+  dispatchDraft.value = draftToSave;
+  dispatchCockpitState.message = `Saved queued draft for ${activeLane.issueIdentifier} (${activeLane.laneType}).`;
+}
+
+function validateDispatchDraft() {
+  resetDispatchCockpitState();
+  const validation = validateDispatchEvidenceDraft(dispatchDraft.value);
+  dispatchDraftMissingFields.value = new Set(validation.missingFields);
+  if (validation.isComplete) {
+    dispatchCockpitState.message = `Draft validated. Canonical links: ${validation.dependencyIssueLinks.length}.`;
+    return;
+  }
+  const errorParts: string[] = [];
+  if (validation.missingFields.length > 0) {
+    errorParts.push(`Missing: ${validation.missingFields.join(', ')}`);
+  }
+  if (validation.errors.length > 0) {
+    errorParts.push(validation.errors.join(' '));
+  }
+  dispatchCockpitState.error = errorParts.join(' | ') || 'Dispatch draft is incomplete.';
+}
+
+function focusDispatchCockpit() {
+  dispatchCockpitPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  dispatchDraftBranchInputRef.value?.focus();
+}
 
 function setActiveConflictDrilldown(key: ExceptionConflictDrilldownKey) {
   activeConflictDrilldown.value = key;
@@ -2221,6 +2383,44 @@ function onReviewQueueLedgerKeydown(event: KeyboardEvent) {
     return;
   }
   validateReviewQueueHandoffPacket();
+}
+
+function onDispatchCockpitKeydown(event: KeyboardEvent) {
+  const shortcut = resolveDispatchCockpitShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'save_active_draft'
+    && shortcut !== 'validate_active_draft') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_blocker_cockpit') {
+    focusDispatchCockpit();
+    return;
+  }
+  if (shortcut === 'next_blocked_lane' || shortcut === 'prev_blocked_lane') {
+    activeDispatchCockpitRowId.value = moveDispatchCockpitSelection({
+      rows: dispatchCockpit.value.rows,
+      activeRowId: activeDispatchCockpitRowId.value,
+      direction: shortcut,
+    });
+    setActiveDispatchCockpitRow(activeDispatchCockpitRowId.value);
+    return;
+  }
+  if (shortcut === 'save_active_draft') {
+    saveDispatchDraft();
+    return;
+  }
+  validateDispatchDraft();
 }
 
 function resolveExplainabilityReasonCounts() {
@@ -4015,6 +4215,153 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="dispatchCockpitPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+            >
+              <h4>Blocker-Aware Dispatch Cockpit</h4>
+              <p class="state" :class="{ error: dispatchCockpitState.error }">
+                {{ dispatchCockpitState.error
+                  || dispatchCockpitState.message
+                  || 'Deterministic order: blockerSeverity, updatedAt, issueIdentifier, laneType. Keyboard: Alt+B focus, Alt+Shift+N next blocked lane, Alt+Shift+P previous blocked lane, Ctrl+Shift+S save draft, Ctrl+Shift+Enter validate draft.' }}
+              </p>
+              <p class="state">Blocked lanes: {{ dispatchCockpit.blockedCount }} / {{ dispatchCockpit.rows.length }}</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Issue</th>
+                      <th>Lane</th>
+                      <th>Severity</th>
+                      <th>Updated At</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!dispatchCockpit.rows.length">
+                      <td colspan="5">No dispatch lanes available.</td>
+                    </tr>
+                    <tr
+                      v-for="row in dispatchCockpit.rows"
+                      :key="`dispatch-cockpit-${row.id}`"
+                      :class="{ 'queue-row-active': activeDispatchCockpitRowId === row.id }"
+                      @click="setActiveDispatchCockpitRow(row.id)"
+                    >
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.laneType }}</td>
+                      <td>{{ row.blockerSeverity }}</td>
+                      <td>{{ row.updatedAt }}</td>
+                      <td>{{ row.blocked ? 'blocked' : 'ready' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h5>Queued Evidence Draft Bank</h5>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="saveDispatchDraft">Save Active Draft</button>
+                <button type="button" class="link" @click="validateDispatchDraft">Validate Active Draft</button>
+              </div>
+              <div class="triage-grid">
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('branch') }">
+                  Branch
+                  <input
+                    ref="dispatchDraftBranchInputRef"
+                    v-model="dispatchDraft.branch"
+                    placeholder="feature/one-261-dispatch-cockpit"
+                  />
+                </label>
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('fullSha') }">
+                  Full SHA
+                  <input v-model="dispatchDraft.fullSha" placeholder="40-char commit SHA" />
+                </label>
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('prMode') }">
+                  PR Mode
+                  <select
+                    :value="dispatchDraft.prMode"
+                    @change="updateDispatchDraftPrMode(($event.target as HTMLSelectElement).value as 'pr_link' | 'no_pr_yet')"
+                  >
+                    <option value="pr_link">pr_link</option>
+                    <option value="no_pr_yet">no_pr_yet</option>
+                  </select>
+                </label>
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('testCommand') }">
+                  Test Command
+                  <input v-model="dispatchDraft.testCommand" placeholder="npm run test -- test/frontend.wave1.spec.ts" />
+                </label>
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('artifactPath') }">
+                  Artifact Path
+                  <input v-model="dispatchDraft.artifactPath" placeholder="artifacts/one-261/dispatch-cockpit.md" />
+                </label>
+              </div>
+              <label :class="{ 'field-missing': isDispatchDraftFieldMissing('dependencyIssueLinks') }">
+                Dependency Issue Links (one per line)
+                <textarea v-model="dispatchDraft.dependencyIssueLinksText" rows="3" placeholder="/issues/ONE-260"></textarea>
+              </label>
+              <div class="triage-grid" v-if="dispatchDraft.prMode === 'no_pr_yet'">
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('blockerOwner') }">
+                  Blocker Owner
+                  <input v-model="dispatchDraft.blockerOwner" placeholder="GitHub Admin / DevOps" />
+                </label>
+                <label :class="{ 'field-missing': isDispatchDraftFieldMissing('blockerEta') }">
+                  Blocker ETA
+                  <input v-model="dispatchDraft.blockerEta" placeholder="2026-03-21T10:00:00.000Z" />
+                </label>
+              </div>
+
+              <h5>Canonical Link Normalizer Preview</h5>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Original</th>
+                      <th>Normalized</th>
+                      <th>Changed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!dispatchDraftCanonicalPreview.rows.length">
+                      <td colspan="3">Add dependency links to preview canonical normalized output.</td>
+                    </tr>
+                    <tr v-for="row in dispatchDraftCanonicalPreview.rows" :key="`dispatch-autofix-${row.id}`">
+                      <td><code>{{ row.original }}</code></td>
+                      <td><code>{{ row.normalized }}</code></td>
+                      <td>{{ row.changed ? 'yes' : 'no' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h5>Saved Drafts</h5>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Issue</th>
+                      <th>Lane</th>
+                      <th>Updated At</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!dispatchDraftBank.length">
+                      <td colspan="4">No queued drafts saved yet.</td>
+                    </tr>
+                    <tr v-for="draftRow in dispatchDraftBank" :key="`dispatch-draft-bank-${draftRow.laneId}`">
+                      <td>{{ draftRow.issueIdentifier }}</td>
+                      <td>{{ draftRow.laneType }}</td>
+                      <td>{{ draftRow.updatedAt || 'unsaved' }}</td>
+                      <td>
+                        <button type="button" class="link" @click="setActiveDispatchCockpitRow(draftRow.laneId)">
+                          Load Lane
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <div
               ref="evidencePacketLintPanelRef"
               class="simulation-outcome-panel"

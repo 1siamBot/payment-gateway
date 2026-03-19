@@ -254,6 +254,61 @@ export type ReviewQueueLedger = {
   activeRowId: string;
 };
 
+export type DispatchCockpitBlockerSeverity = 'critical' | 'high' | 'medium' | 'low';
+export type DispatchCockpitLaneType =
+  | 'release_readiness'
+  | 'evidence_lint'
+  | 'qa_verification'
+  | 'dispatch_queue'
+  | 'custom';
+export type DispatchCockpitShortcut =
+  | 'focus_blocker_cockpit'
+  | 'next_blocked_lane'
+  | 'prev_blocked_lane'
+  | 'save_active_draft'
+  | 'validate_active_draft';
+export type DispatchEvidenceDraftPrMode = 'pr_link' | 'no_pr_yet';
+
+export type DispatchCockpitRow = {
+  id: string;
+  issueIdentifier: string;
+  laneType: DispatchCockpitLaneType;
+  blockerSeverity: DispatchCockpitBlockerSeverity;
+  updatedAt: string;
+  blocked: boolean;
+  title: string;
+  blockerReason: string;
+};
+
+export type BlockerAwareDispatchCockpit = {
+  contract: 'settlement-blocker-aware-dispatch-cockpit.v1';
+  rows: DispatchCockpitRow[];
+  blockedCount: number;
+  activeRowId: string;
+};
+
+export type DispatchEvidenceDraft = {
+  laneId: string;
+  issueIdentifier: string;
+  laneType: DispatchCockpitLaneType;
+  branch: string;
+  fullSha: string;
+  prMode: DispatchEvidenceDraftPrMode;
+  testCommand: string;
+  artifactPath: string;
+  dependencyIssueLinksText: string;
+  blockerOwner: string;
+  blockerEta: string;
+  updatedAt: string;
+};
+
+export type DispatchEvidenceDraftValidation = {
+  isComplete: boolean;
+  errors: string[];
+  missingFields: string[];
+  dependencyIssueLinks: string[];
+};
+
 export type EvidenceTimelineGapCode =
   | 'MISSING_BRANCH'
   | 'MISSING_FULL_SHA'
@@ -716,6 +771,14 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
 };
 const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
 const REVIEW_QUEUE_PRIORITY_ORDER: ReviewQueuePriority[] = ['critical', 'high', 'medium', 'low'];
+const DISPATCH_BLOCKER_SEVERITY_ORDER: DispatchCockpitBlockerSeverity[] = ['critical', 'high', 'medium', 'low'];
+const DISPATCH_LANE_TYPE_ORDER: DispatchCockpitLaneType[] = [
+  'release_readiness',
+  'evidence_lint',
+  'qa_verification',
+  'dispatch_queue',
+  'custom',
+];
 const EVIDENCE_TIMELINE_GAP_CODE_ORDER: EvidenceTimelineGapCode[] = [
   'MISSING_BRANCH',
   'MISSING_FULL_SHA',
@@ -1963,6 +2026,271 @@ export function buildReviewQueueLedger(input: {
     rows,
     priorityCounts,
     activeRowId,
+  };
+}
+
+function normalizeDispatchLaneType(input: unknown): DispatchCockpitLaneType {
+  if (typeof input !== 'string') {
+    return 'custom';
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'release_readiness' || normalized === 'release' || normalized === 'readiness') {
+    return 'release_readiness';
+  }
+  if (normalized === 'evidence_lint' || normalized === 'lint') {
+    return 'evidence_lint';
+  }
+  if (normalized === 'qa_verification' || normalized === 'qa') {
+    return 'qa_verification';
+  }
+  if (normalized === 'dispatch_queue' || normalized === 'dispatch') {
+    return 'dispatch_queue';
+  }
+  return 'custom';
+}
+
+function normalizeDispatchBlockerSeverity(input: unknown): DispatchCockpitBlockerSeverity {
+  if (input === 'critical' || input === 'high' || input === 'medium' || input === 'low') {
+    return input;
+  }
+  if (input === 'CRITICAL') return 'critical';
+  if (input === 'HIGH') return 'high';
+  if (input === 'MEDIUM') return 'medium';
+  if (input === 'LOW') return 'low';
+  return 'medium';
+}
+
+function parseDispatchCockpitRow(raw: unknown): DispatchCockpitRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.identifier === 'string'
+        ? row.identifier
+        : String(row.issueIdentifier ?? row.identifier ?? row.id ?? ''),
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const laneType = normalizeDispatchLaneType(row.laneType ?? row.lane ?? row.type);
+  const blockerSeverity = normalizeDispatchBlockerSeverity(row.blockerSeverity ?? row.severity ?? row.priority);
+  const updatedAt = resolveDateString(row.updatedAt ?? row.eventTime, DIFF_FALLBACK_TIMESTAMP);
+  const blocked = typeof row.blocked === 'boolean' ? row.blocked : true;
+  const title = normalizeOptional(
+    typeof row.title === 'string'
+      ? row.title
+      : String(row.title ?? ''),
+  ) ?? `Blocked lane ${issueIdentifier}`;
+  const blockerReason = normalizeOptional(
+    typeof row.blockerReason === 'string'
+      ? row.blockerReason
+      : String(row.blockerReason ?? row.reason ?? ''),
+  ) ?? 'Missing blocker metadata.';
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : `${issueIdentifier}|${laneType}|${updatedAt}|${blockerSeverity}`,
+  ) ?? `${issueIdentifier}|${laneType}|${updatedAt}|${blockerSeverity}`;
+  return {
+    id,
+    issueIdentifier,
+    laneType,
+    blockerSeverity,
+    updatedAt,
+    blocked,
+    title,
+    blockerReason,
+  };
+}
+
+export function buildBlockerAwareDispatchCockpit(input: {
+  rows: unknown[];
+  activeRowId: string;
+}): BlockerAwareDispatchCockpit {
+  const severityRank = new Map(DISPATCH_BLOCKER_SEVERITY_ORDER.map((severity, index) => [severity, index]));
+  const laneRank = new Map(DISPATCH_LANE_TYPE_ORDER.map((laneType, index) => [laneType, index]));
+  const rows = input.rows
+    .map((row) => parseDispatchCockpitRow(row))
+    .filter((row): row is DispatchCockpitRow => Boolean(row))
+    .sort((left, right) => (
+      (severityRank.get(left.blockerSeverity) ?? Number.MAX_SAFE_INTEGER)
+      - (severityRank.get(right.blockerSeverity) ?? Number.MAX_SAFE_INTEGER)
+      || left.updatedAt.localeCompare(right.updatedAt)
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || (laneRank.get(left.laneType) ?? Number.MAX_SAFE_INTEGER)
+      - (laneRank.get(right.laneType) ?? Number.MAX_SAFE_INTEGER)
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeRowId = idSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-blocker-aware-dispatch-cockpit.v1',
+    rows,
+    blockedCount: rows.filter((row) => row.blocked).length,
+    activeRowId,
+  };
+}
+
+export function moveDispatchCockpitSelection(input: {
+  rows: DispatchCockpitRow[];
+  activeRowId: string;
+  direction: 'next_blocked_lane' | 'prev_blocked_lane';
+}): string {
+  const blockedRows = input.rows.filter((row) => row.blocked);
+  if (blockedRows.length === 0) {
+    return '';
+  }
+  const currentIndex = blockedRows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return blockedRows[0].id;
+  }
+  if (input.direction === 'next_blocked_lane') {
+    return blockedRows[Math.min(currentIndex + 1, blockedRows.length - 1)].id;
+  }
+  return blockedRows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveDispatchCockpitShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): DispatchCockpitShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'b') {
+    return 'focus_blocker_cockpit';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'n') {
+    return 'next_blocked_lane';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'p') {
+    return 'prev_blocked_lane';
+  }
+  if (normalizedKey === 's' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'save_active_draft';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_draft';
+  }
+  return null;
+}
+
+export function getDefaultDispatchEvidenceDraft(input: {
+  laneId: string;
+  issueIdentifier: string;
+  laneType: DispatchCockpitLaneType;
+}): DispatchEvidenceDraft {
+  return {
+    laneId: input.laneId,
+    issueIdentifier: input.issueIdentifier,
+    laneType: input.laneType,
+    branch: '',
+    fullSha: EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER,
+    prMode: 'no_pr_yet',
+    testCommand: '',
+    artifactPath: '',
+    dependencyIssueLinksText: '',
+    blockerOwner: '',
+    blockerEta: '',
+    updatedAt: '',
+  };
+}
+
+export function applyDispatchEvidenceDraftPrMode(input: {
+  draft: DispatchEvidenceDraft;
+  prMode: DispatchEvidenceDraftPrMode;
+}): DispatchEvidenceDraft {
+  if (input.prMode === 'no_pr_yet') {
+    return {
+      ...input.draft,
+      prMode: input.prMode,
+    };
+  }
+  return {
+    ...input.draft,
+    prMode: input.prMode,
+    blockerOwner: '',
+    blockerEta: '',
+  };
+}
+
+export function upsertDispatchEvidenceDraft(input: {
+  drafts: DispatchEvidenceDraft[];
+  draft: DispatchEvidenceDraft;
+}): DispatchEvidenceDraft[] {
+  const byLaneId = new Map(input.drafts.map((draft) => [draft.laneId, draft]));
+  byLaneId.set(input.draft.laneId, input.draft);
+  return [...byLaneId.values()].sort((left, right) => (
+    left.issueIdentifier.localeCompare(right.issueIdentifier)
+    || left.laneType.localeCompare(right.laneType)
+    || left.laneId.localeCompare(right.laneId)
+  ));
+}
+
+export function validateDispatchEvidenceDraft(
+  draft: DispatchEvidenceDraft,
+): DispatchEvidenceDraftValidation {
+  const errors: string[] = [];
+  const missingFields: string[] = [];
+  const branch = draft.branch.trim();
+  const fullSha = draft.fullSha.trim();
+  const testCommand = draft.testCommand.trim();
+  const artifactPath = draft.artifactPath.trim();
+  const blockerOwner = draft.blockerOwner.trim();
+  const blockerEta = draft.blockerEta.trim();
+  const dependencyIssueLinks = normalizeMultilineEntries(draft.dependencyIssueLinksText);
+
+  if (!branch) {
+    missingFields.push('branch');
+  }
+  if (!fullSha) {
+    missingFields.push('fullSha');
+  } else if (!/^[a-f0-9]{40}$/i.test(fullSha)) {
+    errors.push('Full SHA must be a 40-character hexadecimal value.');
+  } else if (fullSha === EVIDENCE_PACKET_LINT_SHA_PLACEHOLDER) {
+    errors.push('Full SHA placeholder must be replaced with a real commit SHA before save or validate.');
+  }
+  if (!draft.prMode) {
+    missingFields.push('prMode');
+  }
+  if (!testCommand) {
+    missingFields.push('testCommand');
+  }
+  if (!artifactPath) {
+    missingFields.push('artifactPath');
+  }
+  if (dependencyIssueLinks.length === 0) {
+    missingFields.push('dependencyIssueLinks');
+  }
+  for (const link of dependencyIssueLinks) {
+    if (!canonicalizePaperclipIssueLink(link)) {
+      errors.push(`Dependency issue link is invalid: ${link}`);
+    }
+  }
+  if (draft.prMode === 'no_pr_yet') {
+    if (!blockerOwner) {
+      missingFields.push('blockerOwner');
+    }
+    if (!blockerEta) {
+      missingFields.push('blockerEta');
+    } else if (!Number.isFinite(new Date(blockerEta).getTime())) {
+      errors.push('Blocker ETA must be a valid date-time string.');
+    }
+  }
+  return {
+    isComplete: errors.length === 0 && missingFields.length === 0,
+    errors,
+    missingFields,
+    dependencyIssueLinks: dependencyIssueLinks
+      .map((link) => canonicalizePaperclipIssueLink(link))
+      .filter((link): link is string => Boolean(link))
+      .sort((left, right) => left.localeCompare(right)),
   };
 }
 

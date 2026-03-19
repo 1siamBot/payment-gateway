@@ -84,24 +84,31 @@ import {
   buildChecklistAutofixHints,
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
+  buildBlockerAwareDispatchCockpit,
   filterReplayDiffInspectorRows,
   filterEvidencePacketLintFindings,
   moveEvidenceTimelineHeatmapSelection,
   moveEvidencePacketLintSelection,
   moveReplayDiffInspectorSelection,
+  moveDispatchCockpitSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
+  resolveDispatchCockpitShortcut,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
+  getDefaultDispatchEvidenceDraft,
   applyEvidencePacketLintChecklistPrMode,
+  applyDispatchEvidenceDraftPrMode,
   validateEvidencePacketLintChecklistDraft,
+  validateDispatchEvidenceDraft,
   resetEvidencePacketLintChecklistDraftSafe,
   validateEvidenceGapChecklistDraft,
   resetEvidenceGapChecklistDraftSafe,
   buildEvidenceDiffRail,
   moveEvidenceDiffRailSelection,
   resolveEvidenceDiffRailShortcut,
+  upsertDispatchEvidenceDraft,
   validateBlockerOwnershipRegisterDraft,
   serializeBlockerOwnershipRegisterDraft,
   resetBlockerOwnershipRegisterDraftSafe,
@@ -1076,6 +1083,145 @@ describe('frontend wave1 helpers', () => {
       'MISSING_BLOCKER_OWNER',
       'MISSING_BLOCKER_ETA',
     ]);
+  });
+
+  it('builds blocker-aware dispatch cockpit rows in deterministic tuple order by blockerSeverity, updatedAt, issueIdentifier, laneType', () => {
+    const cockpit = buildBlockerAwareDispatchCockpit({
+      rows: [
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-260',
+          laneType: 'qa_verification',
+          blockerSeverity: 'high',
+          updatedAt: '2026-03-19T05:11:00.000Z',
+          blocked: true,
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-259',
+          laneType: 'release_readiness',
+          blockerSeverity: 'critical',
+          updatedAt: '2026-03-19T05:10:00.000Z',
+          blocked: true,
+        },
+        {
+          id: 'lane-c',
+          issueIdentifier: 'ONE-258',
+          laneType: 'evidence_lint',
+          blockerSeverity: 'high',
+          updatedAt: '2026-03-19T05:09:00.000Z',
+          blocked: true,
+        },
+      ],
+      activeRowId: '',
+    });
+
+    expect(cockpit.contract).toBe('settlement-blocker-aware-dispatch-cockpit.v1');
+    expect(cockpit.rows.map((row) => row.id)).toEqual(['lane-a', 'lane-c', 'lane-b']);
+    expect(cockpit.blockedCount).toBe(3);
+  });
+
+  it('validates dispatch draft required fields and resets blocker fields when prMode changes', () => {
+    const incomplete = validateDispatchEvidenceDraft(getDefaultDispatchEvidenceDraft({
+      laneId: 'lane-259',
+      issueIdentifier: 'ONE-259',
+      laneType: 'release_readiness',
+    }));
+    expect(incomplete.isComplete).toBe(false);
+    expect(incomplete.errors.some((error) => error.includes('placeholder'))).toBe(true);
+    expect(incomplete.missingFields).toEqual([
+      'branch',
+      'testCommand',
+      'artifactPath',
+      'dependencyIssueLinks',
+      'blockerOwner',
+      'blockerEta',
+    ]);
+
+    const completeDraft = {
+      laneId: 'lane-259',
+      issueIdentifier: 'ONE-259',
+      laneType: 'release_readiness' as const,
+      branch: 'feature/one-261-dispatch-cockpit',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet' as const,
+      testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-261/dispatch-cockpit.md',
+      dependencyIssueLinksText: '/issues/ONE-260\n/ONE/issues/ONE-259#comment-12\n/ONE/issues/ONE-241',
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-21T10:00:00.000Z',
+      updatedAt: '2026-03-19T05:25:00.000Z',
+    };
+    const complete = validateDispatchEvidenceDraft(completeDraft);
+    expect(complete.isComplete).toBe(true);
+    expect(complete.dependencyIssueLinks).toEqual([
+      '/ONE/issues/ONE-241',
+      '/ONE/issues/ONE-259#comment-12',
+      '/ONE/issues/ONE-260',
+    ]);
+
+    const switched = applyDispatchEvidenceDraftPrMode({
+      draft: completeDraft,
+      prMode: 'pr_link',
+    });
+    expect(switched.blockerOwner).toBe('');
+    expect(switched.blockerEta).toBe('');
+
+    const saved = upsertDispatchEvidenceDraft({
+      drafts: [],
+      draft: completeDraft,
+    });
+    expect(saved).toHaveLength(1);
+    expect(saved[0].laneId).toBe('lane-259');
+  });
+
+  it('supports dispatch cockpit keyboard workflow for focus, blocked lane navigation, save draft, and validate draft', () => {
+    expect(resolveDispatchCockpitShortcut({ key: 'b', altKey: true })).toBe('focus_blocker_cockpit');
+    expect(resolveDispatchCockpitShortcut({ key: 'N', altKey: true, shiftKey: true })).toBe('next_blocked_lane');
+    expect(resolveDispatchCockpitShortcut({ key: 'P', altKey: true, shiftKey: true })).toBe('prev_blocked_lane');
+    expect(resolveDispatchCockpitShortcut({ key: 's', shiftKey: true, ctrlKey: true })).toBe('save_active_draft');
+    expect(resolveDispatchCockpitShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true })).toBe('validate_active_draft');
+
+    const cockpit = buildBlockerAwareDispatchCockpit({
+      rows: [
+        {
+          id: 'lane-1',
+          issueIdentifier: 'ONE-260',
+          laneType: 'release_readiness',
+          blockerSeverity: 'critical',
+          updatedAt: '2026-03-19T05:10:00.000Z',
+          blocked: true,
+        },
+        {
+          id: 'lane-2',
+          issueIdentifier: 'ONE-259',
+          laneType: 'evidence_lint',
+          blockerSeverity: 'high',
+          updatedAt: '2026-03-19T05:11:00.000Z',
+          blocked: false,
+        },
+        {
+          id: 'lane-3',
+          issueIdentifier: 'ONE-258',
+          laneType: 'qa_verification',
+          blockerSeverity: 'high',
+          updatedAt: '2026-03-19T05:12:00.000Z',
+          blocked: true,
+        },
+      ],
+      activeRowId: 'lane-1',
+    });
+
+    expect(moveDispatchCockpitSelection({
+      rows: cockpit.rows,
+      activeRowId: 'lane-1',
+      direction: 'next_blocked_lane',
+    })).toBe('lane-3');
+    expect(moveDispatchCockpitSelection({
+      rows: cockpit.rows,
+      activeRowId: 'lane-3',
+      direction: 'prev_blocked_lane',
+    })).toBe('lane-1');
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {
