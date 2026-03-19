@@ -34,6 +34,7 @@ import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evi
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
 import { BuildSettlementRemediationManifestDto } from './dto/build-settlement-remediation-manifest.dto';
+import { BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto } from './dto/build-settlement-remediation-publication-route-decision-envelope.dto';
 import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-remediation-runbook.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import {
@@ -104,6 +105,10 @@ import {
   buildSettlementExceptionRemediationRunbook,
   SettlementExceptionRemediationRunbook,
 } from './remediation-runbook';
+import {
+  buildSettlementRemediationPublicationRouteDecisionEnvelope,
+  SettlementRemediationPublicationRouteDecisionEnvelope,
+} from './remediation-publication-route-decision-envelope';
 import type {
   DetectSettlementExceptionsDto,
   DetectSettlementRecord,
@@ -286,6 +291,8 @@ type SettlementDeliveryReadinessDigestContractResponse = SettlementDeliveryReadi
 type SettlementEvidenceAnomalyScorecardContractResponse = SettlementEvidenceAnomalyScorecard;
 type SettlementExceptionRemediationManifestContractResponse = SettlementExceptionRemediationManifest;
 type SettlementExceptionRemediationRunbookContractResponse = SettlementExceptionRemediationRunbook;
+type SettlementRemediationPublicationRouteDecisionEnvelopeContractResponse =
+  SettlementRemediationPublicationRouteDecisionEnvelope;
 
 @Injectable()
 export class SettlementsService {
@@ -723,6 +730,25 @@ export class SettlementsService {
   ): SettlementExceptionRemediationManifestContractResponse {
     try {
       return buildSettlementExceptionRemediationManifest(input);
+    } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && 'status' in error
+        && (error as { status?: number }).status === 400
+        && 'response' in error
+      ) {
+        throw new BadRequestException((error as { response: unknown }).response);
+      }
+      throw error;
+    }
+  }
+
+  buildSettlementRemediationPublicationRouteDecisionEnvelope(
+    input: BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto,
+  ): SettlementRemediationPublicationRouteDecisionEnvelopeContractResponse {
+    try {
+      return buildSettlementRemediationPublicationRouteDecisionEnvelope(input);
     } catch (error) {
       if (
         typeof error === 'object'

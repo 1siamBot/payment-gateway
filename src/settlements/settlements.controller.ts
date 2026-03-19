@@ -7,6 +7,7 @@ import { BuildSettlementEvidencePacketLintDto } from './dto/build-settlement-evi
 import { BuildSettlementEvidenceGapSummaryDto } from './dto/build-settlement-evidence-gap-summary.dto';
 import { BuildSettlementEvidenceAnomalyScorecardDto } from './dto/build-settlement-evidence-anomaly-scorecard.dto';
 import { BuildSettlementRemediationManifestDto } from './dto/build-settlement-remediation-manifest.dto';
+import { BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto } from './dto/build-settlement-remediation-publication-route-decision-envelope.dto';
 import { BuildSettlementRemediationRunbookDto } from './dto/build-settlement-remediation-runbook.dto';
 import { BuildSettlementDeliveryReadinessDigestDto } from './dto/build-settlement-delivery-readiness-digest.dto';
 import { BuildSettlementExplainabilityPresetProfileDto } from './dto/build-settlement-explainability-preset-profile.dto';
@@ -155,6 +156,13 @@ export class SettlementsController {
   @Post('exceptions/remediation-manifest')
   remediationManifest(@Body() body: BuildSettlementRemediationManifestDto) {
     return this.settlements.buildSettlementExceptionRemediationManifest(body);
+  }
+
+  @Post('exceptions/remediation-publication-route-decision-envelope')
+  remediationPublicationRouteDecisionEnvelope(
+    @Body() body: BuildSettlementRemediationPublicationRouteDecisionEnvelopeDto,
+  ) {
+    return this.settlements.buildSettlementRemediationPublicationRouteDecisionEnvelope(body);
   }
 
   @Get('exceptions/qa-fixtures')
