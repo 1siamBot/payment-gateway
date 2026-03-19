@@ -29,6 +29,41 @@ body {
     var(--bg);
 }
 
+.app-shell {
+  min-height: 100vh;
+}
+
+.global-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  gap: 0.7rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(241, 245, 249, 0.92);
+  backdrop-filter: blur(6px);
+}
+
+.global-nav-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  background: var(--paper);
+}
+
+.global-nav-link.router-link-active {
+  background: var(--brand);
+  color: #fff;
+  border-color: transparent;
+}
+
 .page {
   width: min(1200px, 100%);
   margin: 0 auto;
@@ -215,6 +250,23 @@ button.danger {
   border-radius: 8px;
   background: #f3f4f6;
   overflow: auto;
+}
+
+.route-map-page .route-map-groups {
+  display: grid;
+  gap: 1rem;
+}
+
+.route-group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.8rem;
+  background: #f8fbfe;
+}
+
+.route-group-copy {
+  margin-top: -0.35rem;
+  color: var(--muted);
 }
 
 .state {
