@@ -80,8 +80,12 @@ import {
   resolveLineageReplayNavigatorShortcut,
   resetQaEvidencePacketComposerDraftSafe,
   buildReplayDiffInspector,
+  buildEvidenceTimelineHeatmap,
+  buildChecklistAutofixHints,
   filterReplayDiffInspectorRows,
+  moveEvidenceTimelineHeatmapSelection,
   moveReplayDiffInspectorSelection,
+  resolveEvidenceTimelineHeatmapShortcut,
   resolveReplayDiffInspectorShortcut,
   getDefaultEvidenceGapChecklistDraft,
   validateEvidenceGapChecklistDraft,
@@ -978,6 +982,93 @@ describe('frontend wave1 helpers', () => {
     })).toBe(inspector.rows[0].id);
   });
 
+  it('builds evidence timeline heatmap rows in deterministic tuple order by lanePriority, missingFieldPriority, issueIdentifier, updatedAt', () => {
+    const heatmap = buildEvidenceTimelineHeatmap({
+      rows: [
+        {
+          id: 'row-b',
+          lanePriority: 'high',
+          missingFieldCode: 'MISSING_TEST_COMMAND',
+          issueIdentifier: 'ONE-258',
+          updatedAt: '2026-03-19T05:10:00.000Z',
+        },
+        {
+          id: 'row-a',
+          lanePriority: 'critical',
+          missingFieldCode: 'MISSING_BRANCH',
+          issueIdentifier: 'ONE-257',
+          updatedAt: '2026-03-19T05:09:00.000Z',
+        },
+        {
+          id: 'row-c',
+          lanePriority: 'high',
+          missingFieldCode: 'MISSING_PR_LINK',
+          issueIdentifier: 'ONE-256',
+          updatedAt: '2026-03-19T05:08:00.000Z',
+        },
+      ],
+      activeLane: 'all',
+      activeRowId: '',
+    });
+
+    expect(heatmap.contract).toBe('settlement-evidence-timeline-heatmap.v1');
+    expect(heatmap.rows.map((row) => row.id)).toEqual(['row-a', 'row-c', 'row-b']);
+    expect(heatmap.rows.map((row) => row.lanePriority)).toEqual(['critical', 'high', 'high']);
+  });
+
+  it('supports evidence timeline heatmap keyboard workflow for focus, next, previous, and checklist validate', () => {
+    expect(resolveEvidenceTimelineHeatmapShortcut({ key: 'h', altKey: true })).toBe('focus_heatmap');
+    expect(resolveEvidenceTimelineHeatmapShortcut({ key: 'ArrowDown', altKey: true })).toBe('next_gap_row');
+    expect(resolveEvidenceTimelineHeatmapShortcut({ key: 'ArrowUp', altKey: true })).toBe('prev_gap_row');
+    expect(resolveEvidenceTimelineHeatmapShortcut({
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: true,
+    })).toBe('validate_checklist');
+
+    const heatmap = buildEvidenceTimelineHeatmap({
+      rows: [
+        {
+          id: 'row-a',
+          lanePriority: 'critical',
+          missingFieldCode: 'MISSING_BRANCH',
+          issueIdentifier: 'ONE-257',
+          updatedAt: '2026-03-19T05:09:00.000Z',
+        },
+        {
+          id: 'row-b',
+          lanePriority: 'high',
+          missingFieldCode: 'MISSING_TEST_COMMAND',
+          issueIdentifier: 'ONE-258',
+          updatedAt: '2026-03-19T05:10:00.000Z',
+        },
+      ],
+      activeLane: 'all',
+      activeRowId: '',
+    });
+    expect(moveEvidenceTimelineHeatmapSelection({
+      rows: heatmap.rows,
+      activeRowId: heatmap.rows[0].id,
+      direction: 'next_gap_row',
+    })).toBe(heatmap.rows[1].id);
+    expect(moveEvidenceTimelineHeatmapSelection({
+      rows: heatmap.rows,
+      activeRowId: heatmap.rows[1].id,
+      direction: 'prev_gap_row',
+    })).toBe(heatmap.rows[0].id);
+
+    const hints = buildChecklistAutofixHints();
+    expect(hints.map((hint) => hint.code)).toEqual([
+      'MISSING_BRANCH',
+      'MISSING_FULL_SHA',
+      'MISSING_PR_LINK',
+      'MISSING_TEST_COMMAND',
+      'MISSING_ARTIFACT_PATH',
+      'MISSING_BLOCKER_OWNER',
+      'MISSING_BLOCKER_ETA',
+    ]);
+  });
+
   it('validates evidence-gap checklist fields and preserves diff filter + selected pair on safe reset', () => {
     const incomplete = validateEvidenceGapChecklistDraft(getDefaultEvidenceGapChecklistDraft());
     expect(incomplete.isComplete).toBe(false);
@@ -1008,24 +1099,32 @@ describe('frontend wave1 helpers', () => {
       activeDiffFilter: 'modified',
       primarySnapshotId: 'snap-a',
       secondarySnapshotId: 'snap-b',
+      activeHeatmapLane: 'high',
+      activeHeatmapRowId: 'gap-row-1',
       confirmFullReset: false,
     });
     expect(safeReset.didFullReset).toBe(false);
     expect(safeReset.activeDiffFilter).toBe('modified');
     expect(safeReset.primarySnapshotId).toBe('snap-a');
     expect(safeReset.secondarySnapshotId).toBe('snap-b');
+    expect(safeReset.activeHeatmapLane).toBe('high');
+    expect(safeReset.activeHeatmapRowId).toBe('gap-row-1');
     expect(safeReset.message).toContain('preserved');
 
     const fullReset = resetEvidenceGapChecklistDraftSafe({
       activeDiffFilter: 'modified',
       primarySnapshotId: 'snap-a',
       secondarySnapshotId: 'snap-b',
+      activeHeatmapLane: 'high',
+      activeHeatmapRowId: 'gap-row-1',
       confirmFullReset: true,
     });
     expect(fullReset.didFullReset).toBe(true);
     expect(fullReset.activeDiffFilter).toBe('all');
     expect(fullReset.primarySnapshotId).toBe('');
     expect(fullReset.secondarySnapshotId).toBe('');
+    expect(fullReset.activeHeatmapLane).toBe('all');
+    expect(fullReset.activeHeatmapRowId).toBe('');
   });
 
   it('builds deterministic evidence diff rail ordering by sectionPriority/fieldKey/id', () => {

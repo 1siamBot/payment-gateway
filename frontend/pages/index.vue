@@ -63,12 +63,16 @@ import {
   resolveOperatorDecisionQueueShortcut,
   resolveReviewQueueLedgerShortcut,
   resolveReplayDiffInspectorShortcut,
+  resolveEvidenceTimelineHeatmapShortcut,
   resetOperatorDecisionQueueDraftSafe,
   resetReviewQueueHandoffPacketDraftSafe,
   resetEvidenceGapChecklistDraftSafe,
   swapReplayBookmarkCompareSlots,
   validateExceptionActionInput,
   validateEvidenceGapChecklistDraft,
+  buildEvidenceTimelineHeatmap,
+  buildChecklistAutofixHints,
+  moveEvidenceTimelineHeatmapSelection,
   getDefaultEvidenceGapChecklistDraft,
   buildReviewQueueLedger,
   filterReviewQueueLedgerRows,
@@ -530,6 +534,8 @@ const reviewQueueLedgerState = reactive({
 });
 const activeReviewQueueFilter = ref<ReviewQueueLedgerFilterKey>('all');
 const activeReviewQueueRowId = ref('');
+const activeEvidenceTimelineLane = ref<ReviewQueueLedgerFilterKey>('all');
+const activeEvidenceTimelineRowId = ref('');
 const reviewQueueHandoffDraft = ref(buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null }));
 const reviewQueueHandoffValidation = reactive({
   message: '',
@@ -538,6 +544,7 @@ const reviewQueueHandoffValidation = reactive({
 const reviewQueueHandoffMissingFields = ref<Set<string>>(new Set());
 const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
+const evidenceTimelineHeatmapPanelRef = ref<HTMLElement | null>(null);
 const queueDraftRowIds = ref<string[]>([]);
 const activeDecisionQueueItemId = ref('');
 const operatorDecisionQueue = computed(() => buildOperatorDecisionQueue({
@@ -577,6 +584,37 @@ const filteredReviewQueueLedgerRows = computed(() => filterReviewQueueLedgerRows
 ));
 const activeReviewQueueRow = computed(() => reviewQueueLedger.value.rows
   .find((row) => row.id === activeReviewQueueRowId.value) ?? null);
+const evidenceTimelineHeatmapSourceRows = computed(() => {
+  const gapCodes = [
+    'MISSING_BRANCH',
+    'MISSING_FULL_SHA',
+    'MISSING_PR_LINK',
+    'MISSING_TEST_COMMAND',
+    'MISSING_ARTIFACT_PATH',
+    'MISSING_BLOCKER_OWNER',
+    'MISSING_BLOCKER_ETA',
+  ] as const;
+  return reviewQueueLedger.value.rows.map((row, index) => ({
+    id: `gap-${row.id}-${index % gapCodes.length}`,
+    lanePriority: row.priority,
+    missingFieldCode: gapCodes[index % gapCodes.length],
+    issueIdentifier: row.id.toUpperCase(),
+    updatedAt: row.eventTime,
+  }));
+});
+const evidenceTimelineHeatmap = computed(() => buildEvidenceTimelineHeatmap({
+  rows: evidenceTimelineHeatmapSourceRows.value,
+  activeLane: activeEvidenceTimelineLane.value,
+  activeRowId: activeEvidenceTimelineRowId.value,
+}));
+const evidenceTimelineLaneOptions = computed(() => ([
+  { key: 'all' as ReviewQueueLedgerFilterKey, label: 'all', count: evidenceTimelineHeatmapSourceRows.value.length },
+  { key: 'critical' as ReviewQueueLedgerFilterKey, label: 'critical', count: evidenceTimelineHeatmap.value.laneCounts.critical },
+  { key: 'high' as ReviewQueueLedgerFilterKey, label: 'high', count: evidenceTimelineHeatmap.value.laneCounts.high },
+  { key: 'medium' as ReviewQueueLedgerFilterKey, label: 'medium', count: evidenceTimelineHeatmap.value.laneCounts.medium },
+  { key: 'low' as ReviewQueueLedgerFilterKey, label: 'low', count: evidenceTimelineHeatmap.value.laneCounts.low },
+]));
+const evidenceChecklistAutofixHints = computed(() => buildChecklistAutofixHints());
 const activeConflictDrilldown = ref<ExceptionConflictDrilldownKey>('all');
 const activeRollbackPlanReason = ref<ExceptionSimulationReasonDrilldownKey>('all');
 const conflictDrilldownOptions: Array<{ key: ExceptionConflictDrilldownKey; label: string }> = [
@@ -1419,6 +1457,7 @@ watch(replayDiffInspector, (inspector) => {
 watch(reviewQueueLedger, (ledger) => {
   if (!ledger.rows.length) {
     activeReviewQueueRowId.value = '';
+    activeEvidenceTimelineRowId.value = '';
     reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
     return;
   }
@@ -1426,6 +1465,16 @@ watch(reviewQueueLedger, (ledger) => {
     activeReviewQueueRowId.value = ledger.activeRowId;
     const activeRow = ledger.rows.find((row) => row.id === ledger.activeRowId) ?? null;
     reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow });
+  }
+}, { deep: true, immediate: true });
+
+watch(evidenceTimelineHeatmap, (heatmap) => {
+  if (!heatmap.rows.length) {
+    activeEvidenceTimelineRowId.value = '';
+    return;
+  }
+  if (!heatmap.rows.some((row) => row.id === activeEvidenceTimelineRowId.value)) {
+    activeEvidenceTimelineRowId.value = heatmap.activeRowId;
   }
 }, { deep: true, immediate: true });
 
@@ -1511,6 +1560,23 @@ function setActiveReviewQueueFilter(filter: ReviewQueueLedgerFilterKey) {
   if (!nextRows.some((row) => row.id === activeReviewQueueRowId.value)) {
     activeReviewQueueRowId.value = nextRows[0]?.id ?? '';
   }
+}
+
+function setActiveEvidenceTimelineLane(lane: ReviewQueueLedgerFilterKey) {
+  activeEvidenceTimelineLane.value = lane;
+  const nextRows = evidenceTimelineHeatmap.value.rows;
+  if (!nextRows.some((row) => row.id === activeEvidenceTimelineRowId.value)) {
+    activeEvidenceTimelineRowId.value = nextRows[0]?.id ?? '';
+  }
+}
+
+function setActiveEvidenceTimelineRow(rowId: string) {
+  activeEvidenceTimelineRowId.value = rowId;
+}
+
+function focusEvidenceTimelineHeatmap() {
+  evidenceTimelineHeatmapPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  evidenceTimelineHeatmapPanelRef.value?.focus();
 }
 
 function selectReviewQueueLedgerRow(rowId: string) {
@@ -1744,12 +1810,16 @@ function clearEvidenceGapChecklistDraft(confirmFullReset: boolean) {
     activeDiffFilter: activeReplayDiffFilter.value,
     primarySnapshotId: replayComparePrimaryBookmarkId.value,
     secondarySnapshotId: replayCompareSecondaryBookmarkId.value,
+    activeHeatmapLane: activeEvidenceTimelineLane.value,
+    activeHeatmapRowId: activeEvidenceTimelineRowId.value,
     confirmFullReset,
   });
   evidenceGapChecklistDraft.value = next.draft;
   activeReplayDiffFilter.value = next.activeDiffFilter;
   replayComparePrimaryBookmarkId.value = next.primarySnapshotId;
   replayCompareSecondaryBookmarkId.value = next.secondarySnapshotId;
+  activeEvidenceTimelineLane.value = next.activeHeatmapLane;
+  activeEvidenceTimelineRowId.value = next.activeHeatmapRowId;
   replayDiffState.message = next.message;
 }
 
@@ -1858,6 +1928,38 @@ function onReplayDiffInspectorKeydown(event: KeyboardEvent) {
       rows: replayDiffInspector.value.rows,
       activeRowId: activeReplayDiffRowId.value,
       direction: shortcut === 'next_row' ? 'next' : 'prev',
+    });
+    return;
+  }
+  validateEvidenceGapChecklist();
+}
+
+function onEvidenceTimelineHeatmapKeydown(event: KeyboardEvent) {
+  const shortcut = resolveEvidenceTimelineHeatmapShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (!shortcut) {
+    return;
+  }
+  const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+  if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+    && shortcut !== 'validate_checklist') {
+    return;
+  }
+  event.preventDefault();
+  if (shortcut === 'focus_heatmap') {
+    focusEvidenceTimelineHeatmap();
+    return;
+  }
+  if (shortcut === 'next_gap_row' || shortcut === 'prev_gap_row') {
+    activeEvidenceTimelineRowId.value = moveEvidenceTimelineHeatmapSelection({
+      rows: evidenceTimelineHeatmap.value.rows,
+      activeRowId: activeEvidenceTimelineRowId.value,
+      direction: shortcut,
     });
     return;
   }
@@ -2204,6 +2306,8 @@ function applyExceptionFixture(mode: ExceptionFixtureMode) {
   activeScenarioMatrixFilter.value = 'all';
   activeReviewQueueFilter.value = 'all';
   activeReviewQueueRowId.value = '';
+  activeEvidenceTimelineLane.value = 'all';
+  activeEvidenceTimelineRowId.value = '';
   reviewQueueHandoffDraft.value = buildReviewQueueHandoffPacketDraftFromLedgerRow({ activeRow: null });
 
   if (mode === 'loading') {
@@ -3700,6 +3804,67 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="evidenceTimelineHeatmapPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+              @keydown="onEvidenceTimelineHeatmapKeydown"
+            >
+              <h4>Evidence Timeline Heatmap</h4>
+              <p class="state">
+                Deterministic order: lanePriority, missingFieldPriority, issueIdentifier, updatedAt.
+                Keyboard: Alt+H focus, Alt+Down next gap row, Alt+Up previous gap row, Ctrl+Shift+Enter validate checklist.
+              </p>
+              <div class="chip-row">
+                <button
+                  v-for="option in evidenceTimelineLaneOptions"
+                  :key="`evidence-timeline-lane-${option.key}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: activeEvidenceTimelineLane === option.key }"
+                  @click="setActiveEvidenceTimelineLane(option.key)"
+                >
+                  {{ option.label }} ({{ option.count }})
+                </button>
+              </div>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Lane</th>
+                      <th>Gap Code</th>
+                      <th>Issue</th>
+                      <th>Updated At</th>
+                      <th>Autofix Hint</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!evidenceTimelineHeatmap.rows.length">
+                      <td colspan="5">No evidence-gap rows for this lane filter.</td>
+                    </tr>
+                    <tr
+                      v-for="row in evidenceTimelineHeatmap.rows"
+                      :key="`evidence-heatmap-${row.id}`"
+                      :class="{ 'queue-row-active': activeEvidenceTimelineRowId === row.id }"
+                      @click="setActiveEvidenceTimelineRow(row.id)"
+                    >
+                      <td>{{ row.lanePriority }}</td>
+                      <td>{{ row.missingFieldCode }}</td>
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.updatedAt }}</td>
+                      <td>{{ row.autofixHint }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <h5>Checklist Autofix Hints</h5>
+              <ul class="timeline-list">
+                <li v-for="hint in evidenceChecklistAutofixHints" :key="`autofix-${hint.code}`">
+                  <strong>{{ hint.code }}</strong>
+                  <small>{{ hint.action }}</small>
+                </li>
+              </ul>
+            </div>
             <div ref="replayDiffPanelRef" class="simulation-outcome-panel" tabindex="0" @keydown="onReplayDiffInspectorKeydown">
               <h4>Replay Diff Inspector</h4>
               <p class="state" :class="{ error: replayDiffState.error }">

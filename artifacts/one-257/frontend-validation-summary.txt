@@ -1,0 +1,12 @@
+ONE-257 frontend validation summary
+
+Commands run:
+1) npm test -- test/frontend.wave1.spec.ts
+   - Result: PASS (64 tests, 1 suite)
+2) npm --prefix frontend run build
+   - Result: PASS (Nuxt production build complete)
+
+Key checks covered:
+- Deterministic evidence timeline heatmap ordering
+- Evidence timeline keyboard workflow (Alt+H, Alt+Down, Alt+Up, Ctrl+Shift+Enter)
+- Checklist validation reset behavior preserving active filters + selected lane unless full reset

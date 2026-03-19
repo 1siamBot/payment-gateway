@@ -254,6 +254,44 @@ export type ReviewQueueLedger = {
   activeRowId: string;
 };
 
+export type EvidenceTimelineGapCode =
+  | 'MISSING_BRANCH'
+  | 'MISSING_FULL_SHA'
+  | 'MISSING_PR_LINK'
+  | 'MISSING_TEST_COMMAND'
+  | 'MISSING_ARTIFACT_PATH'
+  | 'MISSING_BLOCKER_OWNER'
+  | 'MISSING_BLOCKER_ETA';
+
+export type EvidenceTimelineHeatmapShortcut =
+  | 'focus_heatmap'
+  | 'next_gap_row'
+  | 'prev_gap_row'
+  | 'validate_checklist';
+
+export type EvidenceTimelineHeatmapRow = {
+  id: string;
+  lanePriority: ReviewQueuePriority;
+  missingFieldCode: EvidenceTimelineGapCode;
+  missingFieldPriority: number;
+  issueIdentifier: string;
+  updatedAt: string;
+  autofixHint: string;
+};
+
+export type EvidenceTimelineHeatmap = {
+  contract: 'settlement-evidence-timeline-heatmap.v1';
+  rows: EvidenceTimelineHeatmapRow[];
+  laneCounts: Record<ReviewQueuePriority, number>;
+  activeLane: ReviewQueueLedgerFilterKey;
+  activeRowId: string;
+};
+
+export type ChecklistAutofixHint = {
+  code: EvidenceTimelineGapCode;
+  action: string;
+};
+
 export type ReviewQueueHandoffMode = 'pr' | 'no_pr';
 
 export type ReviewQueueHandoffPacketDraft = {
@@ -612,6 +650,33 @@ const SIMULATION_BUCKET_METADATA: Record<ExceptionSimulationOutcomeBucketKey, {
 };
 const INCIDENT_SEVERITY_ORDER: IncidentBookmarkSeverity[] = ['critical', 'high', 'medium', 'low'];
 const REVIEW_QUEUE_PRIORITY_ORDER: ReviewQueuePriority[] = ['critical', 'high', 'medium', 'low'];
+const EVIDENCE_TIMELINE_GAP_CODE_ORDER: EvidenceTimelineGapCode[] = [
+  'MISSING_BRANCH',
+  'MISSING_FULL_SHA',
+  'MISSING_PR_LINK',
+  'MISSING_TEST_COMMAND',
+  'MISSING_ARTIFACT_PATH',
+  'MISSING_BLOCKER_OWNER',
+  'MISSING_BLOCKER_ETA',
+];
+const EVIDENCE_TIMELINE_GAP_PRIORITY: Record<EvidenceTimelineGapCode, number> = {
+  MISSING_BRANCH: 1,
+  MISSING_FULL_SHA: 2,
+  MISSING_PR_LINK: 3,
+  MISSING_TEST_COMMAND: 4,
+  MISSING_ARTIFACT_PATH: 5,
+  MISSING_BLOCKER_OWNER: 6,
+  MISSING_BLOCKER_ETA: 7,
+};
+const EVIDENCE_TIMELINE_AUTOFIX_HINTS: Record<EvidenceTimelineGapCode, string> = {
+  MISSING_BRANCH: 'Copy branch name from active worktree and re-run checklist validation.',
+  MISSING_FULL_SHA: 'Paste full 40-character commit SHA from git log before publishing.',
+  MISSING_PR_LINK: 'Attach GitHub PR URL, or switch to no-PR mode if publish is blocked.',
+  MISSING_TEST_COMMAND: 'Record exact test command and summary in evidence checklist.',
+  MISSING_ARTIFACT_PATH: 'Add at least one artifact path from /artifacts for reproducible QA proof.',
+  MISSING_BLOCKER_OWNER: 'Assign explicit blocker owner (team or person) for no-PR mode.',
+  MISSING_BLOCKER_ETA: 'Provide ISO ETA for unblock timing and retry publication window.',
+};
 const REPLAY_DELTA_FIELD_ORDER: ReplayDeltaField[] = ['status', 'amount', 'riskFlags', 'updatedAt'];
 const OPERATOR_TIMELINE_PRESET_ORDER: OperatorTimelinePresetKey[] = ['baseline', 'candidate', 'override'];
 const REPLAY_DIFF_CHANGE_TYPE_PRIORITY: Record<'added' | 'removed' | 'modified', number> = {
@@ -1728,6 +1793,57 @@ function parseReviewQueueLedgerRow(raw: unknown): ReviewQueueLedgerRow | null {
   };
 }
 
+function normalizeEvidenceTimelineGapCode(input: unknown): EvidenceTimelineGapCode | null {
+  if (typeof input !== 'string') {
+    return null;
+  }
+  const normalized = input.trim().toUpperCase();
+  if (EVIDENCE_TIMELINE_GAP_CODE_ORDER.includes(normalized as EvidenceTimelineGapCode)) {
+    return normalized as EvidenceTimelineGapCode;
+  }
+  return null;
+}
+
+function parseEvidenceTimelineHeatmapRow(raw: unknown): EvidenceTimelineHeatmapRow | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const lanePriority = normalizeReviewQueuePriority(row.lanePriority ?? row.priority ?? row.severity);
+  const gapCode = normalizeEvidenceTimelineGapCode(
+    row.missingFieldCode
+    ?? row.gapCode
+    ?? row.fieldCode,
+  );
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.identifier === 'string'
+        ? row.identifier
+        : typeof row.sourceIssueId === 'string'
+          ? row.sourceIssueId
+          : String(row.issueIdentifier ?? row.identifier ?? row.sourceIssueId ?? row.id ?? ''),
+  );
+  if (!gapCode || !issueIdentifier) {
+    return null;
+  }
+  const updatedAt = resolveDateString(row.updatedAt ?? row.eventTime, DIFF_FALLBACK_TIMESTAMP);
+  const id = normalizeOptional(
+    typeof row.id === 'string'
+      ? row.id
+      : String(row.id ?? `${lanePriority}|${gapCode}|${issueIdentifier}|${updatedAt}`),
+  ) ?? `${lanePriority}|${gapCode}|${issueIdentifier}|${updatedAt}`;
+  return {
+    id,
+    lanePriority,
+    missingFieldCode: gapCode,
+    missingFieldPriority: EVIDENCE_TIMELINE_GAP_PRIORITY[gapCode],
+    issueIdentifier,
+    updatedAt,
+    autofixHint: EVIDENCE_TIMELINE_AUTOFIX_HINTS[gapCode],
+  };
+}
+
 export function buildReviewQueueLedger(input: {
   rows: unknown[];
   activeRowId: string;
@@ -1767,6 +1883,95 @@ export function buildReviewQueueLedger(input: {
     priorityCounts,
     activeRowId,
   };
+}
+
+export function buildChecklistAutofixHints(): ChecklistAutofixHint[] {
+  return EVIDENCE_TIMELINE_GAP_CODE_ORDER.map((code) => ({
+    code,
+    action: EVIDENCE_TIMELINE_AUTOFIX_HINTS[code],
+  }));
+}
+
+export function buildEvidenceTimelineHeatmap(input: {
+  rows: unknown[];
+  activeLane?: ReviewQueueLedgerFilterKey;
+  activeRowId: string;
+}): EvidenceTimelineHeatmap {
+  const activeLane = input.activeLane ?? 'all';
+  const laneCounts: Record<ReviewQueuePriority, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+  };
+  const allRows = input.rows
+    .map((row) => parseEvidenceTimelineHeatmapRow(row))
+    .filter((row): row is EvidenceTimelineHeatmapRow => Boolean(row))
+    .sort((left, right) => (
+      REVIEW_QUEUE_PRIORITY_ORDER.indexOf(left.lanePriority) - REVIEW_QUEUE_PRIORITY_ORDER.indexOf(right.lanePriority)
+      || left.missingFieldPriority - right.missingFieldPriority
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.updatedAt.localeCompare(right.updatedAt)
+      || left.id.localeCompare(right.id)
+    ));
+  for (const row of allRows) {
+    laneCounts[row.lanePriority] += 1;
+  }
+  const filteredRows = activeLane === 'all'
+    ? allRows
+    : allRows.filter((row) => row.lanePriority === activeLane);
+  const rowIdSet = new Set(filteredRows.map((row) => row.id));
+  const activeRowId = rowIdSet.has(input.activeRowId)
+    ? input.activeRowId
+    : (filteredRows[0]?.id ?? '');
+  return {
+    contract: 'settlement-evidence-timeline-heatmap.v1',
+    rows: filteredRows,
+    laneCounts,
+    activeLane,
+    activeRowId,
+  };
+}
+
+export function moveEvidenceTimelineHeatmapSelection(input: {
+  rows: EvidenceTimelineHeatmapRow[];
+  activeRowId: string;
+  direction: 'next_gap_row' | 'prev_gap_row';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeRowId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_gap_row') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
+}
+
+export function resolveEvidenceTimelineHeatmapShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): EvidenceTimelineHeatmapShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && normalizedKey === 'h') {
+    return 'focus_heatmap';
+  }
+  if (input.altKey && normalizedKey === 'arrowdown') {
+    return 'next_gap_row';
+  }
+  if (input.altKey && normalizedKey === 'arrowup') {
+    return 'prev_gap_row';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_checklist';
+  }
+  return null;
 }
 
 export function filterReviewQueueLedgerRows(
@@ -2791,12 +2996,16 @@ export function resetEvidenceGapChecklistDraftSafe(input: {
   activeDiffFilter: ReplayDiffInspectorFilterKey;
   primarySnapshotId: string;
   secondarySnapshotId: string;
+  activeHeatmapLane: ReviewQueueLedgerFilterKey;
+  activeHeatmapRowId: string;
   confirmFullReset: boolean;
 }): {
   draft: EvidenceGapChecklistDraft;
   activeDiffFilter: ReplayDiffInspectorFilterKey;
   primarySnapshotId: string;
   secondarySnapshotId: string;
+  activeHeatmapLane: ReviewQueueLedgerFilterKey;
+  activeHeatmapRowId: string;
   didFullReset: boolean;
   message: string;
 } {
@@ -2806,8 +3015,10 @@ export function resetEvidenceGapChecklistDraftSafe(input: {
       activeDiffFilter: 'all',
       primarySnapshotId: '',
       secondarySnapshotId: '',
+      activeHeatmapLane: 'all',
+      activeHeatmapRowId: '',
       didFullReset: true,
-      message: 'Evidence-gap checklist draft cleared. Diff filter and selected snapshot pair reset to default.',
+      message: 'Evidence-gap checklist draft cleared. Diff filter, selected lane, and snapshot pair reset to default.',
     };
   }
   return {
@@ -2815,8 +3026,10 @@ export function resetEvidenceGapChecklistDraftSafe(input: {
     activeDiffFilter: input.activeDiffFilter,
     primarySnapshotId: input.primarySnapshotId,
     secondarySnapshotId: input.secondarySnapshotId,
+    activeHeatmapLane: input.activeHeatmapLane,
+    activeHeatmapRowId: input.activeHeatmapRowId,
     didFullReset: false,
-    message: 'Evidence-gap checklist draft cleared. Diff filter and selected snapshot pair preserved.',
+    message: 'Evidence-gap checklist draft cleared. Active filters, selected lane, and snapshot pair preserved.',
   };
 }
 
