@@ -1,0 +1,12 @@
+
+> payment-gateway@0.1.0 test
+> jest test/settlement-release-gate-remediation-plan.spec.ts test/settlement-release-gate-remediation-plan-endpoint.spec.ts
+
+PASS test/settlement-release-gate-remediation-plan.spec.ts
+PASS test/settlement-release-gate-remediation-plan-endpoint.spec.ts
+
+Test Suites: 2 passed, 2 total
+Tests:       6 passed, 6 total
+Snapshots:   0 total
+Time:        1.742 s
+Ran all test suites matching /test\/settlement-release-gate-remediation-plan.spec.ts|test\/settlement-release-gate-remediation-plan-endpoint.spec.ts/i.
