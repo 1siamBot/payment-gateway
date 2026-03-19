@@ -85,16 +85,21 @@ import {
   buildEvidencePacketLintConsole,
   buildCanonicalLinkAutofixPreview,
   buildBlockerAwareDispatchCockpit,
+  buildReleaseReadinessSimulator,
+  buildReleaseReadinessEvidenceBadges,
+  classifyBlockerEtaDrift,
   filterReplayDiffInspectorRows,
   filterEvidencePacketLintFindings,
   moveEvidenceTimelineHeatmapSelection,
   moveEvidencePacketLintSelection,
   moveReplayDiffInspectorSelection,
   moveDispatchCockpitSelection,
+  moveReleaseReadinessLaneSelection,
   resolveEvidenceTimelineHeatmapShortcut,
   resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveDispatchCockpitShortcut,
+  resolveReleaseReadinessShortcut,
   getDefaultEvidencePacketLintChecklistDraft,
   getDefaultEvidenceGapChecklistDraft,
   getDefaultDispatchEvidenceDraft,
@@ -1222,6 +1227,126 @@ describe('frontend wave1 helpers', () => {
       activeRowId: 'lane-3',
       direction: 'prev_blocked_lane',
     })).toBe('lane-1');
+  });
+
+  it('builds release readiness simulator lanes with deterministic ordering by readinessScore, blockerRisk, etaDriftMinutes, issueIdentifier', () => {
+    const simulator = buildReleaseReadinessSimulator({
+      lanes: [
+        {
+          id: 'lane-c',
+          issueIdentifier: 'ONE-270',
+          laneType: 'release_readiness',
+          readinessScore: 88,
+          blockerRisk: 65,
+          etaBaseline: '2026-03-19T05:00:00.000Z',
+          etaLatest: '2026-03-19T05:20:00.000Z',
+        },
+        {
+          id: 'lane-a',
+          issueIdentifier: 'ONE-268',
+          laneType: 'release_readiness',
+          readinessScore: 92,
+          blockerRisk: 80,
+          etaBaseline: '2026-03-19T05:00:00.000Z',
+          etaLatest: '2026-03-19T06:30:00.000Z',
+        },
+        {
+          id: 'lane-b',
+          issueIdentifier: 'ONE-269',
+          laneType: 'release_readiness',
+          readinessScore: 92,
+          blockerRisk: 80,
+          etaBaseline: '2026-03-19T05:00:00.000Z',
+          etaLatest: '2026-03-19T05:45:00.000Z',
+        },
+      ],
+      activeLaneId: '',
+    });
+
+    expect(simulator.contract).toBe('settlement-release-readiness-simulator.v1');
+    expect(simulator.rows.map((row) => row.id)).toEqual(['lane-a', 'lane-b', 'lane-c']);
+    expect(simulator.rows[0].driftClass).toBe('major_drift');
+    expect(simulator.rows[1].driftClass).toBe('minor_drift');
+    expect(simulator.rows[2].driftClass).toBe('minor_drift');
+  });
+
+  it('classifies blocker ETA drift using deterministic on_track/minor_drift/major_drift thresholds', () => {
+    expect(classifyBlockerEtaDrift({
+      baselineEta: '2026-03-19T05:00:00.000Z',
+      latestEta: '2026-03-19T05:10:00.000Z',
+    })).toEqual({
+      etaDriftMinutes: 10,
+      classification: 'on_track',
+    });
+    expect(classifyBlockerEtaDrift({
+      baselineEta: '2026-03-19T05:00:00.000Z',
+      latestEta: '2026-03-19T05:40:00.000Z',
+    })).toEqual({
+      etaDriftMinutes: 40,
+      classification: 'minor_drift',
+    });
+    expect(classifyBlockerEtaDrift({
+      baselineEta: '2026-03-19T05:00:00.000Z',
+      latestEta: '2026-03-19T07:00:00.000Z',
+    })).toEqual({
+      etaDriftMinutes: 120,
+      classification: 'major_drift',
+    });
+  });
+
+  it('supports release readiness keyboard workflow and evidence badge validation for no-pr packets', () => {
+    expect(resolveReleaseReadinessShortcut({ key: 'r', altKey: true })).toBe('focus_readiness_simulator');
+    expect(resolveReleaseReadinessShortcut({ key: 'J', altKey: true, shiftKey: true })).toBe('next_lane');
+    expect(resolveReleaseReadinessShortcut({ key: 'K', altKey: true, shiftKey: true })).toBe('prev_lane');
+    expect(resolveReleaseReadinessShortcut({ key: 's', shiftKey: true, ctrlKey: true })).toBe('save_snapshot');
+    expect(resolveReleaseReadinessShortcut({ key: 'Enter', shiftKey: true, ctrlKey: true }))
+      .toBe('validate_active_lane_packet');
+
+    const simulator = buildReleaseReadinessSimulator({
+      lanes: [
+        {
+          id: 'lane-1',
+          issueIdentifier: 'ONE-268',
+          laneType: 'release_readiness',
+          readinessScore: 91,
+          blockerRisk: 80,
+          etaBaseline: '2026-03-19T05:00:00.000Z',
+          etaLatest: '2026-03-19T05:20:00.000Z',
+        },
+        {
+          id: 'lane-2',
+          issueIdentifier: 'ONE-269',
+          laneType: 'release_readiness',
+          readinessScore: 90,
+          blockerRisk: 75,
+          etaBaseline: '2026-03-19T05:00:00.000Z',
+          etaLatest: '2026-03-19T05:15:00.000Z',
+        },
+      ],
+      activeLaneId: 'lane-1',
+    });
+    expect(moveReleaseReadinessLaneSelection({
+      rows: simulator.rows,
+      activeLaneId: 'lane-1',
+      direction: 'next_lane',
+    })).toBe('lane-2');
+
+    const badges = buildReleaseReadinessEvidenceBadges({
+      laneId: 'lane-1',
+      issueIdentifier: 'ONE-268',
+      laneType: 'release_readiness',
+      branch: 'feature/one-262-readiness',
+      fullSha: '1234567890abcdef1234567890abcdef12345678',
+      prMode: 'no_pr_yet',
+      testCommand: 'npm run test -- test/frontend.wave1.spec.ts',
+      artifactPath: 'artifacts/one-262/readiness-simulator.md',
+      dependencyIssueLinksText: '/ONE/issues/ONE-261\n/ONE/issues/ONE-260\n/ONE/issues/ONE-241',
+      blockerOwner: 'GitHub Admin / DevOps',
+      blockerEta: '2026-03-21T10:00:00.000Z',
+      updatedAt: '2026-03-19T05:40:00.000Z',
+    });
+    const requiredBadges = badges.filter((badge) => badge.required);
+    expect(requiredBadges.every((badge) => badge.complete)).toBe(true);
   });
 
   it('builds evidence packet lint console rows in deterministic tuple order and supports keyboard navigation', () => {

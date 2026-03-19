@@ -309,6 +309,51 @@ export type DispatchEvidenceDraftValidation = {
   dependencyIssueLinks: string[];
 };
 
+export type ReleaseReadinessDriftClass = 'on_track' | 'minor_drift' | 'major_drift';
+export type ReleaseReadinessShortcut =
+  | 'focus_readiness_simulator'
+  | 'next_lane'
+  | 'prev_lane'
+  | 'save_snapshot'
+  | 'validate_active_lane_packet';
+export type ReleaseReadinessEvidenceField =
+  | 'branch'
+  | 'fullSha'
+  | 'prMode'
+  | 'testCommand'
+  | 'artifactPath'
+  | 'dependencyIssueLinks'
+  | 'blockerOwner'
+  | 'blockerEta';
+
+export type ReleaseReadinessEvidenceBadge = {
+  field: ReleaseReadinessEvidenceField;
+  label: string;
+  required: boolean;
+  complete: boolean;
+};
+
+export type ReleaseReadinessSimulatorLane = {
+  id: string;
+  issueIdentifier: string;
+  readinessScore: number;
+  blockerRisk: number;
+  etaBaseline: string;
+  etaLatest: string;
+  etaDriftMinutes: number;
+  driftClass: ReleaseReadinessDriftClass;
+  evidenceBadges: ReleaseReadinessEvidenceBadge[];
+  evidenceCompleteCount: number;
+  evidenceRequiredCount: number;
+  draft: DispatchEvidenceDraft;
+};
+
+export type ReleaseReadinessSimulator = {
+  contract: 'settlement-release-readiness-simulator.v1';
+  rows: ReleaseReadinessSimulatorLane[];
+  activeLaneId: string;
+};
+
 export type EvidenceTimelineGapCode =
   | 'MISSING_BRANCH'
   | 'MISSING_FULL_SHA'
@@ -779,6 +824,26 @@ const DISPATCH_LANE_TYPE_ORDER: DispatchCockpitLaneType[] = [
   'dispatch_queue',
   'custom',
 ];
+const RELEASE_READINESS_EVIDENCE_FIELD_ORDER: ReleaseReadinessEvidenceField[] = [
+  'branch',
+  'fullSha',
+  'prMode',
+  'testCommand',
+  'artifactPath',
+  'dependencyIssueLinks',
+  'blockerOwner',
+  'blockerEta',
+];
+const RELEASE_READINESS_EVIDENCE_FIELD_LABEL: Record<ReleaseReadinessEvidenceField, string> = {
+  branch: 'branch',
+  fullSha: 'fullSha',
+  prMode: 'prMode',
+  testCommand: 'testCommand',
+  artifactPath: 'artifactPath',
+  dependencyIssueLinks: 'dependencyIssueLinks',
+  blockerOwner: 'blockerOwner',
+  blockerEta: 'blockerEta',
+};
 const EVIDENCE_TIMELINE_GAP_CODE_ORDER: EvidenceTimelineGapCode[] = [
   'MISSING_BRANCH',
   'MISSING_FULL_SHA',
@@ -2181,6 +2246,71 @@ export function resolveDispatchCockpitShortcut(input: {
   return null;
 }
 
+export function resolveReleaseReadinessShortcut(input: {
+  key: string;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+}): ReleaseReadinessShortcut | null {
+  const normalizedKey = input.key.toLowerCase();
+  if (input.altKey && !input.shiftKey && normalizedKey === 'r') {
+    return 'focus_readiness_simulator';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'j') {
+    return 'next_lane';
+  }
+  if (input.altKey && input.shiftKey && normalizedKey === 'k') {
+    return 'prev_lane';
+  }
+  if (normalizedKey === 's' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'save_snapshot';
+  }
+  if (input.key === 'Enter' && input.shiftKey && (input.ctrlKey || input.metaKey)) {
+    return 'validate_active_lane_packet';
+  }
+  return null;
+}
+
+export function classifyBlockerEtaDrift(input: {
+  baselineEta: string;
+  latestEta: string;
+  minorThresholdMinutes?: number;
+  majorThresholdMinutes?: number;
+}): { etaDriftMinutes: number; classification: ReleaseReadinessDriftClass } {
+  const minorThresholdMinutes = Number.isFinite(input.minorThresholdMinutes)
+    ? Math.max(0, Math.trunc(input.minorThresholdMinutes as number))
+    : 15;
+  const majorThresholdMinutes = Number.isFinite(input.majorThresholdMinutes)
+    ? Math.max(minorThresholdMinutes + 1, Math.trunc(input.majorThresholdMinutes as number))
+    : 60;
+  const baselineMillis = new Date(input.baselineEta).getTime();
+  const latestMillis = new Date(input.latestEta).getTime();
+  if (!Number.isFinite(baselineMillis) || !Number.isFinite(latestMillis)) {
+    return {
+      etaDriftMinutes: 0,
+      classification: 'major_drift',
+    };
+  }
+  const etaDriftMinutes = Math.round((latestMillis - baselineMillis) / 60000);
+  if (etaDriftMinutes <= minorThresholdMinutes) {
+    return {
+      etaDriftMinutes,
+      classification: 'on_track',
+    };
+  }
+  if (etaDriftMinutes <= majorThresholdMinutes) {
+    return {
+      etaDriftMinutes,
+      classification: 'minor_drift',
+    };
+  }
+  return {
+    etaDriftMinutes,
+    classification: 'major_drift',
+  };
+}
+
 export function getDefaultDispatchEvidenceDraft(input: {
   laneId: string;
   issueIdentifier: string;
@@ -2292,6 +2422,190 @@ export function validateDispatchEvidenceDraft(
       .filter((link): link is string => Boolean(link))
       .sort((left, right) => left.localeCompare(right)),
   };
+}
+
+export function buildReleaseReadinessEvidenceBadges(
+  draft: DispatchEvidenceDraft,
+): ReleaseReadinessEvidenceBadge[] {
+  const validation = validateDispatchEvidenceDraft(draft);
+  const missingFields = new Set(validation.missingFields);
+  const fullShaHasError = validation.errors.some((error) => error.toLowerCase().includes('full sha'));
+  const dependencyLinkHasError = validation.errors.some((error) => error.toLowerCase().includes('dependency issue link'));
+
+  return RELEASE_READINESS_EVIDENCE_FIELD_ORDER.map((field) => {
+    const required = field === 'blockerOwner' || field === 'blockerEta'
+      ? draft.prMode === 'no_pr_yet'
+      : true;
+    let complete = true;
+    if (required && missingFields.has(field)) {
+      complete = false;
+    }
+    if (field === 'fullSha' && fullShaHasError) {
+      complete = false;
+    }
+    if (field === 'dependencyIssueLinks' && dependencyLinkHasError) {
+      complete = false;
+    }
+    return {
+      field,
+      label: RELEASE_READINESS_EVIDENCE_FIELD_LABEL[field],
+      required,
+      complete,
+    };
+  });
+}
+
+function normalizeReleaseReadinessRisk(input: unknown): number {
+  const numeric = parseFiniteNumber(input);
+  if (numeric !== null) {
+    return Math.max(0, Math.round(numeric));
+  }
+  const normalized = typeof input === 'string' ? input.trim().toLowerCase() : '';
+  if (normalized === 'critical') {
+    return 90;
+  }
+  if (normalized === 'high') {
+    return 70;
+  }
+  if (normalized === 'medium') {
+    return 45;
+  }
+  if (normalized === 'low') {
+    return 20;
+  }
+  return 0;
+}
+
+function parseDispatchEvidenceDraftFromUnknown(input: {
+  raw: unknown;
+  laneId: string;
+  issueIdentifier: string;
+  laneType: DispatchCockpitLaneType;
+}): DispatchEvidenceDraft {
+  const draftBase = getDefaultDispatchEvidenceDraft({
+    laneId: input.laneId,
+    issueIdentifier: input.issueIdentifier,
+    laneType: input.laneType,
+  });
+  if (!input.raw || typeof input.raw !== 'object') {
+    return draftBase;
+  }
+  const raw = input.raw as Record<string, unknown>;
+  const prMode: DispatchEvidenceDraftPrMode = raw.prMode === 'pr_link' ? 'pr_link' : 'no_pr_yet';
+  return {
+    ...draftBase,
+    branch: typeof raw.branch === 'string' ? raw.branch : draftBase.branch,
+    fullSha: typeof raw.fullSha === 'string' ? raw.fullSha : draftBase.fullSha,
+    prMode,
+    testCommand: typeof raw.testCommand === 'string' ? raw.testCommand : draftBase.testCommand,
+    artifactPath: typeof raw.artifactPath === 'string' ? raw.artifactPath : draftBase.artifactPath,
+    dependencyIssueLinksText: typeof raw.dependencyIssueLinksText === 'string'
+      ? raw.dependencyIssueLinksText
+      : draftBase.dependencyIssueLinksText,
+    blockerOwner: typeof raw.blockerOwner === 'string' ? raw.blockerOwner : draftBase.blockerOwner,
+    blockerEta: typeof raw.blockerEta === 'string' ? raw.blockerEta : draftBase.blockerEta,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : draftBase.updatedAt,
+  };
+}
+
+function parseReleaseReadinessLane(raw: unknown): ReleaseReadinessSimulatorLane | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const row = raw as Record<string, unknown>;
+  const issueIdentifier = normalizeOptional(
+    typeof row.issueIdentifier === 'string'
+      ? row.issueIdentifier
+      : typeof row.identifier === 'string'
+        ? row.identifier
+        : String(row.issueIdentifier ?? row.identifier ?? row.id ?? ''),
+  )?.toUpperCase();
+  if (!issueIdentifier) {
+    return null;
+  }
+  const laneType = normalizeDispatchLaneType(row.laneType ?? row.lane ?? row.type);
+  const id = normalizeOptional(typeof row.id === 'string' ? row.id : `${issueIdentifier}|${laneType}`)
+    ?? `${issueIdentifier}|${laneType}`;
+  const readinessScore = parseFiniteNumber(row.readinessScore) ?? 0;
+  const blockerRisk = normalizeReleaseReadinessRisk(row.blockerRisk ?? row.blockerSeverity ?? row.priority);
+  const etaBaseline = resolveDateString(
+    row.etaBaseline ?? row.blockerEtaBaseline ?? row.baselineEta,
+    DIFF_FALLBACK_TIMESTAMP,
+  );
+  const etaLatest = resolveDateString(
+    row.etaLatest ?? row.blockerEtaLatest ?? row.latestEta ?? row.updatedAt,
+    etaBaseline,
+  );
+  const drift = classifyBlockerEtaDrift({
+    baselineEta: etaBaseline,
+    latestEta: etaLatest,
+  });
+  const draft = parseDispatchEvidenceDraftFromUnknown({
+    raw: row.draft,
+    laneId: id,
+    issueIdentifier,
+    laneType,
+  });
+  const evidenceBadges = buildReleaseReadinessEvidenceBadges(draft);
+  const requiredBadges = evidenceBadges.filter((badge) => badge.required);
+  const evidenceCompleteCount = requiredBadges.filter((badge) => badge.complete).length;
+  return {
+    id,
+    issueIdentifier,
+    readinessScore,
+    blockerRisk,
+    etaBaseline,
+    etaLatest,
+    etaDriftMinutes: drift.etaDriftMinutes,
+    driftClass: drift.classification,
+    evidenceBadges,
+    evidenceCompleteCount,
+    evidenceRequiredCount: requiredBadges.length,
+    draft,
+  };
+}
+
+export function buildReleaseReadinessSimulator(input: {
+  lanes: unknown[];
+  activeLaneId: string;
+}): ReleaseReadinessSimulator {
+  const rows = input.lanes
+    .map((lane) => parseReleaseReadinessLane(lane))
+    .filter((lane): lane is ReleaseReadinessSimulatorLane => Boolean(lane))
+    .sort((left, right) => (
+      right.readinessScore - left.readinessScore
+      || right.blockerRisk - left.blockerRisk
+      || right.etaDriftMinutes - left.etaDriftMinutes
+      || left.issueIdentifier.localeCompare(right.issueIdentifier)
+      || left.id.localeCompare(right.id)
+    ));
+  const idSet = new Set(rows.map((row) => row.id));
+  const activeLaneId = idSet.has(input.activeLaneId)
+    ? input.activeLaneId
+    : (rows[0]?.id ?? '');
+  return {
+    contract: 'settlement-release-readiness-simulator.v1',
+    rows,
+    activeLaneId,
+  };
+}
+
+export function moveReleaseReadinessLaneSelection(input: {
+  rows: ReleaseReadinessSimulatorLane[];
+  activeLaneId: string;
+  direction: 'next_lane' | 'prev_lane';
+}): string {
+  if (input.rows.length === 0) {
+    return '';
+  }
+  const currentIndex = input.rows.findIndex((row) => row.id === input.activeLaneId);
+  if (currentIndex < 0) {
+    return input.rows[0].id;
+  }
+  if (input.direction === 'next_lane') {
+    return input.rows[Math.min(currentIndex + 1, input.rows.length - 1)].id;
+  }
+  return input.rows[Math.max(currentIndex - 1, 0)].id;
 }
 
 export function buildChecklistAutofixHints(): ChecklistAutofixHint[] {

@@ -63,6 +63,7 @@ import {
   resolveOperatorDecisionQueueShortcut,
   resolveReviewQueueLedgerShortcut,
   resolveDispatchCockpitShortcut,
+  resolveReleaseReadinessShortcut,
   resolveEvidencePacketLintShortcut,
   resolveReplayDiffInspectorShortcut,
   resolveEvidenceTimelineHeatmapShortcut,
@@ -79,6 +80,9 @@ import {
   buildCanonicalLinkAutofixPreview,
   buildEvidenceTimelineHeatmap,
   buildChecklistAutofixHints,
+  buildReleaseReadinessSimulator,
+  buildReleaseReadinessEvidenceBadges,
+  classifyBlockerEtaDrift,
   moveEvidencePacketLintSelection,
   moveEvidenceTimelineHeatmapSelection,
   getDefaultEvidencePacketLintChecklistDraft,
@@ -93,6 +97,7 @@ import {
   validateReviewQueueHandoffPacketDraft,
   buildBlockerAwareDispatchCockpit,
   moveDispatchCockpitSelection,
+  moveReleaseReadinessLaneSelection,
   getDefaultDispatchEvidenceDraft,
   applyDispatchEvidenceDraftPrMode,
   upsertDispatchEvidenceDraft,
@@ -552,6 +557,16 @@ const dispatchCockpitState = reactive({
   message: '',
   error: '',
 });
+const releaseReadinessState = reactive({
+  message: '',
+  error: '',
+});
+const activeReleaseReadinessLaneId = ref('');
+const releaseReadinessSnapshots = ref<Array<{
+  laneId: string;
+  issueIdentifier: string;
+  savedAt: string;
+}>>([]);
 const activeDispatchCockpitRowId = ref('');
 const dispatchDraftBank = ref<Array<ReturnType<typeof getDefaultDispatchEvidenceDraft>>>([]);
 const dispatchDraft = ref(getDefaultDispatchEvidenceDraft({
@@ -581,6 +596,7 @@ const evidencePacketLintChecklistMissingFields = ref<Set<string>>(new Set());
 const reviewQueueHandoffPanelRef = ref<HTMLElement | null>(null);
 const reviewQueueHandoffBranchInputRef = ref<HTMLInputElement | null>(null);
 const dispatchCockpitPanelRef = ref<HTMLElement | null>(null);
+const releaseReadinessPanelRef = ref<HTMLElement | null>(null);
 const dispatchDraftBranchInputRef = ref<HTMLInputElement | null>(null);
 const evidencePacketLintPanelRef = ref<HTMLElement | null>(null);
 const evidencePacketLintBranchInputRef = ref<HTMLInputElement | null>(null);
@@ -634,6 +650,54 @@ const dispatchCockpit = computed(() => buildBlockerAwareDispatchCockpit({
   rows: dispatchCockpitSourceRows.value,
   activeRowId: activeDispatchCockpitRowId.value,
 }));
+const releaseReadinessSourceLanes = computed(() => reviewQueueLedger.value.rows.map((row) => {
+  const riskScore = row.priority === 'critical'
+    ? 90
+    : row.priority === 'high'
+      ? 70
+      : row.priority === 'medium'
+        ? 45
+        : 20;
+  const readinessScore = row.priority === 'critical'
+    ? 55
+    : row.priority === 'high'
+      ? 70
+      : row.priority === 'medium'
+        ? 82
+        : 93;
+  const baselineMs = new Date(row.eventTime).getTime();
+  const baselineEta = Number.isFinite(baselineMs)
+    ? new Date(baselineMs + (45 * 60000)).toISOString()
+    : row.eventTime;
+  const latestMs = Number.isFinite(baselineMs)
+    ? new Date(baselineMs + ((45 + (row.priority === 'critical' ? 115 : row.priority === 'high' ? 52 : 12)) * 60000)).toISOString()
+    : row.eventTime;
+  const laneType = 'release_readiness';
+  const laneId = `readiness-${row.id}`;
+  const issueIdentifier = row.id.toUpperCase();
+  const draft = dispatchDraftBank.value.find((draftRow) => draftRow.issueIdentifier === issueIdentifier)
+    ?? getDefaultDispatchEvidenceDraft({
+      laneId,
+      issueIdentifier,
+      laneType,
+    });
+  return {
+    id: laneId,
+    issueIdentifier,
+    laneType,
+    readinessScore,
+    blockerRisk: riskScore,
+    etaBaseline: baselineEta,
+    etaLatest: latestMs,
+    draft,
+  };
+}));
+const releaseReadinessSimulator = computed(() => buildReleaseReadinessSimulator({
+  lanes: releaseReadinessSourceLanes.value,
+  activeLaneId: activeReleaseReadinessLaneId.value,
+}));
+const activeReleaseReadinessLane = computed(() => releaseReadinessSimulator.value.rows
+  .find((row) => row.id === activeReleaseReadinessLaneId.value) ?? null);
 const activeDispatchCockpitRow = computed(() => dispatchCockpit.value.rows
   .find((row) => row.id === activeDispatchCockpitRowId.value) ?? null);
 const dispatchDraftCanonicalPreview = computed(() => buildCanonicalLinkAutofixPreview({
@@ -1532,6 +1596,11 @@ function resetDispatchCockpitState() {
   dispatchDraftMissingFields.value = new Set();
 }
 
+function resetReleaseReadinessState() {
+  releaseReadinessState.message = '';
+  releaseReadinessState.error = '';
+}
+
 function resetReviewQueueHandoffValidation() {
   reviewQueueHandoffValidation.message = '';
   reviewQueueHandoffValidation.error = '';
@@ -1645,6 +1714,16 @@ watch(dispatchCockpit, (cockpit) => {
     });
 }, { deep: true, immediate: true });
 
+watch(releaseReadinessSimulator, (simulator) => {
+  if (!simulator.rows.length) {
+    activeReleaseReadinessLaneId.value = '';
+    return;
+  }
+  if (!simulator.rows.some((row) => row.id === activeReleaseReadinessLaneId.value)) {
+    activeReleaseReadinessLaneId.value = simulator.activeLaneId;
+  }
+}, { deep: true, immediate: true });
+
 watch(evidencePacketLintConsole, (consoleData) => {
   if (!consoleData.rows.length) {
     activeEvidencePacketLintFindingId.value = '';
@@ -1676,6 +1755,55 @@ watch(() => bulkDiffInspector.value.reasonCounts, () => {
 
 function isDispatchDraftFieldMissing(fieldKey: string): boolean {
   return dispatchDraftMissingFields.value.has(fieldKey);
+}
+
+function setActiveReleaseReadinessLane(laneId: string) {
+  resetReleaseReadinessState();
+  activeReleaseReadinessLaneId.value = laneId;
+}
+
+function focusReleaseReadinessSimulator() {
+  releaseReadinessPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  releaseReadinessPanelRef.value?.focus();
+}
+
+function saveReleaseReadinessSnapshot() {
+  resetReleaseReadinessState();
+  const lane = activeReleaseReadinessLane.value;
+  if (!lane) {
+    releaseReadinessState.error = 'Select a readiness lane before saving scenario snapshot.';
+    return;
+  }
+  const savedAt = new Date().toISOString();
+  const byLane = new Map(releaseReadinessSnapshots.value.map((snapshot) => [snapshot.laneId, snapshot]));
+  byLane.set(lane.id, {
+    laneId: lane.id,
+    issueIdentifier: lane.issueIdentifier,
+    savedAt,
+  });
+  releaseReadinessSnapshots.value = [...byLane.values()]
+    .sort((left, right) => left.issueIdentifier.localeCompare(right.issueIdentifier));
+  releaseReadinessState.message = `Saved scenario snapshot for ${lane.issueIdentifier} at ${savedAt}.`;
+}
+
+function validateReleaseReadinessLanePacket() {
+  resetReleaseReadinessState();
+  const lane = activeReleaseReadinessLane.value;
+  if (!lane) {
+    releaseReadinessState.error = 'Select a readiness lane before validating packet.';
+    return;
+  }
+  const badges = buildReleaseReadinessEvidenceBadges(lane.draft);
+  const missingRequired = badges.filter((badge) => badge.required && !badge.complete);
+  const drift = classifyBlockerEtaDrift({
+    baselineEta: lane.etaBaseline,
+    latestEta: lane.etaLatest,
+  });
+  if (missingRequired.length > 0) {
+    releaseReadinessState.error = `Missing required evidence fields: ${missingRequired.map((badge) => badge.field).join(', ')}.`;
+    return;
+  }
+  releaseReadinessState.message = `Lane packet validated (${drift.classification}, drift ${drift.etaDriftMinutes}m).`;
 }
 
 function setActiveDispatchCockpitRow(rowId: string) {
@@ -2386,6 +2514,42 @@ function onReviewQueueLedgerKeydown(event: KeyboardEvent) {
 }
 
 function onDispatchCockpitKeydown(event: KeyboardEvent) {
+  const releaseShortcut = resolveReleaseReadinessShortcut({
+    key: event.key,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+  });
+  if (releaseShortcut) {
+    const targetTag = (event.target as HTMLElement | null)?.tagName ?? '';
+    if ((targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT')
+      && releaseShortcut !== 'save_snapshot'
+      && releaseShortcut !== 'validate_active_lane_packet') {
+      return;
+    }
+    event.preventDefault();
+    if (releaseShortcut === 'focus_readiness_simulator') {
+      focusReleaseReadinessSimulator();
+      return;
+    }
+    if (releaseShortcut === 'next_lane' || releaseShortcut === 'prev_lane') {
+      activeReleaseReadinessLaneId.value = moveReleaseReadinessLaneSelection({
+        rows: releaseReadinessSimulator.value.rows,
+        activeLaneId: activeReleaseReadinessLaneId.value,
+        direction: releaseShortcut,
+      });
+      setActiveReleaseReadinessLane(activeReleaseReadinessLaneId.value);
+      return;
+    }
+    if (releaseShortcut === 'save_snapshot') {
+      saveReleaseReadinessSnapshot();
+      return;
+    }
+    validateReleaseReadinessLanePacket();
+    return;
+  }
+
   const shortcut = resolveDispatchCockpitShortcut({
     key: event.key,
     altKey: event.altKey,
@@ -4215,6 +4379,70 @@ onMounted(() => {
             </div>
           </div>
           <div>
+            <div
+              ref="releaseReadinessPanelRef"
+              class="simulation-outcome-panel"
+              tabindex="0"
+            >
+              <h4>Release-Readiness Simulator</h4>
+              <p class="state" :class="{ error: releaseReadinessState.error }">
+                {{ releaseReadinessState.error
+                  || releaseReadinessState.message
+                  || 'Deterministic order: readinessScore desc, blockerRisk desc, etaDriftMinutes desc, issueIdentifier asc. Keyboard: Alt+R focus, Alt+Shift+J next lane, Alt+Shift+K previous lane, Ctrl+Shift+S save snapshot, Ctrl+Shift+Enter validate lane packet.' }}
+              </p>
+              <p class="state">Lanes: {{ releaseReadinessSimulator.rows.length }} | Snapshots: {{ releaseReadinessSnapshots.length }}</p>
+              <div class="queue-table-wrap">
+                <table class="queue-table">
+                  <thead>
+                    <tr>
+                      <th>Issue</th>
+                      <th>Readiness</th>
+                      <th>Blocker Risk</th>
+                      <th>ETA Baseline</th>
+                      <th>ETA Latest</th>
+                      <th>ETA Drift</th>
+                      <th>Drift Class</th>
+                      <th>Evidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!releaseReadinessSimulator.rows.length">
+                      <td colspan="8">No release-readiness lanes available.</td>
+                    </tr>
+                    <tr
+                      v-for="row in releaseReadinessSimulator.rows"
+                      :key="`release-readiness-${row.id}`"
+                      :class="{ 'queue-row-active': activeReleaseReadinessLaneId === row.id }"
+                      @click="setActiveReleaseReadinessLane(row.id)"
+                    >
+                      <td>{{ row.issueIdentifier }}</td>
+                      <td>{{ row.readinessScore }}</td>
+                      <td>{{ row.blockerRisk }}</td>
+                      <td>{{ row.etaBaseline }}</td>
+                      <td>{{ row.etaLatest }}</td>
+                      <td>{{ row.etaDriftMinutes }}m</td>
+                      <td>{{ row.driftClass }}</td>
+                      <td>{{ row.evidenceCompleteCount }}/{{ row.evidenceRequiredCount }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="inline-actions">
+                <button type="button" class="link" @click="saveReleaseReadinessSnapshot">Save Scenario Snapshot</button>
+                <button type="button" class="link" @click="validateReleaseReadinessLanePacket">Validate Active Lane Packet</button>
+              </div>
+              <div class="chip-row" v-if="activeReleaseReadinessLane">
+                <button
+                  v-for="badge in activeReleaseReadinessLane.evidenceBadges"
+                  :key="`readiness-badge-${badge.field}`"
+                  type="button"
+                  class="preset-chip"
+                  :class="{ active: badge.complete }"
+                >
+                  {{ badge.label }}: {{ badge.required ? (badge.complete ? 'ok' : 'missing') : 'optional' }}
+                </button>
+              </div>
+            </div>
             <div
               ref="dispatchCockpitPanelRef"
               class="simulation-outcome-panel"
